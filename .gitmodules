@@ -1,0 +1,6 @@
+[submodule "ThirdParty/4d-gaussian-splatting"]
+	path = ThirdParty/4d-gaussian-splatting
+	url = https://github.com/fudan-zvg/4d-gaussian-splatting.git
+[submodule "ThirdParty/gaussian-splatting"]
+	path = ThirdParty/gaussian-splatting
+	url = https://github.com/graphdeco-inria/gaussian-splatting.git
