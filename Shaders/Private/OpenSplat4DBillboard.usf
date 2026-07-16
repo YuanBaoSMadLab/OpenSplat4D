@@ -1,0 +1,158 @@
+#include "/Engine/Public/Platform.ush"
+
+// OpenSplat4D -- Gaussian-splat billboard vertex/pixel shaders.
+//
+// One instance == one Gaussian (particle ID == point index). The point data is
+// packed 7x float4 per point (see UNiagaraDataInterfaceOpenSplat4D):
+//   0: (PosX, PosY, PosZ, AnchorTime)
+//   1: (QuatX, QuatY, QuatZ, QuatW)
+//   2: (ScaleX, ScaleY, ScaleZ, TimeVariance)
+//   3: (ColorR, ColorG, ColorB, ColorA)
+//   4: (VelX, VelY, VelZ, bUseVelocity)
+//
+// The vertex shader builds a camera-facing quad sized by the gaussian scale and
+// computes the 2D screen-space covariance for an anisotropic Gaussian falloff in
+// the pixel shader. The final alpha = Color.A * TimeWeight * GaussianFalloff.
+
+struct FSplatVOut
+{
+	float4 Position  : SV_POSITION;
+	float2 UV        : TEXCOORD0;   // quad corner in [-1,1]
+	float4 Color     : TEXCOORD1;
+	float3 Cov2D     : TEXCOORD2;   // (a, b, c) of the 2x2 covariance
+	float  TimeWeight: TEXCOORD3;
+};
+
+StructuredBuffer<float4> Points;
+
+// NOTE: Declared as loose globals (NOT a named cbuffer). UE5 binds these by
+// name to the C++ SHADER_PARAMETER members of FOpenSplat4DDrawParameters; a
+// named cbuffer would leave an unbound 'FOpenSplat4DDrawParameters' parameter
+// and trip ConstructCompiledInstance's validation ensure.
+float4x4 ViewProjection;
+float4   CameraRight;
+float4   CameraUp;
+float    Time;
+int      bTemporalWeighting;
+int      PointCount;
+float    SplatScale = 1.0f;   // runtime multiplier on every splat's size (1 = as-authored)
+
+// Build a 3x3 rotation matrix from a unit quaternion (x,y,z,w).
+float3x3 QuatToMatrix(float4 Q)
+{
+	float x = Q.x, y = Q.y, z = Q.z, w = Q.w;
+	float3x3 M;
+	M[0] = float3(1 - 2 * (y * y + z * z), 2 * (x * y + w * z),     2 * (x * z - w * y));
+	M[1] = float3(     2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x));
+	M[2] = float3(     2 * (x * z + w * y),     2 * (y * z - w * x), 1 - 2 * (x * x + y * y));
+	return M;
+}
+
+// Covariance = R * diag(scale^2) * R^T (3D, symmetric).
+float3x3 BuildCovariance(float3 Scale, float4 Quat)
+{
+	float3x3 R = QuatToMatrix(Quat);
+	float3 S2 = Scale * Scale;
+	float3x3 S = float3x3(
+		float3(S2.x, 0, 0),
+		float3(0, S2.y, 0),
+		float3(0, 0, S2.z));
+	return mul(mul(R, S), transpose(R));
+}
+
+float3 ViewRotationRow(float3x3 M, int r) { return float3(M[r][0], M[r][1], M[r][2]); }
+
+// Project the 3D covariance into a 2D screen-space covariance given the view
+// rotation rows (right/up/forward) and the point's view-space depth.
+float3 ProjectCovarianceTo2D(float3x3 Cov3D, float3 Right, float3 Up, float Depth)
+{
+	// CovView = V * Cov3D * V^T   with V = [Right; Up; Forward]
+	float3x3 V;
+	V[0] = float3(Right.x, Up.x, 0);   // row 0
+	V[1] = float3(Right.y, Up.y, 0);   // row 1
+	V[2] = float3(Right.z, Up.z, 1);   // row 2 (forward)
+	float3x3 CovView = mul(mul(V, Cov3D), transpose(V));
+
+	float J = 1.0 / max(Depth, 1e-3);
+	float3x3 Jm = float3x3(float3(J, 0, 0), float3(0, J, 0), float3(0, 0, 1));
+	float3x3 CovImg = mul(mul(Jm, CovView), transpose(Jm));
+
+	float a = CovImg[0][0] + 0.3;
+	float b = CovImg[0][1];
+	float c = CovImg[1][1] + 0.3;
+	return float3(a, b, c);
+}
+
+float OpenSplat4DTimeWeight(float AnchorTime, float TimeVariance, float T)
+{
+	float Variance = max(TimeVariance, 1e-6);
+	float Dt = AnchorTime - T;
+	return exp(-0.5 * Dt * Dt / Variance);
+}
+
+// Quad corners for a 6-vertex (2 triangle) billboard from SV_VertexID.
+float2 QuadCorner(uint Vid)
+{
+	// Vid: 0:(--),1:(+-),2:(++),3:(--),4:(++),5:(-+)
+	if (Vid == 0) return float2(-1, -1);
+	if (Vid == 1) return float2(-1,  1);
+	if (Vid == 2) return float2( 1,  1);
+	if (Vid == 3) return float2(-1, -1);
+	if (Vid == 4) return float2( 1,  1);
+	return float2( 1, -1);
+}
+
+FSplatVOut MainVS(uint VertexID : SV_VertexID, uint InstanceID : SV_InstanceID)
+{
+	int i = InstanceID;
+	int base = i * 7;
+
+	float3 pos     = Points[base + 0].xyz;
+	float4 quat    = Points[base + 1];
+	float3 scale   = Points[base + 2].xyz;
+	float4 color   = Points[base + 3];
+	float anchorT  = Points[base + 0].w;
+	float timeVar  = Points[base + 2].w;
+	float3 vel     = Points[base + 4].xyz;
+	float useVel   = Points[base + 4].w;
+
+	float timeWeight = bTemporalWeighting ? OpenSplat4DTimeWeight(anchorT, timeVar, Time) : 1.0;
+
+	// Optional 4D rigid motion: PositionOffset = Velocity * (Time - AnchorTime)
+	float3 worldPos = pos + (bTemporalWeighting ? vel * useVel * (Time - anchorT) : 0.0);
+
+	float2 corner = QuadCorner(VertexID);
+
+	// Anisotropic size from the gaussian scale (world units), scaled at runtime.
+	float size = max(max(scale.x, scale.y), scale.z) * SplatScale;
+	float3 offset = (CameraRight * corner.x + CameraUp * corner.y) * size;
+	float3 finalPos = worldPos + offset;
+
+	// Project the 3D covariance into 2D for an anisotropic falloff.
+	float3x3 Cov3D = BuildCovariance(scale, quat);
+	float3 Right = CameraRight.xyz;
+	float3 Up    = CameraUp.xyz;
+	float3 Cov2D = ProjectCovarianceTo2D(Cov3D, Right, Up, max(length(finalPos), 1e-2));
+
+	FSplatVOut o;
+	o.Position = mul(float4(finalPos, 1.0), ViewProjection);
+	o.UV = corner;
+	o.Color = color;
+	o.Cov2D = Cov2D;
+	o.TimeWeight = timeWeight;
+	return o;
+}
+
+float4 MainPS(FSplatVOut i) : SV_Target0
+{
+	float3 cov = i.Cov2D;
+	float2 D = i.UV;
+	float a = cov.x, b = cov.y, c = cov.z;
+	float det = a * c - b * b;
+	float invDet = 1.0 / max(det, 1e-6);
+	float2 v = float2(a * D.x + b * D.y, b * D.x + c * D.y) * invDet;
+	float power = -0.5 * dot(D, v);
+	float falloff = exp(power);
+	float alpha = saturate(i.Color.a * i.TimeWeight * falloff);
+	return float4(i.Color.rgb, alpha);
+}

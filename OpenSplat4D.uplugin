@@ -1,0 +1,39 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "OpenSplat4D",
+	"Description": "4D Gaussian Splatting (4DGS) + 3DGS dual-mode rendering plugin for Unreal Engine 5.5~6.0. Renders time-varying Gaussian point clouds captured/trained by 4DGS pipelines, coexists with the static 3DGS mode as switchable dual modes.",
+	"Category": "Rendering",
+	"CreatedBy": "OpenSplat4D",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"SupportedTargetPlatforms": [
+		"Win64",
+		"Linux"
+	],
+	"Modules": [
+		{
+			"Name": "OpenSplat4DRuntime",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
+		},
+		{
+			"Name": "OpenSplat4DEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "Niagara",
+			"Enabled": true
+		}
+	]
+}
