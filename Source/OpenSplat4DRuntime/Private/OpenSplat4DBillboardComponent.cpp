@@ -1,5 +1,6 @@
 #include "OpenSplat4DBillboardComponent.h"
 #include "OpenSplat4DPointCloud.h"
+#include "OpenSplat4DDataInterface.h"  // GOPEN_SPLAT_FLOAT4_PER_POINT
 
 #include "GlobalShader.h"
 #include "ShaderParameterStruct.h"
@@ -25,9 +26,11 @@ BEGIN_SHADER_PARAMETER_STRUCT(FOpenSplat4DDrawParameters, )
 	SHADER_PARAMETER(FMatrix44f, ViewProjection)
 	SHADER_PARAMETER(FVector4f, CameraRight)
 	SHADER_PARAMETER(FVector4f, CameraUp)
+	SHADER_PARAMETER(FVector4f, CameraPos)
 	SHADER_PARAMETER(float, Time)
 	SHADER_PARAMETER(int32, bTemporalWeighting)
 	SHADER_PARAMETER(int32, PointCount)
+	SHADER_PARAMETER(int32, SHDegree)
 	SHADER_PARAMETER(float, SplatScale)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, Points)
 END_SHADER_PARAMETER_STRUCT()
@@ -167,8 +170,10 @@ void FOpenSplat4DSceneViewExtension::PostRenderBasePassDeferred_RenderThread(
 	const float MaxFeatureSize = CVarOpenSplat4DMaxFeatureSize.GetValueOnRenderThread();
 
 	TArray<FVector4f> Packed;
-	Packed.AddUninitialized(PointCount * 7);
+	Packed.AddUninitialized(PointCount * GOPEN_SPLAT_FLOAT4_PER_POINT);
 	int32 OutCount = 0;
+	// Determine the dominant SH degree across all points (for the shader param).
+	int32 MaxSHDegree = 0;
 	for (int32 i = 0; i < PointCount; i++)
 	{
 		const FOpenSplat4DPoint& P = Points[i];
@@ -186,17 +191,44 @@ void FOpenSplat4DSceneViewExtension::PostRenderBasePassDeferred_RenderThread(
 			}
 		}
 
-		const int32 Base = OutCount * 7;
+		const int32 SHBand = P.GetSHBand();
+		MaxSHDegree = FMath::Max(MaxSHDegree, SHBand);
+
+		const int32 Base = OutCount * GOPEN_SPLAT_FLOAT4_PER_POINT;
 		Packed[Base + 0] = FVector4f(WorldPos.X, WorldPos.Y, WorldPos.Z, P.AnchorTime);
 		Packed[Base + 1] = FVector4f(P.Quat.X, P.Quat.Y, P.Quat.Z, P.Quat.W);
 		Packed[Base + 2] = FVector4f(P.Scale.X, P.Scale.Y, P.Scale.Z, P.TimeVariance);
+		// Slot 3: raw SH DC coefficients + raw logit opacity (for SH eval in shader).
+		// The shader evaluates the full SH colour from these raw values.
+		Packed[Base + 3] = FVector4f(0.f, 0.f, 0.f, 0.f);
+		// Write f_dc and opacity from the point.  We need to back-compute the raw
+		// f_dc from the stored pre-computed Color (Color.R = SH_C0 * f_dc_0 + 0.5,
+		// so f_dc_0 = (Color.R - 0.5) / SH_C0).  But actually the PLY stores raw
+		// values; we just need to pass them through.  Since FOpenSplat4DPoint stores
+		// the pre-computed SRGBToLinear colour and we don't have the raw f_dc,
+		// we store the final pre-computed colour in slot 3 for the fallback path
+		// and put the raw SH rest in slots 5+.  The shader will use the raw values.
+		// [COMPAT] Keep slot 3 as the pre-computed DC colour + opacity for
+		// backward compatibility; the shader uses it when SHDegree == 0.
 		Packed[Base + 3] = FVector4f(P.Color.R, P.Color.G, P.Color.B, P.Color.A);
 		Packed[Base + 4] = FVector4f(P.Velocity.X, P.Velocity.Y, P.Velocity.Z, P.bUseVelocity ? 1.f : 0.f);
-		Packed[Base + 5] = FVector4f::Zero();
-		Packed[Base + 6] = FVector4f::Zero();
+
+		// Slots 5..17: pack SH data (raw_f_dc_0, raw_f_dc_1, raw_f_dc_2, raw_opacity,
+	// f_rest_0..f_rest_N) directly from SHRest into 13 float4s.
+	// SHRest layout: [f_dc_0, f_dc_1, f_dc_2, opacity, f_rest_0..f_rest_N]
+	const int32 SHDataLen = P.SHRest.Num(); // includes 4-value prefix
+	for (int32 ri = 0; ri < 13; ri++)
+	{
+		float v0 = (ri * 4 + 0 < SHDataLen) ? P.SHRest[ri * 4 + 0] : 0.f;
+		float v1 = (ri * 4 + 1 < SHDataLen) ? P.SHRest[ri * 4 + 1] : 0.f;
+		float v2 = (ri * 4 + 2 < SHDataLen) ? P.SHRest[ri * 4 + 2] : 0.f;
+		float v3 = (ri * 4 + 3 < SHDataLen) ? P.SHRest[ri * 4 + 3] : 0.f;
+		Packed[Base + 5 + ri] = FVector4f(v0, v1, v2, v3);
+	}
+
 		OutCount++;
 	}
-	Packed.SetNum(OutCount * 7);
+	Packed.SetNum(OutCount * GOPEN_SPLAT_FLOAT4_PER_POINT);
 
 	// Camera basis in world space = first two rows of the (world->view) matrix.
 	const FMatrix44f ViewProjection = FMatrix44f(InView.ViewMatrices.GetWorldToClip());
@@ -222,9 +254,11 @@ void FOpenSplat4DSceneViewExtension::PostRenderBasePassDeferred_RenderThread(
 	PassParameters->ViewProjection = ViewProjection;
 	PassParameters->CameraRight = FVector4f(Right, 0.f);
 	PassParameters->CameraUp = FVector4f(Up, 0.f);
+	PassParameters->CameraPos = FVector4f((FVector3f)ViewOrigin, 0.f);
 	PassParameters->Time = Comp->Time;
 	PassParameters->bTemporalWeighting = Comp->bTemporalWeighting ? 1 : 0;
 	PassParameters->PointCount = OutCount;
+	PassParameters->SHDegree = MaxSHDegree;
 	PassParameters->SplatScale = Comp->SplatScale;
 	PassParameters->Points = PointSRV;
 

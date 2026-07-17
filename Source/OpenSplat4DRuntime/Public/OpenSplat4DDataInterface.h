@@ -7,8 +7,16 @@
 #include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DDataInterface.generated.h"
 
-/** Number of float4 slots packed per point in the GPU buffer. */
-static constexpr int32 GOPEN_SPLAT_FLOAT4_PER_POINT = 7;
+/** Number of float4 slots packed per point in the GPU buffer.
+ *  Layout (v2 – SH-aware):
+ *   0: (PosX, PosY, PosZ, AnchorTime)
+ *   1: (QuatX, QuatY, QuatZ, QuatW)
+ *   2: (ScaleX, ScaleY, ScaleZ, TimeVariance)
+ *   3: (FdcR, FdcG, FdcB, RawOpacity)   ← raw SH DC + logit opacity for SH eval
+ *   4: (VelX, VelY, VelZ, bUseVelocity)
+ *   5..16: f_rest[0..44] packed into 12 float4 (3 channels × 15 SH coeffs, deg 1-3)
+ *   17: (SplatScale, SHDegree, unused, unused)  ← per-point metadata */
+static constexpr int32 GOPEN_SPLAT_FLOAT4_PER_POINT = 18;
 
 struct FNiagaraDataInterfaceProxyOpenSplat4D : public FNiagaraDataInterfaceProxy
 {

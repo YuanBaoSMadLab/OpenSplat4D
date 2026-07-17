@@ -109,6 +109,11 @@ public:
 	virtual void PostLoad() override;
 
 private:
+	/** When an asset loads with 0 points and no recorded SourceFilePath, look for
+	 *  a co-located <AssetName>.ply / .4dgs / .spz beside the .uasset and load it.
+	 *  Returns true if a sibling source was found and parsed successfully. */
+	bool TryLoadSiblingSource();
+
 	void Serialize(FArchive& Ar) override;
 
 	// [Robustness] Default is None (raw, lossless TArray<FOpenSplat4DPoint> bytes).

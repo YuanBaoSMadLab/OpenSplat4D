@@ -24,6 +24,17 @@ UObject* UOpenSplat4DPointCloudAssetFactory::FactoryCreateNew(
 	UClass* InClass, UObject* InParent, FName InName, EObjectFlags Flags,
 	UObject* Context, FFeedbackContext* Warn)
 {
+	// [FIX] UE5.8 sometimes routes file-drops through FactoryCreateNew instead of
+	// FactoryCreateFile, even when bCreateNew=false. When a source file is pending
+	// (drag-drop import), delegate to the real file importer. Without this the
+	// asset is created empty (1 KB .uasset from a 65 MB .ply).
+	const FString ImportFilename = GetCurrentFilename();
+	if (!ImportFilename.IsEmpty())
+	{
+		bool bCanceled = false;
+		return FactoryCreateFile(InClass, InParent, InName, Flags, ImportFilename, nullptr, Warn, bCanceled);
+	}
+
 	return NewObject<UOpenSplat4DPointCloud>(InParent, InClass, InName, Flags);
 }
 
@@ -101,48 +112,48 @@ EAssetCommandResult UAssetDefinition_OpenSplat4DPointCloud::OpenAssets(const FAs
 	return EAssetCommandResult::Handled;
 }
 
-bool UOpenSplat4DPointCloudAssetFactory::CanReimport(UObject* Obj, TArray<FString>& OutFilenames)
-{
-	if (UOpenSplat4DPointCloud* Asset = Cast<UOpenSplat4DPointCloud>(Obj))
-	{
-		if (!Asset->SourceFilePath.IsEmpty())
-		{
-			OutFilenames.Add(Asset->SourceFilePath);
-			return true;
-		}
-	}
-	return false;
-}
-
-void UOpenSplat4DPointCloudAssetFactory::SetReimportPaths(UObject* Obj, const TArray<FString>& NewReimportPaths)
-{
-	if (UOpenSplat4DPointCloud* Asset = Cast<UOpenSplat4DPointCloud>(Obj))
-	{
-		if (NewReimportPaths.Num() > 0)
-		{
-			Asset->SourceFilePath = NewReimportPaths[0];
-		}
-	}
-}
-
-EReimportResult::Type UOpenSplat4DPointCloudAssetFactory::Reimport(UObject* Obj)
-{
-	UOpenSplat4DPointCloud* Asset = Cast<UOpenSplat4DPointCloud>(Obj);
-	if (!Asset)
-	{
-		return EReimportResult::Failed;
-	}
-	if (Asset->SourceFilePath.IsEmpty() || !FPaths::FileExists(Asset->SourceFilePath))
-	{
-		return EReimportResult::Failed;
-	}
-	Asset->LoadFromFile(Asset->SourceFilePath);
-	if (Asset->GetPointCount() > 0)
-	{
-		Asset->MarkPackageDirty();
-		UE_LOG(LogOpenSplat4DEditor, Log, TEXT("OpenSplat4D: Reimport %s -> points=%d"), *Asset->SourceFilePath, Asset->GetPointCount());
-		return EReimportResult::Succeeded;
-	}
-	return EReimportResult::Failed;
+bool UOpenSplat4DPointCloudAssetFactory::CanReimport(UObject* Obj, TArray<FString>& OutFilenames)
+{
+	if (UOpenSplat4DPointCloud* Asset = Cast<UOpenSplat4DPointCloud>(Obj))
+	{
+		if (!Asset->SourceFilePath.IsEmpty())
+		{
+			OutFilenames.Add(Asset->SourceFilePath);
+			return true;
+		}
+	}
+	return false;
+}
+
+void UOpenSplat4DPointCloudAssetFactory::SetReimportPaths(UObject* Obj, const TArray<FString>& NewReimportPaths)
+{
+	if (UOpenSplat4DPointCloud* Asset = Cast<UOpenSplat4DPointCloud>(Obj))
+	{
+		if (NewReimportPaths.Num() > 0)
+		{
+			Asset->SourceFilePath = NewReimportPaths[0];
+		}
+	}
+}
+
+EReimportResult::Type UOpenSplat4DPointCloudAssetFactory::Reimport(UObject* Obj)
+{
+	UOpenSplat4DPointCloud* Asset = Cast<UOpenSplat4DPointCloud>(Obj);
+	if (!Asset)
+	{
+		return EReimportResult::Failed;
+	}
+	if (Asset->SourceFilePath.IsEmpty() || !FPaths::FileExists(Asset->SourceFilePath))
+	{
+		return EReimportResult::Failed;
+	}
+	Asset->LoadFromFile(Asset->SourceFilePath);
+	if (Asset->GetPointCount() > 0)
+	{
+		Asset->MarkPackageDirty();
+		UE_LOG(LogOpenSplat4DEditor, Log, TEXT("OpenSplat4D: Reimport %s -> points=%d"), *Asset->SourceFilePath, Asset->GetPointCount());
+		return EReimportResult::Succeeded;
+	}
+	return EReimportResult::Failed;
 }
 #undef LOCTEXT_NAMESPACE

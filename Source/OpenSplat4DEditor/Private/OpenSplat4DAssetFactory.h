@@ -4,7 +4,7 @@
 #include "Factories/Factory.h"
 #include "Misc/FeedbackContext.h"
 #include "EditorReimportHandler.h"
-#include "Factories/ReimportFactory.h"
+#include "Factories/Factory.h"
 #include "AssetDefinitionDefault.h"
 #include "OpenSplat4DAssetFactory.generated.h"
 
@@ -14,7 +14,7 @@
  * Content Browser import dialog.
  */
 UCLASS()
-class UOpenSplat4DPointCloudAssetFactory : public UReimportFactory
+class UOpenSplat4DPointCloudAssetFactory : public UFactory, public FReimportHandler
 {
 	GENERATED_BODY()
 

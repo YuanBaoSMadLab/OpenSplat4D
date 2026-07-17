@@ -73,8 +73,16 @@ void FNiagaraDataInterfaceProxyOpenSplat4D::PostDataToGPU()
 		PointData[Base + 2] = FVector4f(P.Scale.X, P.Scale.Y, P.Scale.Z, P.TimeVariance);
 		PointData[Base + 3] = FVector4f(P.Color.R, P.Color.G, P.Color.B, P.Color.A);
 		PointData[Base + 4] = FVector4f(P.Velocity.X, P.Velocity.Y, P.Velocity.Z, P.bUseVelocity ? 1.f : 0.f);
-		PointData[Base + 5] = FVector4f::Zero();
-		PointData[Base + 6] = FVector4f::Zero();
+		// Slots 5..17: SH data (raw_f_dc + opacity + f_rest)
+		const int32 SHLen = P.SHRest.Num();
+		for (int32 si = 0; si < 13; si++)
+		{
+			float v0 = (si * 4 + 0 < SHLen) ? P.SHRest[si * 4 + 0] : 0.f;
+			float v1 = (si * 4 + 1 < SHLen) ? P.SHRest[si * 4 + 1] : 0.f;
+			float v2 = (si * 4 + 2 < SHLen) ? P.SHRest[si * 4 + 2] : 0.f;
+			float v3 = (si * 4 + 3 < SHLen) ? P.SHRest[si * 4 + 3] : 0.f;
+			PointData[Base + 5 + si] = FVector4f(v0, v1, v2, v3);
+		}
 	}
 
 	ENQUEUE_RENDER_COMMAND(FUpdateOpenSplat4DBuffer)(
@@ -364,13 +372,13 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			void {FunctionName}(int In_Index, out float3 Out_Position, out float4 Out_Quat, out float3 Out_Scale, out float4 Out_Color)
 			{
 				int idx = In_Index < {PointCount} ? In_Index : {PointCount} - 1;
-				Out_Position = {Buffer}.Load(idx * 7 + 0).xyz;
-				Out_Quat = {Buffer}.Load(idx * 7 + 1);
-				Out_Scale = {Buffer}.Load(idx * 7 + 2).xyz;
-				Out_Color = {Buffer}.Load(idx * 7 + 3);
+				Out_Position = {Buffer}.Load(idx * {Stride} + 0).xyz;
+				Out_Quat = {Buffer}.Load(idx * {Stride} + 1);
+				Out_Scale = {Buffer}.Load(idx * {Stride} + 2).xyz;
+				Out_Color = {Buffer}.Load(idx * {Stride} + 3);
 			}
 		)");
-		OutHLSL += FString::Format(Fmt, { { TEXT("FunctionName"), FunctionInfo.InstanceName }, { TEXT("PointCount"), PointCount }, { TEXT("Buffer"), Buffer } });
+		OutHLSL += FString::Format(Fmt, { { TEXT("FunctionName"), FunctionInfo.InstanceName }, { TEXT("PointCount"), PointCount }, { TEXT("Buffer"), Buffer }, { TEXT("Stride"), GOPEN_SPLAT_FLOAT4_PER_POINT } });
 		return true;
 	}
 	else if (FunctionInfo.DefinitionName == GetPointData4DFunctionName)
@@ -379,16 +387,16 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			void {FunctionName}(int In_Index, out float3 Out_Position, out float4 Out_Quat, out float3 Out_Scale, out float4 Out_Color, out float Out_AnchorTime, out float Out_TimeVariance, out float3 Out_Velocity)
 			{
 				int idx = In_Index < {PointCount} ? In_Index : {PointCount} - 1;
-				Out_Position = {Buffer}.Load(idx * 7 + 0).xyz;
-				Out_Quat = {Buffer}.Load(idx * 7 + 1);
-				Out_Scale = {Buffer}.Load(idx * 7 + 2).xyz;
-				Out_Color = {Buffer}.Load(idx * 7 + 3);
-				Out_AnchorTime = {Buffer}.Load(idx * 7 + 0).w;
-				Out_TimeVariance = {Buffer}.Load(idx * 7 + 2).w;
-				Out_Velocity = {Buffer}.Load(idx * 7 + 4).xyz;
+				Out_Position = {Buffer}.Load(idx * {Stride} + 0).xyz;
+				Out_Quat = {Buffer}.Load(idx * {Stride} + 1);
+				Out_Scale = {Buffer}.Load(idx * {Stride} + 2).xyz;
+				Out_Color = {Buffer}.Load(idx * {Stride} + 3);
+				Out_AnchorTime = {Buffer}.Load(idx * {Stride} + 0).w;
+				Out_TimeVariance = {Buffer}.Load(idx * {Stride} + 2).w;
+				Out_Velocity = {Buffer}.Load(idx * {Stride} + 4).xyz;
 			}
 		)");
-		OutHLSL += FString::Format(Fmt, { { TEXT("FunctionName"), FunctionInfo.InstanceName }, { TEXT("PointCount"), PointCount }, { TEXT("Buffer"), Buffer } });
+		OutHLSL += FString::Format(Fmt, { { TEXT("FunctionName"), FunctionInfo.InstanceName }, { TEXT("PointCount"), PointCount }, { TEXT("Buffer"), Buffer }, { TEXT("Stride"), GOPEN_SPLAT_FLOAT4_PER_POINT } });
 		return true;
 	}
 	else if (FunctionInfo.DefinitionName == GetPointCountFunctionName)
@@ -409,8 +417,8 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			{
 				if ({TW} == 0) { Out_Weight = 1.0f; return; }
 				int idx = In_Index < {PointCount} ? In_Index : {PointCount} - 1;
-				float aT = {Buffer}.Load(idx * 7 + 0).w;
-				float aVar = {Buffer}.Load(idx * 7 + 2).w;
+				float aT = {Buffer}.Load(idx * {Stride} + 0).w;
+				float aVar = {Buffer}.Load(idx * {Stride} + 2).w;
 				float sig = max(aVar, 1e-6);
 				float dt = aT - {Time};
 				Out_Weight = exp(-0.5 * dt * dt / sig);
@@ -420,6 +428,7 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			{ TEXT("FunctionName"), FunctionInfo.InstanceName },
 			{ TEXT("PointCount"), PointCount },
 			{ TEXT("Buffer"), Buffer },
+			{ TEXT("Stride"), GOPEN_SPLAT_FLOAT4_PER_POINT },
 			{ TEXT("Time"), TimeSym },
 			{ TEXT("TW"), TW } });
 		return true;
@@ -431,9 +440,9 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			{
 				if ({TW} == 0) { Out_Offset = float3(0, 0, 0); return; }
 				int idx = In_Index < {PointCount} ? In_Index : {PointCount} - 1;
-				float3 vel = {Buffer}.Load(idx * 7 + 4).xyz;
-				float useVel = {Buffer}.Load(idx * 7 + 4).w;
-				float aT = {Buffer}.Load(idx * 7 + 0).w;
+				float3 vel = {Buffer}.Load(idx * {Stride} + 4).xyz;
+				float useVel = {Buffer}.Load(idx * {Stride} + 4).w;
+				float aT = {Buffer}.Load(idx * {Stride} + 0).w;
 				Out_Offset = useVel * vel * ({Time} - aT);
 			}
 		)");
@@ -441,6 +450,7 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			{ TEXT("FunctionName"), FunctionInfo.InstanceName },
 			{ TEXT("PointCount"), PointCount },
 			{ TEXT("Buffer"), Buffer },
+			{ TEXT("Stride"), GOPEN_SPLAT_FLOAT4_PER_POINT },
 			{ TEXT("Time"), TimeSym },
 			{ TEXT("TW"), TW } });
 		return true;

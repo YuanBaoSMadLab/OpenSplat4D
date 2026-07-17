@@ -5,6 +5,7 @@
 #include "Algo/Sort.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/PackageName.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/FileManager.h"
 #include "Serialization/MemoryReader.h"
@@ -101,6 +102,18 @@ void UOpenSplat4DPointCloud::PostLoad()
 
 
 
+	// Already have points -- nothing to do.
+
+	if (GetPointCount() > 0)
+
+	{
+
+		return;
+
+	}
+
+
+
 	// The on-disk source file is the source of truth. If the cloud came back
 
 	// empty after (de)serialisation -- e.g. an asset saved before the splat
@@ -113,13 +126,13 @@ void UOpenSplat4DPointCloud::PostLoad()
 
 	// cooking), unlike the editor-only InitEditor reload.
 
-	if (GetPointCount() == 0 && !SourceFilePath.IsEmpty() && FPaths::FileExists(SourceFilePath))
+	if (!SourceFilePath.IsEmpty() && FPaths::FileExists(SourceFilePath))
 
 	{
 
 		const FString Ext = FPaths::GetExtension(SourceFilePath).ToLower();
 
-		if (Ext == TEXT("ply") || Ext == TEXT("4dgs"))
+		if (Ext == TEXT("ply") || Ext == TEXT("4dgs") || Ext == TEXT("spz"))
 
 		{
 
@@ -131,9 +144,115 @@ void UOpenSplat4DPointCloud::PostLoad()
 
 				*SourceFilePath, GetPointCount());
 
+			return;
+
 		}
 
 	}
+
+
+
+	// [NEW] Blank asset with no recorded source: try a co-located file that
+
+	// shares the asset's base name (demo.demo -> demo.ply / demo.4dgs /
+
+	// demo.spz). This lets a user drop a matching source next to the .uasset
+
+	// and have it auto-populate on open, instead of a silently blank preview.
+
+	// If found, the path is recorded so subsequent opens use PostLoad's
+
+	// source-file branch above.
+
+	if (SourceFilePath.IsEmpty())
+
+	{
+
+		TryLoadSiblingSource();
+
+	}
+
+}
+
+
+
+bool UOpenSplat4DPointCloud::TryLoadSiblingSource()
+
+{
+
+	UPackage* Pkg = GetOutermost();
+
+	if (!Pkg)
+
+	{
+
+		return false;
+
+	}
+
+
+
+	// Resolve the .uasset's on-disk location to derive its directory + base name.
+
+	const FString PkgFilename = FPackageName::LongPackageNameToFilename(Pkg->GetName(), TEXT(".uasset"));
+
+	if (PkgFilename.IsEmpty())
+
+	{
+
+		return false;
+
+	}
+
+	const FString Dir = FPaths::GetPath(PkgFilename);
+
+	const FString Base = FPaths::GetBaseFilename(PkgFilename);
+
+
+
+	static const TCHAR* CandidateExts[] = { TEXT("ply"), TEXT("4dgs"), TEXT("spz") };
+
+	for (const TCHAR* Ext : CandidateExts)
+
+	{
+
+		const FString Candidate = FPaths::Combine(Dir, Base + TEXT(".") + Ext);
+
+		if (FPaths::FileExists(Candidate))
+
+		{
+
+			LoadFromFile(Candidate);
+
+			if (GetPointCount() > 0)
+
+			{
+
+				SourceFilePath = Candidate;
+
+				MarkPackageDirty();
+
+				UE_LOG(LogOpenSplat4D, Log,
+
+					TEXT("OpenSplat4D: auto-loaded sibling source '%s' -> pointCount=%d"),
+
+					*Candidate, GetPointCount());
+
+				return true;
+
+			}
+
+			// A same-named candidate exists but failed to parse -- don't blindly
+
+			// try the other extensions for this asset.
+
+			break;
+
+		}
+
+	}
+
+	return false;
 
 }
 // 4D temporal math (faithful port of 4d-gaussian-splatting's get_marginal_t)
@@ -204,10 +323,17 @@ namespace
 		}
 
 		std::string Line;
+		// [FIX] Strip trailing \r so PLY files with Windows line endings (\r\n)
+		// parse correctly. Without this, "ply\r" != "ply" and every header
+		// comparison silently fails, leading to 0-point imports.
 		auto GetHeaderLine = [&In](std::string& OutLine)
 		{
 			while (std::getline(In, OutLine))
 			{
+				if (!OutLine.empty() && OutLine.back() == '\r')
+				{
+					OutLine.pop_back();
+				}
 				if (OutLine.rfind("comment", 0) != 0 && OutLine.rfind("obj_info", 0) != 0)
 				{
 					return true;
@@ -217,11 +343,11 @@ namespace
 		};
 
 		GetHeaderLine(Line);
-		if (Line != "ply") { UE_LOG(LogOpenSplat4D, Warning, TEXT("Input data is not a .ply file.")); return Result; }
+		if (Line != "ply") { UE_LOG(LogOpenSplat4D, Warning, TEXT("Input data is not a .ply file (first line: '%s')."), ANSI_TO_TCHAR(Line.c_str())); return Result; }
 		GetHeaderLine(Line);
-		if (Line != "format binary_little_endian 1.0") { UE_LOG(LogOpenSplat4D, Warning, TEXT("Unsupported .ply format.")); return Result; }
+		if (Line != "format binary_little_endian 1.0") { UE_LOG(LogOpenSplat4D, Warning, TEXT("Unsupported .ply format: '%s'."), ANSI_TO_TCHAR(Line.c_str())); return Result; }
 		GetHeaderLine(Line);
-		if (Line.find("element vertex ") != 0) { UE_LOG(LogOpenSplat4D, Warning, TEXT("Missing vertex count.")); return Result; }
+		if (Line.find("element vertex ") != 0) { UE_LOG(LogOpenSplat4D, Warning, TEXT("Missing vertex count (line: '%s')."), ANSI_TO_TCHAR(Line.c_str())); return Result; }
 
 		const int32 NumPoints = std::stoi(Line.substr(std::strlen("element vertex ")));
 		if (NumPoints <= 0 || NumPoints > 10 * 1024 * 1024)
@@ -251,13 +377,64 @@ namespace
 		const std::vector<int32> AlphaIdx = { Index("opacity") };
 		const std::vector<int32> ColorIdx = { Index("f_dc_0"), Index("f_dc_1"), Index("f_dc_2") };
 
-		const auto Check = [&](const std::vector<int32>& Idx) -> bool
+		// Collect all f_rest_* property indices for spherical harmonics evaluation.
+		// Standard 3DGS PLY has f_rest_0..f_rest_44 (45 values: 3 channels × 15 SH coeffs).
+		std::vector<int32> RestIdx;
+		for (int32 k = 0; k < 45; k++)
+		{
+			char Buf[32];
+			snprintf(Buf, sizeof(Buf), "f_rest_%d", k);
+			int32 Idx = Index(Buf);
+			if (Idx >= 0) RestIdx.push_back(Idx);
+			else break; // Stop at first missing f_rest — the PLY lists them contiguously.
+		}
+		const bool bHasSH = !RestIdx.empty();
+		const int32 SHDegree = bHasSH ? (RestIdx.Num() / 3 >= 15 ? 3 : RestIdx.Num() / 3 >= 8 ? 2 : 1) : 0;
+
+		// [FIX] Replace silent return with diagnostic so a 65 MB import that
+		// produces a 1 KB .uasset is immediately debuggable. Log every property
+		// found and exactly which required names are missing.
+		const auto Check = [&](const std::vector<int32>& Idx, const TCHAR* GroupName) -> bool
 		{
 			for (const int32 I : Idx) if (I < 0) return false;
 			return true;
 		};
-		if (!Check(PositionIdx) || !Check(ScaleIdx) || !Check(RotIdx) || !Check(AlphaIdx) || !Check(ColorIdx))
+		bool bPropsOk = true;
+		if (!Check(PositionIdx, TEXT("position")))
 		{
+			bPropsOk = false;
+			UE_LOG(LogOpenSplat4D, Warning, TEXT("PLY import: missing position fields (x/y/z). Found fields:"));
+		}
+		if (!Check(ScaleIdx, TEXT("scale")))
+		{
+			bPropsOk = false;
+			UE_LOG(LogOpenSplat4D, Warning, TEXT("PLY import: missing scale fields (scale_0/1/2). Found fields:"));
+		}
+		if (!Check(RotIdx, TEXT("rotation")))
+		{
+			bPropsOk = false;
+			UE_LOG(LogOpenSplat4D, Warning, TEXT("PLY import: missing rotation fields (rot_0/1/2/3). Found fields:"));
+		}
+		if (!Check(AlphaIdx, TEXT("opacity")))
+		{
+			bPropsOk = false;
+			UE_LOG(LogOpenSplat4D, Warning, TEXT("PLY import: missing opacity field. Found fields:"));
+		}
+		if (!Check(ColorIdx, TEXT("color")))
+		{
+			bPropsOk = false;
+			UE_LOG(LogOpenSplat4D, Warning, TEXT("PLY import: missing color fields (f_dc_0/1/2). Found fields:"));
+		}
+		if (!bPropsOk)
+		{
+			// Dump all property names so the user / developer can see what the
+			// PLY actually contains and fix the parser or the export pipeline.
+			FString AllProps;
+			for (const auto& KV : Fields)
+			{
+				AllProps += FString::Printf(TEXT("  [%d] '%s'"), KV.second, ANSI_TO_TCHAR(KV.first.c_str()));
+			}
+			UE_LOG(LogOpenSplat4D, Warning, TEXT("PLY import: all %d properties in file:\n%s"), (int32)Fields.size(), *AllProps);
 			return Result;
 		}
 
@@ -295,12 +472,30 @@ namespace
 				1.0f / (1.0f + FMath::Exp(-Values[O + AlphaIdx[0]])));
 			Point.Color = SRGBToLinear(Color);
 
+			// Collect SH coefficients for view-dependent colour.
+			// Layout: [raw_f_dc_0, raw_f_dc_1, raw_f_dc_2, raw_opacity, f_rest_0..f_rest_N]
+			if (bHasSH)
+			{
+				const int32 N = (int32)RestIdx.size();
+				Point.SHRest.SetNum(4 + N);
+				Point.SHRest[0] = Values[O + ColorIdx[0]]; // raw f_dc_0
+				Point.SHRest[1] = Values[O + ColorIdx[1]]; // raw f_dc_1
+				Point.SHRest[2] = Values[O + ColorIdx[2]]; // raw f_dc_2
+				Point.SHRest[3] = Values[O + AlphaIdx[0]]; // raw opacity (logit)
+				for (int32 ri = 0; ri < N; ri++)
+				{
+					Point.SHRest[4 + ri] = Values[O + RestIdx[ri]];
+				}
+			}
+
 			// 3DGS import: temporal fields disabled.
 			Point.AnchorTime = 0.f;
 			Point.TimeVariance = 1e10f;
 			Point.Velocity = FVector3f::ZeroVector;
 			Point.bUseVelocity = false;
 		}
+		UE_LOG(LogOpenSplat4D, Log, TEXT("PLY import: parsed %d points (%d float properties each, %d fields total, SH degree %d, f_rest %d)."),
+			NumPoints, (int32)Stride, (int32)Fields.size(), SHDegree, (int32)RestIdx.size());
 		return Result;
 	}
 } // namespace

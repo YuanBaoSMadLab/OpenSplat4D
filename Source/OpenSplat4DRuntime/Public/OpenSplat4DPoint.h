@@ -73,6 +73,23 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "OpenSplat4D")
 	bool bUseVelocity = false;
 
+	/** Packed SH data from PLY: [raw_f_dc_0, raw_f_dc_1, raw_f_dc_2, raw_opacity, f_rest_0..f_rest_N].
+	 *  f_rest count = SHRest.Num() - 4. Empty for synthetic / scanned clouds. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "OpenSplat4D")
+	TArray<float> SHRest;
+
+	/** Number of SH bands beyond DC (0 = DC only, 1-3 = degree 1-3).
+	 *  Computed from the f_rest portion of SHRest. */
+	int32 GetSHBand() const
+	{
+		const int32 RestCount = FMath::Max(0, SHRest.Num() - 4);
+		const int32 PerChannel = RestCount / 3;
+		if (PerChannel >= 15) return 3;
+		if (PerChannel >= 8)  return 2;
+		if (PerChannel >= 3)  return 1;
+		return 0;
+	}
+
 	FOpenSplat4DPoint() = default;
 
 	FOpenSplat4DPoint(FVector3f InPos, FQuat4f InQuat, FVector3f InScale, FLinearColor InColor)
@@ -84,7 +101,8 @@ public:
 	{
 		return Position == Other.Position && Quat == Other.Quat && Scale == Other.Scale && Color == Other.Color
 			&& AnchorTime == Other.AnchorTime && TimeVariance == Other.TimeVariance
-			&& Velocity == Other.Velocity && bUseVelocity == Other.bUseVelocity;
+			&& Velocity == Other.Velocity && bUseVelocity == Other.bUseVelocity
+			&& SHRest == Other.SHRest;
 	}
 	bool operator!=(const FOpenSplat4DPoint& Other) const { return !(*this == Other); }
 
@@ -110,6 +128,7 @@ public:
 		Hash = HashCombine(Hash, GetTypeHash(ID.TimeVariance));
 		Hash = HashCombine(Hash, GetTypeHash(ID.Velocity));
 		Hash = HashCombine(Hash, GetTypeHash(ID.bUseVelocity));
+		for (const float V : ID.SHRest) { Hash = HashCombine(Hash, GetTypeHash(V)); }
 		return Hash;
 	}
 
@@ -124,6 +143,7 @@ public:
 		Ar << Point.TimeVariance;
 		Ar << Point.Velocity;
 		Ar << Point.bUseVelocity;
+		Ar << Point.SHRest;
 		return Ar;
 	}
 };
