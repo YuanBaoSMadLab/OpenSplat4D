@@ -1,10 +1,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "AssetTypeActions_Base.h"
 #include "Factories/Factory.h"
 #include "Misc/FeedbackContext.h"
 #include "EditorReimportHandler.h"
+#include "Factories/ReimportFactory.h"
 #include "AssetDefinitionDefault.h"
 #include "OpenSplat4DAssetFactory.generated.h"
 
@@ -14,7 +14,7 @@
  * Content Browser import dialog.
  */
 UCLASS()
-class UOpenSplat4DPointCloudAssetFactory : public UFactory
+class UOpenSplat4DPointCloudAssetFactory : public UReimportFactory
 {
 	GENERATED_BODY()
 
@@ -33,16 +33,12 @@ public:
 	virtual bool CanCreateNew() const override { return true; }
 	virtual bool ShouldShowInNewMenu() const override { return true; }
 	virtual bool FactoryCanImport(const FString& Filename) override;
-};
 
-/** Asset type actions so the cloud appears in the Content Browser "Create" menu. */
-class FOpenSplat4DPointCloudAssetActions : public FAssetTypeActions_Base
-{
-public:
-	virtual FText GetName() const override;
-	virtual FColor GetTypeColor() const override;
-	virtual UClass* GetSupportedClass() const override;
-	virtual uint32 GetCategories() override;
+	// [FIX] Reimport support so right-click -> Reimport on an existing asset
+	// reloads it from its source file (SourceFilePath) instead of staying empty.
+	virtual bool CanReimport(UObject* Obj, TArray<FString>& OutFilenames) override;
+	virtual void SetReimportPaths(UObject* Obj, const TArray<FString>& NewReimportPaths) override;
+	virtual EReimportResult::Type Reimport(UObject* Obj) override;
 };
 
 /** Asset definition so double-clicking a point cloud opens the OpenSplat4D editor. */

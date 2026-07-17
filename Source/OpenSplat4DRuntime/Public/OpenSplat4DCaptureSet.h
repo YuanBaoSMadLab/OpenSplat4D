@@ -19,8 +19,10 @@
  *
  * The final trained gaussian result is a *separate* asset (UOpenSplat4DPointCloud)
  * that can itself be dropped into the level (UActorFactory_OpenSplat4DPointCloud).
+ * This data asset is where dataset / on-disk locations are recorded -- the point
+ * cloud asset itself stays a pure preview object and does NOT store them.
  */
-UCLASS(BlueprintType, Blueprintable, meta = (DisplayName = "OpenSplat4D Capture Set"))
+UCLASS(BlueprintType, Blueprintable, meta = (DisplayName = "数据资产（OpenSplat4D）"))
 class OPENSPLAT4DRUNTIME_API UOpenSplat4DCaptureSet : public UDataAsset
 {
 	GENERATED_BODY()
@@ -53,6 +55,19 @@ public:
 	/** Absolute path of the cameras.txt file. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenSplat4D")
 	FString CamerasFile;
+
+	// ---- dataset locations (this is the data asset's job, not the point cloud's) --
+	/** Source colour-image set directory (used by sparse reconstruction / training). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D|数据集位置", DisplayName = "图片集目录")
+	FDirectoryPath ImagesDir;
+
+	/** Sparse-reconstruction (initial model) output directory. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D|数据集位置", DisplayName = "初次模型目录（稀疏重建）")
+	FDirectoryPath InitialModelDir;
+
+	/** Trained gaussian-model output directory. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D|数据集位置", DisplayName = "训练结果目录")
+	FDirectoryPath TrainedModelDir;
 
 	/** Optional preview thumbnail shown in the Content Browser. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenSplat4D")

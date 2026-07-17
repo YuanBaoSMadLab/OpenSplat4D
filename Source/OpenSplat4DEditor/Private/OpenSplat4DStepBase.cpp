@@ -10,6 +10,7 @@
 #include "Misc/PackageName.h"
 
 #include "Editor.h"
+#include "Selection.h"
 #include "GameFramework/Actor.h"
 
 // --- Headers required to faithfully drive the engine / render thread during an
@@ -31,6 +32,18 @@ DEFINE_LOG_CATEGORY(LogOpenSplat4DStep);
 	if (Arg.Contains(TEXT(" ")) || Arg.Contains(TEXT("\t")))
 	{
 		return FString::Printf(TEXT("\"%s\""), *Arg);
+	}
+	return Arg;
+}
+
+	// Inverse of OpenSplat4DQuoteArg: remove a single pair of surrounding double
+	// quotes. Used for the executable path we hand to CreateProc, which must not
+	// be quoted (see ExecuteCommand / FCommandExecuteRunnable::Run).
+	FString OpenSplat4DUnquoteArg(const FString& Arg)
+{
+	if (Arg.Len() >= 2 && Arg.StartsWith(TEXT("\"")) && Arg.EndsWith(TEXT("\"")))
+	{
+		return Arg.Mid(1, Arg.Len() - 2);
 	}
 	return Arg;
 }
@@ -162,9 +175,10 @@ DEFINE_LOG_CATEGORY(LogOpenSplat4DStep);
         FString BaseName;
         if (GEditor)
         {
-            for (FSelectionIterator It(*GEditor->GetSelectedActors()); It; ++It)
+            USelection* SelectedActors = GEditor->GetSelectedActors();
+            for (int32 SelIdx = 0; SelIdx < SelectedActors->Num(); ++SelIdx)
             {
-                if (AActor* A = Cast<AActor>(*It))
+                if (AActor* A = Cast<AActor>(SelectedActors->GetSelectedObject(SelIdx)))
                 {
                     if (A->HasAnyFlags(RF_Transient))
                     {
@@ -346,7 +360,10 @@ public:
 		// nullptr there: previously the stdout *read* handle was passed as the
 		// stdin argument, which triggered the Windows
 		// "PipeReadChild passed to CreateProc is not inheritable" warning.
-		ProcessHandle = FPlatformProcess::CreateProc(*ExecutePath, *Command, true, true, true, nullptr, 0, nullptr, PipeStdOutWrite, nullptr, PipeStdOutWrite);
+		// Defensive: ensure the executable path is not wrapped in quotes, which
+		// would trip WindowsPlatformProcess's `URL[0] != '"'` assertion.
+		const FString ResolvedExecutePath = OpenSplat4DUnquoteArg(ExecutePath);
+		ProcessHandle = FPlatformProcess::CreateProc(*ResolvedExecutePath, *Command, true, true, true, nullptr, 0, nullptr, PipeStdOutWrite, nullptr, PipeStdOutWrite);
 		if (ProcessHandle.IsValid())
 		{
 			FPlatformProcess::Sleep(0.01f);
@@ -396,6 +413,12 @@ public:
 
 void UOpenSplat4DStepBase::ExecuteCommand(FString ExecutePath, FString Command, bool bAsync, TFunction<void()> FinishedCallback)
 {
+	// FPlatformProcess::CreateProc (Windows) asserts `URL[0] != '"'`: the
+	// executable path passed as lpApplicationName must NOT be wrapped in quotes.
+	// Paths with spaces are handled correctly by Windows as lpApplicationName
+	// (only the command-line parameter string is space-delimited). Strip any
+	// surrounding quotes the caller may have added via OpenSplat4DQuoteArg.
+	ExecutePath = OpenSplat4DUnquoteArg(ExecutePath);
 	Worker = MakeShared<FCommandExecuteRunnable>(this, ExecutePath, Command, FinishedCallback);
 	if (bAsync)
 	{

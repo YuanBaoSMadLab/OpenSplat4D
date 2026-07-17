@@ -9,6 +9,11 @@
 
 #define LOCTEXT_NAMESPACE "OpenSplat4D"
 
+// Set when an OpenSplat4D point cloud editor opens; consumed by the
+// OpenSplat4D.Reload console command so a blank (0-point) asset can be
+// repopulated from disk without re-importing.
+TWeakPtr<FOpenSplat4DPointCloudEditor> GActiveOpenSplatEditor;
+
 const FName OpenSplat4DPointCloudEditorAppIdentifier = FName(TEXT("OpenSplat4DPointCloudEditorApp"));
 const FName FOpenSplat4DPointCloudEditor::ViewportTabId(TEXT("OpenSplat4DPointCloudEditor_Viewport"));
 const FName FOpenSplat4DPointCloudEditor::PropertiesTabId(TEXT("OpenSplat4DPointCloudEditor_Properties"));
@@ -32,6 +37,26 @@ void FOpenSplat4DPointCloudEditor::InitEditor(const EToolkitMode::Type Mode, con
 {
 	PointCloud = ObjectToEdit;
 	PointCloud->SetFlags(RF_Transactional);
+
+	// Remember this editor so the OpenSplat4D.Reload console command can target it.
+	GActiveOpenSplatEditor = SharedThis(this);
+
+	// The point cloud asset is a pure preview object. If it was opened with no
+	// points (e.g. an asset saved before the splat data was serialised, or a
+	// freshly created one), but we still know its source file, reload it so the
+	// preview is never silently empty. The on-disk file remains the source of truth.
+	if (PointCloud && PointCloud->GetPointCount() == 0 && !PointCloud->SourceFilePath.IsEmpty()
+		&& FPaths::FileExists(PointCloud->SourceFilePath))
+	{
+		const FString Ext = FPaths::GetExtension(PointCloud->SourceFilePath).ToLower();
+		if (Ext == TEXT("ply") || Ext == TEXT("4dgs"))
+		{
+			PointCloud->LoadFromFile(PointCloud->SourceFilePath);
+			UE_LOG(LogOpenSplat4D, Log,
+				TEXT("OpenSplat4D: 资产打开时点数为 0，已从源文件自动重载：%s -> 点数=%d"),
+				*PointCloud->SourceFilePath, PointCloud->GetPointCount());
+		}
+	}
 
 	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_OpenSplat4DPointCloudEditor_Layout_v1")
 		->AddArea

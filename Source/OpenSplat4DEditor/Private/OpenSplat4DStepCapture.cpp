@@ -234,10 +234,9 @@ void UOpenSplat4DStep_Capture::Capture()
 	else
 	{
 		const FString SetName = OpenSplat4DBuildCaptureSetName();
-		const FString SetWorkDir = GetDefault<UOpenSplat4DSettings>()->GetWorkDir(SetName);
-		WorkDir = SetWorkDir;
-		SetWorkDir(SetWorkDir);
-		CaptureSetAsset = OpenSplat4DCreateCaptureSet(SetName, SetWorkDir);
+        const FString SetWorkDir = GetDefault<UOpenSplat4DSettings>()->GetWorkDir(SetName);
+        WorkDir = SetWorkDir;
+        CaptureSetAsset = OpenSplat4DCreateCaptureSet(SetName, SetWorkDir);
 		if (CaptureSetAsset)
 		{
 			OpenSplat4DUpdateCaptureSet(CaptureSetAsset, SetWorkDir, ImageFiles, MaskDir, DepthDir, CamFile);
@@ -270,13 +269,14 @@ void UOpenSplat4DStep_Capture::ScanToPointCloud()
 	TArray<AActor*> Actors = SelectionActors;
 	if (Actors.Num() == 0 && GEditor)
 	{
-		for (FSelectionIterator It(*GEditor->GetSelectedActors()); It; ++It)
-		{
-			if (AActor* A = Cast<AActor>(*It))
-			{
-				Actors.AddUnique(A);
-			}
-		}
+        USelection* SelectedActors = GEditor->GetSelectedActors();
+        for (int32 SelIdx = 0; SelIdx < SelectedActors->Num(); ++SelIdx)
+        {
+            if (AActor* A = Cast<AActor>(SelectedActors->GetSelectedObject(SelIdx)))
+            {
+                Actors.AddUnique(A);
+            }
+        }
 	}
 
 	if (Actors.Num() == 0)

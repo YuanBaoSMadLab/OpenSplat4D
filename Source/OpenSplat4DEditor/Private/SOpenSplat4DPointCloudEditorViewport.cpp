@@ -36,6 +36,22 @@ void SOpenSplat4DPointCloudEditorViewport::Construct(const FArguments& InArgs)
 		}
 	}
 
+	// [DIAG] Print the truth on open so a blank preview is never a mystery:
+	// how many points the asset holds, whether a source file is recorded, and
+	// whether the billboard component that actually draws the splats exists.
+	if (UOpenSplat4DPointCloud* PC = Editor.Pin()->GetPointCloud())
+	{
+		UE_LOG(LogOpenSplat4D, Log,
+			TEXT("OpenSplat4D: editor opened point cloud '%s' -> pointCount=%d, sourceFile='%s', billboardComponent=%s"),
+			*PC->GetName(), PC->GetPointCount(), *PC->SourceFilePath,
+			PreviewComponent ? TEXT("valid") : TEXT("MISSING"));
+		if (PC->GetPointCount() == 0)
+		{
+			UE_LOG(LogOpenSplat4D, Warning,
+				TEXT("OpenSplat4D: this asset has 0 points. It will render blank until you re-import its source, or run:  OpenSplat4D.Reload <full_path_to_.ply>"));
+		}
+	}
+
 	SEditorViewport::FArguments ViewportArgs;
 	SEditorViewport::Construct(ViewportArgs);
 }

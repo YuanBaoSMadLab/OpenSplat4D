@@ -96,6 +96,7 @@ UOpenSplat4DPointCloud* UOpenSplat4DEditorLibrary::LoadSplatFile(const FString& 
 	{
 		Cloud->LoadFromFile(FileName);
 		bOk = Cloud->GetPointCount() > 0;
+		if (!bOk) { UE_LOG(LogOpenSplat4DStep, Warning, TEXT("OpenSplat4D: PLY 加载后点数为 0：%s"), *FileName); }
 	}
 	else if (Ext == TEXT("4dgs"))
 	{

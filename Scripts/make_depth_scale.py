@@ -74,6 +74,27 @@ def qvec2rotmat(qvec):
     )
 
 
+def _imread_unicode(path, flags=cv2.IMREAD_UNCHANGED):
+    """Unicode / non-ASCII path safe reader (Windows OpenCV fix).
+
+    cv2.imread() uses a narrow-character fopen and FAILS on paths with chars
+    outside the system ANSI codepage (e.g. Chinese project paths). Reading
+    raw bytes with numpy.fromfile + cv2.imdecode avoids that. Returns None if
+    the file is genuinely missing/broken.
+    """
+    if not path:
+        return None
+    try:
+        raw = np.fromfile(path, dtype=np.uint8)
+        if raw.size > 0:
+            dec = cv2.imdecode(raw, flags)
+            if dec is not None:
+                return dec
+    except Exception:
+        pass
+    return cv2.imread(path, flags)
+
+
 def get_scales(key, cameras, images, points3d_ordered, args):
     # [E2] Use the `images` argument consistently; no reliance on a global.
     image_meta = images[key]
@@ -105,7 +126,7 @@ def get_scales(key, cameras, images, points3d_ordered, args):
         printImmediately(f"[make_depth_scale] WARN skip {image_meta.name}: mono-depth '{mono_path}' missing")
         return None
 
-    invmonodepthmap = cv2.imread(mono_path, cv2.IMREAD_UNCHANGED)
+    invmonodepthmap = _imread_unicode(mono_path, cv2.IMREAD_UNCHANGED)
     if invmonodepthmap is None:
         printImmediately(f"[make_depth_scale] WARN skip {image_meta.name}: cannot read '{mono_path}'")
         return None
@@ -133,12 +154,25 @@ def get_scales(key, cameras, images, points3d_ordered, args):
         invmonodepth = cv2.remap(
             invmonodepthmap, maps[..., 0], maps[..., 1],
             interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
-        )[..., 0]
+        )
+        # [FIX] `maps[..., 0/1]` are 1-D, so cv2.remap returns a 1-D array of
+        # shape (M,); the previous trailing `[..., 0]` then collapsed it to a
+        # scalar (size 1) which, used as a mask against `invcolmapdepth` (size M),
+        # raised "boolean index did not match ... size M vs 1". Flatten to keep
+        # length M in every OpenCV return shape variant (1-D, (M,1), (1,M)).
+        invmonodepth = np.asarray(invmonodepth).reshape(-1)
 
         # Original "modify by italink" segmentation step, kept + made configurable.
         segmentation_threshold = args.segmentation_threshold
-        invcolmapdepth = invcolmapdepth[invmonodepth > segmentation_threshold]
-        invmonodepth = invmonodepth[invmonodepth > segmentation_threshold]
+        mask_seg = invmonodepth > segmentation_threshold
+        invcolmapdepth = invcolmapdepth[mask_seg]
+        invmonodepth = invmonodepth[mask_seg]
+
+        # [E3] Every point filtered out by segmentation -> no usable signal.
+        if invmonodepth.size == 0:
+            printImmediately(f"[make_depth_scale] WARN skip {image_meta.name}: "
+                             f"no valid depth after segmentation")
+            return None
 
         # Median / deviation scale fit (original logic).
         t_colmap = np.median(invcolmapdepth)

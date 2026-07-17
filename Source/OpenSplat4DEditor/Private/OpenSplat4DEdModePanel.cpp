@@ -34,6 +34,7 @@
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "Misc/PackagePath.h"
@@ -92,6 +93,10 @@ void SOpenSplat4DEdModePanel::Construct(const FArguments& InArgs)
 	{
 		StepCapture->CaptureSetAsset = Sets[0];
 		WorkDir = Sets[0]->WorkDirectory;
+		// Pre-select the same capture set as the reconstruction / training target
+		// so the downstream steps know which index asset to operate on.
+		StepSparseReconstruction->TargetCaptureSet = Sets[0];
+		StepGaussianSplatting->TargetCaptureSet = Sets[0];
 	}
 	else
 	{
@@ -160,6 +165,16 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildContent()
 				SNew(SButton)
 				.Text(FText::FromString(TEXT("新建捕获组")))
 				.OnClicked(this, &SOpenSplat4DEdModePanel::OnNewCaptureSetClicked)
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(4, 0, 0, 0)
+			[
+				SNew(SButton)
+				.Text(FText::FromString(TEXT("打开索引")))
+				.ToolTipText(FText::FromString(TEXT("打开当前选中的【捕获组】索引资产，查看 / 编辑其记录的文件位置与范围。")))
+				.OnClicked(this, &SOpenSplat4DEdModePanel::OnOpenCaptureSetClicked)
 			]
 		]
 
@@ -344,6 +359,15 @@ bool SOpenSplat4DEdModePanel::OnRequestTaskStart(UOpenSplat4DStepBase* Step)
 	if (Step == StepSparseReconstruction.Get() || Step == StepGaussianSplatting.Get())
 	{
 		CheckPath(S->GetColmapExecutablePath(), false, TEXT("Colmap 可执行文件"));
+		// Require an explicit target capture set (index asset) so the step never
+		// silently reconstructs the wrong data.
+		UOpenSplat4DCaptureSet* Target = (Step == StepSparseReconstruction.Get())
+			? StepSparseReconstruction->TargetCaptureSet
+			: StepGaussianSplatting->TargetCaptureSet;
+		if (!Target)
+		{
+			Missing.Add(TEXT("目标捕获组（索引资产）未选择：请先在对应步骤的【目标捕获组（索引资产）】中选择要重建 / 训练的捕获组（也可在面板顶部的【捕获组】下拉中选择，会自动同步）。未选择时不会执行，以避免重建错误的资产。"));
+		}
 	}
 	if (Step == StepGaussianSplatting.Get())
 	{
@@ -441,6 +465,9 @@ void SOpenSplat4DEdModePanel::OnCaptureSetChanged(const FAssetData& AssetData)
 	StepCapture->SetWorkDir(WorkDir);
 	StepSparseReconstruction->SetWorkDir(WorkDir);
 	StepGaussianSplatting->SetWorkDir(WorkDir);
+	// Keep the reconstruction / training target in sync with the panel picker.
+	StepSparseReconstruction->TargetCaptureSet = Set;
+	StepGaussianSplatting->TargetCaptureSet = Set;
 }
 
 FReply SOpenSplat4DEdModePanel::OnNewCaptureSetClicked()
@@ -458,7 +485,26 @@ FReply SOpenSplat4DEdModePanel::OnNewCaptureSetClicked()
 	StepCapture->SetWorkDir(WorkDir);
 	StepSparseReconstruction->SetWorkDir(WorkDir);
 	StepGaussianSplatting->SetWorkDir(WorkDir);
+	// The newly created capture set becomes the active reconstruction / training target.
+	StepSparseReconstruction->TargetCaptureSet = Set;
+	StepGaussianSplatting->TargetCaptureSet = Set;
 	Rebuild();
+	return FReply::Handled();
+}
+
+FReply SOpenSplat4DEdModePanel::OnOpenCaptureSetClicked()
+{
+	UOpenSplat4DCaptureSet* Set = StepCapture ? StepCapture->CaptureSetAsset : nullptr;
+	if (!Set)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok,
+			FText::FromString(TEXT("请先在顶部的【捕获组】下拉中选择一个索引资产，再点击【打开索引】。")));
+		return FReply::Handled();
+	}
+	if (GEditor)
+	{
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Set);
+	}
 	return FReply::Handled();
 }
 
@@ -876,15 +922,15 @@ FReply SOpenSplat4DEdModePanel::OnUseSelectedClicked()
 {
 	if (GEditor)
 	{
-		USelection* Selection = GEditor->GetSelectedActors();
-		for (FSelectionIterator It(*Selection); It; ++It)
-		{
-			if (AOpenSplat4DPointCloudActor* Actor = Cast<AOpenSplat4DPointCloudActor>(*It))
-			{
-				CurrentActor = Actor;
-				break;
-			}
-		}
+        USelection* Selection = GEditor->GetSelectedActors();
+        for (int32 SelIdx = 0; SelIdx < Selection->Num(); ++SelIdx)
+        {
+            if (AOpenSplat4DPointCloudActor* Actor = Cast<AOpenSplat4DPointCloudActor>(Selection->GetSelectedObject(SelIdx)))
+            {
+                CurrentActor = Actor;
+                break;
+            }
+        }
 	}
 	return FReply::Handled();
 }
@@ -943,13 +989,14 @@ FReply SOpenSplat4DEdModePanel::OnScanClicked()
 	TArray<AActor*> Actors;
 	if (GEditor)
 	{
-		for (FSelectionIterator It(*GEditor->GetSelectedActors()); It; ++It)
-		{
-			if (AActor* A = Cast<AActor>(*It))
-			{
-				Actors.AddUnique(A);
-			}
-		}
+        USelection* SelectedActors = GEditor->GetSelectedActors();
+        for (int32 SelIdx = 0; SelIdx < SelectedActors->Num(); ++SelIdx)
+        {
+            if (AActor* A = Cast<AActor>(SelectedActors->GetSelectedObject(SelIdx)))
+            {
+                Actors.AddUnique(A);
+            }
+        }
 	}
 
 	const EOpenSplat4DScanMode Mode = bCameraDepth ? EOpenSplat4DScanMode::CameraDepth : EOpenSplat4DScanMode::MeshSurface;

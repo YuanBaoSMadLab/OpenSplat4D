@@ -7,6 +7,10 @@
 #include "OpenSplat4DPointCloudActor.h"
 #include "OpenSplat4DSettings.h"
 #include "OpenSplat4DLocalization.h"
+#include "OpenSplat4DPointCloudEditor.h"
+#include "OpenSplat4DBillboardComponent.h"
+#include "SOpenSplat4DPointCloudEditorViewport.h"
+#include "HAL/IConsoleManager.h"
 
 #include "EditorModeRegistry.h"
 #include "ToolMenus.h"
@@ -90,11 +94,6 @@ void FOpenSplat4DEditorModule::StartupModule()
 	OpenSplat4DLocalization::RegisterString(TEXT("ScanDone {0} {1}"),
 		TEXT("扫描完成：{0} 个点，已保存为 UE 资产到 {1}（内容浏览器已定位；注意这是 .uasset 资产，不是捕获图片目录）。"));
 
-	// Register the point-cloud asset type actions so users can create / import assets.
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	TSharedRef<FOpenSplat4DPointCloudAssetActions> Actions = MakeShared<FOpenSplat4DPointCloudAssetActions>();
-	AssetTools.RegisterAssetTypeActions(Actions);
-
 	// Register the "OpenSplat4D" editor mode hosting the usage panel.
 	FEditorModeRegistry::Get().RegisterMode<FOpenSplat4DEdMode>(
 		FOpenSplat4DEdMode::EdID,
@@ -113,6 +112,55 @@ void FOpenSplat4DEditorModule::StartupModule()
 			OS4D_TEXT("OpenSplat4D"),
 			OS4D_TEXT("Paths to colmap / python / training repositories used by the capture -> reconstruct -> train pipeline."),
 			GetMutableDefault<UOpenSplat4DSettings>());
+	}
+
+	// --- Console command: reload a source file into the open point-cloud editor.
+	// This is the fastest way to triage a blank preview: open the (empty) asset,
+	// then run   OpenSplat4D.Reload C:/path/to/demo.ply   in the console. The
+	// editor's billboard component reads the cloud live each frame, so the splats
+	// appear immediately without re-importing or restarting.
+	{
+		static FAutoConsoleCommand CCmdReload(
+			TEXT("OpenSplat4D.Reload"),
+			TEXT("OpenSplat4D.Reload <path> : load a .ply/.4dgs/.spz file into the currently-open OpenSplat4D point cloud editor."),
+			FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+			{
+				if (Args.Num() < 1)
+				{
+					UE_LOG(LogOpenSplat4DEditor, Warning, TEXT("OpenSplat4D.Reload: usage: OpenSplat4D.Reload <full_path_to_file>"));
+					return;
+				}
+				TSharedPtr<FOpenSplat4DPointCloudEditor> Editor = GActiveOpenSplatEditor.Pin();
+				if (!Editor.IsValid())
+				{
+					UE_LOG(LogOpenSplat4DEditor, Warning, TEXT("OpenSplat4D.Reload: no OpenSplat4D point cloud editor is currently open."));
+					return;
+				}
+				UOpenSplat4DPointCloud* Cloud = Editor->GetPointCloud();
+				if (!Cloud)
+				{
+					UE_LOG(LogOpenSplat4DEditor, Warning, TEXT("OpenSplat4D.Reload: editor has no point cloud."));
+					return;
+				}
+				const FString Path = Args[0];
+				if (!FPaths::FileExists(Path))
+				{
+					UE_LOG(LogOpenSplat4DEditor, Warning, TEXT("OpenSplat4D.Reload: file not found: %s"), *Path);
+					return;
+				}
+				Cloud->LoadFromFile(Path);
+				Cloud->SourceFilePath = Path;
+				Cloud->MarkPackageDirty();
+				Cloud->OnPointsChanged.Broadcast();
+				if (TSharedPtr<SOpenSplat4DPointCloudEditorViewport> VP = Editor->GetViewport())
+				{
+					if (UOpenSplat4DBillboardComponent* Comp = VP->GetPreviewComponent())
+					{
+						Comp->RebuildBuffer();
+					}
+				}
+				UE_LOG(LogOpenSplat4DEditor, Log, TEXT("OpenSplat4D.Reload: loaded %s -> pointCount=%d"), *Path, Cloud->GetPointCount());
+			}));
 	}
 
 	UE_LOG(LogOpenSplat4DEditor, Log, TEXT("OpenSplat4D editor module started."));

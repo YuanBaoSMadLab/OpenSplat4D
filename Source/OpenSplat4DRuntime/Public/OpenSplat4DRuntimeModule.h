@@ -16,4 +16,4 @@ public:
 	virtual void ShutdownModule() override;
 };
 
-DECLARE_LOG_CATEGORY_EXTERN(LogOpenSplat4D, Log, All);
+OPENSPLAT4DRUNTIME_API DECLARE_LOG_CATEGORY_EXTERN(LogOpenSplat4D, Log, All);

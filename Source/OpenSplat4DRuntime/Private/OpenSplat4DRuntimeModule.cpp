@@ -2,7 +2,7 @@
 #include "Interfaces/IPluginManager.h"
 #include "ShaderCore.h"
 
-DEFINE_LOG_CATEGORY(LogOpenSplat4D);
+OPENSPLAT4DRUNTIME_API DEFINE_LOG_CATEGORY(LogOpenSplat4D);
 
 #define LOCTEXT_NAMESPACE "OpenSplat4D"
 

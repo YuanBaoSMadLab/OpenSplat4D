@@ -1,4 +1,4 @@
-#include "OpenSplat4DAssetFactory.h"
+﻿#include "OpenSplat4DAssetFactory.h"
 #include "OpenSplat4DEditorModule.h"
 #include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DPointCloudEditor.h"
@@ -9,7 +9,10 @@
 
 UOpenSplat4DPointCloudAssetFactory::UOpenSplat4DPointCloudAssetFactory()
 {
-	bCreateNew = true;
+	// [FIX] 瀵归綈鏁欏笀椤圭洰锛歜CreateNew 蹇呴』涓?false銆?
+	// 鑻ヨ涓?true锛孶E 鍦ㄦ煇浜涙儏鍐典笅浼氳蛋 FactoryCreateNew 鍒涘缓绌鸿祫浜э紝
+	// 瀵艰嚧瀵煎叆鐨?ply 鏍规湰涓嶄細琚姞杞斤紙Points 姘歌繙涓虹┖锛夈€?
+	bCreateNew = false;
 	bEditAfterNew = true;
 	bEditorImport = true;
 	SupportedClass = UOpenSplat4DPointCloud::StaticClass();
@@ -45,11 +48,12 @@ UObject* UOpenSplat4DPointCloudAssetFactory::FactoryCreateFile(
 
 	const FString Ext = FPaths::GetExtension(Filename).ToLower();
 	bool bOk = false;
-	if (Ext == TEXT("ply"))
-	{
-		Asset->LoadFromFile(Filename);
-		bOk = Asset->GetPointCount() > 0;
-	}
+		if (Ext == TEXT("ply"))
+		{
+			Asset->LoadFromFile(Filename);
+			bOk = Asset->GetPointCount() > 0;
+			UE_LOG(LogOpenSplat4DEditor, Log, TEXT("OpenSplat4D: 瀵煎叆 '%s' -> 鐐规暟=%d"), *Filename, Asset->GetPointCount());
+		}
 	else if (Ext == TEXT("4dgs"))
 	{
 		bOk = Asset->LoadFrom4DGS(Filename);
@@ -64,26 +68,6 @@ UObject* UOpenSplat4DPointCloudAssetFactory::FactoryCreateFile(
 	Asset->SourceFilePath = Filename;
 	Asset->MarkPackageDirty();
 	return Asset;
-}
-
-FText FOpenSplat4DPointCloudAssetActions::GetName() const
-{
-	return OS4D_TEXT("OpenSplat4D Point Cloud");
-}
-
-FColor FOpenSplat4DPointCloudAssetActions::GetTypeColor() const
-{
-	return FColor(120, 200, 255);
-}
-
-UClass* FOpenSplat4DPointCloudAssetActions::GetSupportedClass() const
-{
-	return UOpenSplat4DPointCloud::StaticClass();
-}
-
-uint32 FOpenSplat4DPointCloudAssetActions::GetCategories()
-{
-	return EAssetTypeCategories::Misc;
 }
 
 FText UAssetDefinition_OpenSplat4DPointCloud::GetAssetDisplayName() const
@@ -117,4 +101,48 @@ EAssetCommandResult UAssetDefinition_OpenSplat4DPointCloud::OpenAssets(const FAs
 	return EAssetCommandResult::Handled;
 }
 
+bool UOpenSplat4DPointCloudAssetFactory::CanReimport(UObject* Obj, TArray<FString>& OutFilenames)
+{
+	if (UOpenSplat4DPointCloud* Asset = Cast<UOpenSplat4DPointCloud>(Obj))
+	{
+		if (!Asset->SourceFilePath.IsEmpty())
+		{
+			OutFilenames.Add(Asset->SourceFilePath);
+			return true;
+		}
+	}
+	return false;
+}
+
+void UOpenSplat4DPointCloudAssetFactory::SetReimportPaths(UObject* Obj, const TArray<FString>& NewReimportPaths)
+{
+	if (UOpenSplat4DPointCloud* Asset = Cast<UOpenSplat4DPointCloud>(Obj))
+	{
+		if (NewReimportPaths.Num() > 0)
+		{
+			Asset->SourceFilePath = NewReimportPaths[0];
+		}
+	}
+}
+
+EReimportResult::Type UOpenSplat4DPointCloudAssetFactory::Reimport(UObject* Obj)
+{
+	UOpenSplat4DPointCloud* Asset = Cast<UOpenSplat4DPointCloud>(Obj);
+	if (!Asset)
+	{
+		return EReimportResult::Failed;
+	}
+	if (Asset->SourceFilePath.IsEmpty() || !FPaths::FileExists(Asset->SourceFilePath))
+	{
+		return EReimportResult::Failed;
+	}
+	Asset->LoadFromFile(Asset->SourceFilePath);
+	if (Asset->GetPointCount() > 0)
+	{
+		Asset->MarkPackageDirty();
+		UE_LOG(LogOpenSplat4DEditor, Log, TEXT("OpenSplat4D: Reimport %s -> points=%d"), *Asset->SourceFilePath, Asset->GetPointCount());
+		return EReimportResult::Succeeded;
+	}
+	return EReimportResult::Failed;
+}
 #undef LOCTEXT_NAMESPACE

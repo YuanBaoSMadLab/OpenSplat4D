@@ -6,7 +6,7 @@
 #include "OpenSplat4DPoint.h"
 #include "OpenSplat4DPointCloud.generated.h"
 
-DECLARE_LOG_CATEGORY_EXTERN(LogOpenSplat4D, Log, All);
+OPENSPLAT4DRUNTIME_API DECLARE_LOG_CATEGORY_EXTERN(LogOpenSplat4D, Log, All);
 
 class UOpenSplat4DPointCloud;
 
@@ -47,6 +47,10 @@ public:
 	int32 FeatureLevel = 64;
 
 	// ---- point access -------------------------------------------------------
+	// NOTE: This asset is a *pure preview* object. The on-disk dataset locations
+	// (source images / sparse reconstruction / trained-model output) live on the
+	// data asset (UOpenSplat4DCaptureSet), NOT here -- keeping this asset free of
+	// dataset bookkeeping means it only has to worry about rendering the splats.
 	void SetPoints(const TArray<FOpenSplat4DPoint>& InPoints, bool bReorder = true);
 	const TArray<FOpenSplat4DPoint>& GetPoints() const { return Points; }
 	int32 GetPointCount() const { return Points.Num(); }
@@ -55,6 +59,7 @@ public:
 	FRichCurve CalcFeatureCurve();
 	FBox CalcBounds();
 
+	// ---- (de)serialization to disk -----------------------------------------
 	/** Normalize a 0..1 playback fraction into the cloud's time axis. */
 	float FractionToTime(float Fraction) const;
 	/** Normalize a time value into 0..1 across the cloud's time axis. */
@@ -97,15 +102,22 @@ public:
 	EOpenSplat4DCompressionMethod GetCompressionMethod() const { return CompressionMethod; }
 	void SetCompressionMethod(EOpenSplat4DCompressionMethod Val) { CompressionMethod = Val; }
 
+	/** Auto-reload from the source file when the deserialised cloud is empty, so a
+	 *  stale / failed-import asset still previews its splats. Covers editor-open,
+	 *  drag-into-level, actor-spawn and cook load paths (unlike the editor-only
+	 *  InitEditor reload). */
+	virtual void PostLoad() override;
+
 private:
 	void Serialize(FArchive& Ar) override;
 
-	// [ENHANCEMENT] Default is Spz (not the raw-blob Zlib). In the reference
-	// GaussianSplattingRuntime the "Zlib" branch was in fact the Niantic SPZ path,
-	// so SPZ is the format its assets used by default. OpenSplat4D keeps the same
-	// efficient default while exposing the raw Zlib blob and None as explicit options.
+	// [Robustness] Default is None (raw, lossless TArray<FOpenSplat4DPoint> bytes).
+	// This guarantees a freshly imported / re-imported cloud round-trips with every
+	// point intact -- the previous Spz default could, under certain point counts,
+	// serialise an empty/short blob and reopen as a 0-point asset ("nothing displays").
+	// Spz / Zlib remain selectable for size-sensitive shipping builds.
 	UPROPERTY(EditAnywhere, Category = "OpenSplat4D")
-	EOpenSplat4DCompressionMethod CompressionMethod = EOpenSplat4DCompressionMethod::Spz;
+	EOpenSplat4DCompressionMethod CompressionMethod = EOpenSplat4DCompressionMethod::None;
 
 	UPROPERTY(Transient)
 	TArray<FOpenSplat4DPoint> Points;

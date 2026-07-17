@@ -60,6 +60,18 @@ static TAutoConsoleVariable<float> CVarOpenSplat4DMaxFeatureSize(
 // Empty vertex declaration for SV_VertexID-only draws.
 static FVertexDeclarationRHIRef GOpenSplatEmptyVertexDeclaration;
 
+// When 0, the splats draw as a pure overlay with no depth test (handy to confirm
+// the pipeline is alive even if depth/occlusion is misbehaving). Default 1 = correct.
+static TAutoConsoleVariable<int32> CVarOpenSplat4DDepthTest(
+	TEXT("r.OpenSplat4D.DepthTest"),
+	1,
+	TEXT("0 = draw splats ignoring the depth buffer (overlay); 1 = normal depth test."),
+	ECVF_RenderThreadSafe);
+
+// One-time diagnostics so a missing preview is easy to triage in the Output Log.
+static bool GOpenSplatLoggedEmpty = false;
+static bool GOpenSplatLoggedDraw = false;
+
 // ----------------------------------------------------------------------------
 // Scene view extension -- draws the splats *inside* the base pass render target
 // so the output is actually rasterized (draws outside a pass are dropped on
@@ -83,18 +95,31 @@ public:
 	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const override
 	{
 		UOpenSplat4DBillboardComponent* Comp = Component.Get();
-		if (!Comp || !Comp->PointCloud || Comp->PointCloud->GetPointCount() <= 0)
+		if (!Comp || !Comp->PointCloud)
 		{
 			return false;
 		}
-		// Only draw within the world that actually owns this component (skip
-		// material editors, thumbnail renderers, etc.).
-		UWorld* CompWorld = Comp->GetWorld();
-		UWorld* CtxWorld = Context.GetWorld();
-		if (CompWorld && CtxWorld && CompWorld != CtxWorld)
+		if (Comp->PointCloud->GetPointCount() <= 0)
 		{
+			// [FIX] Previously the "cloud is empty" warning lived inside
+			// PostRenderBasePassDeferred, which is only invoked when this method
+			// returns true -- so the warning could never fire for an empty cloud,
+			// leaving the user with a silent blank viewport. Emit it here instead.
+			static bool bLoggedEmptyOnce = false;
+			if (!bLoggedEmptyOnce)
+			{
+				bLoggedEmptyOnce = true;
+				UE_LOG(LogOpenSplat4D, Warning,
+					TEXT("OpenSplat4D: point cloud has 0 points -> splat extension inactive (blank preview). Re-import the source .ply/.4dgs, or run 'OpenSplat4D.Reload <path>' in the console."));
+			}
 			return false;
 		}
+		// Stay active for every view that includes this extension (level viewport,
+		// asset-editor preview, etc.). The per-component world transform keeps each
+		// cloud in its own space, and PostRenderBasePassDeferred already skips scene
+		// captures, so we no longer gate on Context.GetWorld() -- that check wrongly
+		// disabled rendering inside the asset-editor's preview scene (whose context
+		// world does not match the component's owning world).
 		return true;
 	}
 
@@ -111,6 +136,12 @@ void FOpenSplat4DSceneViewExtension::PostRenderBasePassDeferred_RenderThread(
 	UOpenSplat4DBillboardComponent* Comp = Component.Get();
 	if (!Comp || !Comp->PointCloud || Comp->PointCloud->GetPointCount() <= 0)
 	{
+		if (!GOpenSplatLoggedEmpty)
+		{
+			GOpenSplatLoggedEmpty = true;
+			UE_LOG(LogOpenSplat4D, Warning,
+				TEXT("OpenSplat4D: 渲染管线已触发，但点云为空（0 点）——预览空白通常是资产未装入点，请重新导入/重导入源文件。"));
+		}
 		return;
 	}
 
@@ -217,8 +248,15 @@ void FOpenSplat4DSceneViewExtension::PostRenderBasePassDeferred_RenderThread(
 			PSOInit.BoundShaderState.VertexDeclarationRHI = GOpenSplatEmptyVertexDeclaration;
 			PSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 			PSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-			PSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha>::GetRHI();
+		PSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha>::GetRHI();
+		if (CVarOpenSplat4DDepthTest.GetValueOnRenderThread() != 0)
+		{
 			PSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI();
+		}
+		else
+		{
+			PSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+		}
 		PSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
 
 		// Synchronise the PSO's render-target description with whatever RT the RDG
@@ -236,6 +274,13 @@ void FOpenSplat4DSceneViewExtension::PostRenderBasePassDeferred_RenderThread(
 			SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), *PassParameters);
 
 			// 6 vertices (2 triangles) per point, instanced over all points.
+			if (!GOpenSplatLoggedDraw)
+			{
+				GOpenSplatLoggedDraw = true;
+				UE_LOG(LogOpenSplat4D, Log,
+					TEXT("OpenSplat4D: 渲染管线已触发，正在绘制点云：点数=%d，深度测试=%s。"),
+					OutCount, CVarOpenSplat4DDepthTest.GetValueOnRenderThread() != 0 ? TEXT("开") : TEXT("关(叠加)"));
+			}
 			RHICmdList.DrawPrimitive(0, 2, OutCount);
 		});
 }

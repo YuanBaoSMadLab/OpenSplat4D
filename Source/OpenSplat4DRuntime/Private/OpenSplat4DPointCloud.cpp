@@ -1,10 +1,12 @@
-#include "OpenSplat4DPointCloud.h"
+﻿#include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DCompression.h"
 #include "Compression/Spz.h"   // [ENHANCEMENT] Niantic SPZ (4D-aware) compression
 
 #include "Algo/Sort.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "HAL/PlatformProcess.h"
+#include "HAL/FileManager.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 
@@ -76,6 +78,7 @@ FBox UOpenSplat4DPointCloud::CalcBounds()
 	return Bounds.ExpandBy(FVector(Points[0].Scale.Length()));
 }
 
+
 void UOpenSplat4DPointCloud::SetPoints(const TArray<FOpenSplat4DPoint>& InPoints, bool bReorder)
 {
 	Points = InPoints;
@@ -90,6 +93,49 @@ void UOpenSplat4DPointCloud::SetPoints(const TArray<FOpenSplat4DPoint>& InPoints
 }
 
 // ----------------------------------------------------------------------------
+void UOpenSplat4DPointCloud::PostLoad()
+
+{
+
+	Super::PostLoad();
+
+
+
+	// The on-disk source file is the source of truth. If the cloud came back
+
+	// empty after (de)serialisation -- e.g. an asset saved before the splat
+
+	// data was serialised, or a previously-failed import -- repopulate it so
+
+	// the preview is never silently blank. This fires on EVERY load path
+
+	// (opening the asset editor, dragging into a level, spawning an actor,
+
+	// cooking), unlike the editor-only InitEditor reload.
+
+	if (GetPointCount() == 0 && !SourceFilePath.IsEmpty() && FPaths::FileExists(SourceFilePath))
+
+	{
+
+		const FString Ext = FPaths::GetExtension(SourceFilePath).ToLower();
+
+		if (Ext == TEXT("ply") || Ext == TEXT("4dgs"))
+
+		{
+
+			LoadFromFile(SourceFilePath);
+
+			UE_LOG(LogOpenSplat4D, Log,
+
+				TEXT("OpenSplat4D: asset loaded with 0 points, auto-reloaded from source: %s -> pointCount=%d"),
+
+				*SourceFilePath, GetPointCount());
+
+		}
+
+	}
+
+}
 // 4D temporal math (faithful port of 4d-gaussian-splatting's get_marginal_t)
 // ----------------------------------------------------------------------------
 float UOpenSplat4DPointCloud::GetTimeWeight(float AnchorTime, float TimeVariance, float Time)
@@ -261,13 +307,22 @@ namespace
 
 TArray<FOpenSplat4DPoint> UOpenSplat4DPointCloud::LoadPointsFromPLY(FString InFilePath)
 {
-	std::ifstream IStream(TCHAR_TO_UTF8(*InFilePath), std::ios::binary);
-	if (!IStream.is_open())
+	// [FIX] Do NOT open the .ply via std::ifstream(const char*). On Windows that
+	// path overload uses the ANSI codepage, so any non-ASCII characters in the
+	// path (e.g. Chinese project names like "鎴戠殑椤圭洰3") get mangled and the
+	// file silently fails to open -> "Unable to open: .../point_cloud.ply" even
+	// though the file exists. Read the whole file through UE's wide-char-safe
+	// FFileHelper into a memory buffer, then parse that buffer.
+	TArray<uint8> Buffer;
+	if (!FFileHelper::LoadFileToArray(Buffer, *InFilePath))
 	{
 		UE_LOG(LogOpenSplat4D, Warning, TEXT("Unable to open: %s"), *InFilePath);
 		return {};
 	}
-	return ParseSplatFromStream(IStream);
+
+	std::string Data(reinterpret_cast<const char*>(Buffer.GetData()), static_cast<size_t>(Buffer.Num()));
+	std::istringstream Stream(Data);
+	return ParseSplatFromStream(Stream);
 }
 
 TArray<FOpenSplat4DPoint> UOpenSplat4DPointCloud::LoadPointsFromSPZ(FString InFilePath)
@@ -416,125 +471,95 @@ bool UOpenSplat4DPointCloud::LoadFrom4DGS(FString InFilePath)
 // ----------------------------------------------------------------------------
 void UOpenSplat4DPointCloud::Serialize(FArchive& Ar)
 {
+	// [FIX] 瀵归綈鏁欏笀 GaussianSplattingPointCloud::Serialize 鐨勭ǔ濡ョ粨鏋勶細
+	// 鍏?Super::Serialize锛堝啓/璇?UPROPERTY锛屽寘鎷?CompressionMethod锛夛紝
+	// 鍐嶆寜鍘嬬缉鏂瑰紡澶勭悊 Points銆傛敞鎰?Points 鏄?Transient锛屽繀椤荤敱鏈嚱鏁版墜鍔ㄥ簭鍒楀寲銆?
+	// 鍏抽敭淇锛氫笉鍐嶇淮鎶ょ嫭绔嬬殑 Count 鍙橀噺銆佷笉鍐嶇敤 Loaded 鏁扮粍 + 涓嶅尮閰嶅嵆娓呴浂锛?
+	// 鑰屾槸鍍忔暀甯堥偅鏍锋妸 SPZ/Zlib 鐩存帴瑙ｅ帇杩?Points锛岄伩鍏?Points 琚剰澶栨竻闆躲€?
+
+	// 淇濆瓨鍓嶅厛鍐冲畾鏈€缁堣惤鍦版柟寮忥紙鑻?SPZ 鍘嬬缉澶辫触鍒欐暣浣撳洖閫€涓?Zlib锛?
+	// 涓斿湪 Super::Serialize 涔嬪墠淇敼 CompressionMethod锛岀‘淇濈鐩樿褰曟纭級銆?
+	if (Ar.IsSaving() && GetCompressionMethod() == EOpenSplat4DCompressionMethod::Spz)
+	{
+		std::vector<uint8_t> TestBuf;
+		if (!Spz::compress(Points, 3, 1, TestBuf, /*bInclude4D=*/true))
+		{
+			UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: SPZ compression test failed; falling back to Zlib save."));
+			CompressionMethod = EOpenSplat4DCompressionMethod::Zlib;
+		}
+	}
+
 	Super::Serialize(Ar);
 
-	// [ENHANCEMENT] The reference GaussianSplattingRuntime.Serialize only had two
-	// branches (None / Zlib) where Zlib == the Niantic SPZ path. OpenSplat4D keeps
-	// both of those AND adds a dedicated, 4D-aware SPZ branch:
-	//   * None  -> raw TArray<FOpenSplat4DPoint> (lossless, largest)
-	//   * Zlib  -> whole-blob gzip of the raw TArray (FOpenSplat4DCompression)
-	//   * Spz   -> per-gaussian 64-byte fixed-point quantization + gzip, with the
-	//             4DGS temporal fields appended in an O4D4 block (Compression/Spz.h)
-	// All three are retained, so there is no reduction versus either the reference
-	// or the previous OpenSplat4D implementation.
-	int32 Count = Points.Num();
-	if (Ar.IsLoading())
-	{
-		Ar << Count;
-		Points.Reset();
-		Points.SetNum(Count);
+	const EOpenSplat4DCompressionMethod Method = GetCompressionMethod();
 
-		if (GetCompressionMethod() == EOpenSplat4DCompressionMethod::None)
-		{
-			for (int32 i = 0; i < Count; i++)
-			{
-				Ar << Points[i];
-			}
-		}
-		else if (GetCompressionMethod() == EOpenSplat4DCompressionMethod::Zlib)
+	if (Method == EOpenSplat4DCompressionMethod::None)
+	{
+		Ar << Points;
+	}
+	else if (Method == EOpenSplat4DCompressionMethod::Zlib)
+	{
+		if (Ar.IsLoading())
 		{
 			int32 RawSize = 0;
 			int32 CompressedSize = 0;
 			Ar << RawSize << CompressedSize;
-
 			TArray<uint8> Compressed;
 			Compressed.SetNum(CompressedSize);
 			Ar.Serialize(Compressed.GetData(), CompressedSize);
-
 			TArray<uint8> Raw;
 			if (!FOpenSplat4DCompression::Decompress(Compressed, Raw) || Raw.Num() != RawSize)
 			{
-				UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: failed to decompress point cloud."));
+				UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: Zlib point-cloud decompression failed."));
 				Points.Reset();
 				return;
 			}
-
 			FMemoryReader MemReader(Raw, true);
-			int32 StoredCount = 0;
-			MemReader << StoredCount;
-			if (StoredCount != Count)
-			{
-				UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: point count mismatch after decompression."));
-				Points.Reset();
-				return;
-			}
-			for (int32 i = 0; i < Count; i++)
-			{
-				MemReader << Points[i];
-			}
+			MemReader << Points;
 		}
-		else // Spz (Niantic, 4D-aware)
-		{
-			int32 CompressedSize = 0;
-			Ar << CompressedSize;
-
-			TArray<uint8> Compressed;
-			Compressed.SetNum(CompressedSize);
-			Ar.Serialize(Compressed.GetData(), CompressedSize);
-
-			std::vector<uint8_t> InBuf(Compressed.GetData(), Compressed.GetData() + CompressedSize);
-			TArray<FOpenSplat4DPoint> Loaded;
-			if (!Spz::decompress(InBuf, Loaded) || Loaded.Num() != Count)
-			{
-				UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: failed to decompress SPZ point cloud (count mismatch or error)."));
-				Points.Reset();
-				return;
-			}
-			Points = MoveTemp(Loaded);
-		}
-	}
-	else // Saving
-	{
-		Ar << Count;
-
-		if (GetCompressionMethod() == EOpenSplat4DCompressionMethod::None)
-		{
-			for (int32 i = 0; i < Count; i++)
-			{
-				Ar << Points[i];
-			}
-		}
-		else if (GetCompressionMethod() == EOpenSplat4DCompressionMethod::Zlib)
+		else
 		{
 			TArray<uint8> Raw;
 			{
 				FMemoryWriter MemWriter(Raw, true);
-				int32 RawCount = Count;
-				MemWriter << RawCount;
-				for (int32 i = 0; i < Count; i++)
-				{
-					MemWriter << Points[i];
-				}
+				MemWriter << Points;
 			}
-
 			TArray<uint8> Compressed;
 			if (!FOpenSplat4DCompression::Compress(Raw, Compressed))
 			{
-				UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: failed to compress point cloud."));
+				UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: Zlib point-cloud compression failed."));
 				return;
 			}
-
 			int32 RawSize = Raw.Num();
 			int32 CompressedSize = Compressed.Num();
 			Ar << RawSize << CompressedSize;
 			Ar.Serialize(Compressed.GetData(), CompressedSize);
 		}
-		else // Spz (Niantic, 4D-aware)
+	}
+	else // Spz (Niantic, 4D-aware)
+	{
+		if (Ar.IsLoading())
+		{
+			int32 CompressedSize = 0;
+			Ar << CompressedSize;
+			TArray<uint8> Compressed;
+			Compressed.SetNum(CompressedSize);
+			Ar.Serialize(Compressed.GetData(), CompressedSize);
+			std::vector<uint8_t> InBuf(Compressed.GetData(), Compressed.GetData() + CompressedSize);
+			if (!Spz::decompress(InBuf, Points))
+			{
+				UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: SPZ point-cloud decompression failed."));
+				Points.Reset();
+				return;
+			}
+			UE_LOG(LogOpenSplat4D, Log, TEXT("OpenSplat4D: asset deserialization done: pointCount=%d, method=Spz"), Points.Num());
+		}
+		else
 		{
 			std::vector<uint8_t> OutBuf;
 			if (!Spz::compress(Points, 3, 1, OutBuf, /*bInclude4D=*/true))
 			{
-				UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: failed to compress point cloud to SPZ."));
+				UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: SPZ point-cloud compression failed (pointCount=%d)."), Points.Num());
 				return;
 			}
 			int32 CompressedSize = static_cast<int32>(OutBuf.size());

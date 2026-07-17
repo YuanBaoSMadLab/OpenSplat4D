@@ -54,3 +54,7 @@ public:
 	TSharedPtr<class SOpenSplat4DPointCloudFeatureEditor> FeatureEditor;
 	TArray<uint32> SelectedIndices;
 };
+
+// Shared with the editor module so the OpenSplat4D.Reload console command can
+// target the currently-open point cloud editor. Defined in OpenSplat4DPointCloudEditor.cpp.
+extern TWeakPtr<FOpenSplat4DPointCloudEditor> GActiveOpenSplatEditor;

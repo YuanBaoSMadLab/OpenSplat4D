@@ -69,6 +69,10 @@ protected:
 	/** "New" button: create a fresh (empty) CaptureSet asset and make it active. */
 	FReply OnNewCaptureSetClicked();
 
+	/** "Open index" button: open the currently selected CaptureSet (index asset)
+	 *  in its asset editor so the user can view / edit its file locations. */
+	FReply OnOpenCaptureSetClicked();
+
 private:
 	FString WorkDir;
 	FString BaseWorkDir;

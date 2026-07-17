@@ -32,6 +32,10 @@ FVector UVtoOctahedron(FVector2D UV);
  *  path as one argument. Harmless for space-free tokens. */
 FString OpenSplat4DQuoteArg(const FString& Arg);
 
+/** Remove a single pair of surrounding double quotes (inverse of OpenSplat4DQuoteArg).
+ *  The executable path handed to FPlatformProcess::CreateProc must not be quoted. */
+FString OpenSplat4DUnquoteArg(const FString& Arg);
+
 /** Returns true if the given executable path can actually be launched: either an
  *  existing file on disk, or a bare command name resolvable on the system PATH.
  *  Used for a clear pre-flight dependency check (python / colmap) before the
@@ -221,10 +225,16 @@ class UOpenSplat4DStep_SparseReconstruction : public UOpenSplat4DStepBase
 {
 	GENERATED_BODY()
 public:
+	/** Which capture set (index asset) to reconstruct. Must be selected so the
+	 *  step operates on the right images / cameras; the panel auto-fills it from
+	 *  the top 【捕获组】 picker, but you can override it here. Null => blocked. */
+	UPROPERTY(EditAnywhere, Category = "目标", DisplayName = "目标捕获组（索引资产）")
+	TObjectPtr<UOpenSplat4DCaptureSet> TargetCaptureSet;
+
 	void Activate() override;
 	void Deactivate() override;
 
-	UFUNCTION(CallInEditor, meta = (DisplayPriority = 1, DisplayName = "稀疏重建", Tooltip = "运行 COLMAP 稀疏重建：特征提取→穷举匹配→映射→模型对齐，把【捕获】生成的图片变成稀疏点云和相机位姿，供下一步【高斯训练】使用。必须先完成【捕获】。"))
+	UFUNCTION(CallInEditor, meta = (DisplayPriority = 1, DisplayName = "稀疏重建", Tooltip = "运行 COLMAP 稀疏重建：特征提取→穷举匹配→映射→模型对齐，把【捕获】生成的图片变成稀疏点云和相机位姿，供下一步【高斯训练】使用。必须先完成【捕获】，并在【目标捕获组（索引资产）】中选择要重建的捕获组。"))
 	void Reconstruction();
 
 	UFUNCTION(CallInEditor, meta = (DisplayPriority = 2, DisplayName = "编辑 Colmap 配置", Tooltip = "用系统默认文本编辑器打开 COLMAP 的配置文件，可手动修改特征提取/匹配/映射等参数并保存；下次【稀疏重建】会使用修改后的参数。"))
@@ -274,10 +284,16 @@ class UOpenSplat4DStep_GaussianSplatting : public UOpenSplat4DStepBase
 {
 	GENERATED_BODY()
 public:
+	/** Which capture set (index asset) to train on. Must be selected so training
+	 *  knows which reconstruction to fit; the panel auto-fills it from the top
+	 *  【捕获组】 picker, but you can override it here. Null => blocked. */
+	UPROPERTY(EditAnywhere, Category = "目标", DisplayName = "目标捕获组（索引资产）")
+	TObjectPtr<UOpenSplat4DCaptureSet> TargetCaptureSet;
+
 	void Activate() override;
 	void Deactivate() override;
 
-	UFUNCTION(CallInEditor, meta = (DisplayPriority = 1, DisplayName = "训练", Tooltip = "运行 3DGS/4DGS 训练网络，把【稀疏重建】的结果拟合为大量高斯基元。耗时较长（默认约 7000 次迭代）。训练结束后会自动【重新加载】。勾选'训练 4D 模型'可训练带时间的动态模型。"))
+	UFUNCTION(CallInEditor, meta = (DisplayPriority = 1, DisplayName = "训练", Tooltip = "运行 3DGS/4DGS 训练网络，把【稀疏重建】的结果拟合为大量高斯基元（高斯系数）。耗时较长（默认约 7000 次迭代）。训练结束后会自动【重新加载】。勾选'训练 4D 模型'可训练带时间的动态模型。执行前必须在【目标捕获组（索引资产）】中选择要训练的捕获组。"))
 	void Train();
 
 	void Train(bool bAsync, TFunction<void()> FinishedCallback = {});
@@ -292,6 +308,15 @@ public:
 
 	UOpenSplat4DPointCloud* LoadPly(UObject* Outer, FName AssetName);
 
+	/** Automatically save the trained result as a native UE asset under
+	 *  /Game/OpenSplat4D/Models/<timestamp> (filling its data paths), so it shows
+	 *  up in the Content Browser as a first-class, re-usable asset. */
+	void SaveToContent();
+
+	/** Fill a point-cloud asset's 3 data paths (images / sparse / trained) and
+	 *  mode from the current capture set + work directory. Used by SaveToContent. */
+	void FillAssetPaths(UOpenSplat4DPointCloud* Asset);
+
 	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	void UpdateParams();
 
@@ -299,6 +324,13 @@ public:
 	/** When true, train a 4DGS model (uses the 4D repo + time-enabled flags); otherwise static 3DGS. */
 	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", DisplayName = "训练 4D 模型")
 	bool bTrain4D = false;
+
+	/** After training finishes, automatically save the result as a native UE
+	 *  asset under /Game/OpenSplat4D/Models/<timestamp> (and fill its data paths).
+	 *  When off, the result only lives in the transient preview and you must
+	 *  click 【导出资产】 to persist it. Default on. */
+	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", DisplayName = "训练后自动导入到 Content")
+	bool bAutoImportToContent = true;
 
 	UPROPERTY(VisibleAnywhere, Transient, Category = "输出", DisplayName = "训练结果")
 	TObjectPtr<UOpenSplat4DPointCloud> Result;

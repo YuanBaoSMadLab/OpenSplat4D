@@ -30,14 +30,18 @@
 #  [E3] runCommand() now PROPAGATES non-zero exit codes (sys.exit) so the UE
 #       orchestrator sees a real failure instead of a silent success. The
 #       reference only printed the code and kept going.
-#  [E4] `--no_conda` skips `conda activate` (for venv / pipx / system Python
-#       users); `--conda_env` still selects the env when activation is wanted.
+#  [E4] Python resolution is conda-FREE and distribution-safe: the training /
+#       clip subprocesses are launched with the plugin's OWN bundled Python
+#       (<Plugin>/ThirdParty/Python/python.exe) by default, with override via
+#       --python <path> or the OPENSPLAT4D_PYTHON env var. We never assume the
+#       end user has conda or a compatible system Python (the CUDA extensions
+#       _C.pyd are ABI-locked to the bundled interpreter).
 #  [E5] Timestamped, tagged logging so multiple pipeline steps are easy to
 #       follow in the UE output log.
 #  [E6] `--hlod_clip` convenience: recursively clip every produced point cloud
 #       under the work dir using the enhanced clip_model.py batch workflow.
-#  [E7] The 4D training branch selects the `gaussian_splatting_4d` env by
-#       default and forwards `--train` overrides verbatim (never reduced).
+#  [E7] The 4D training branch forwards `--train` overrides verbatim (never
+#       reduced); the python interpreter is resolved the same conda-free way.
 # ---------------------------------------------------------------------------
 
 import subprocess
@@ -46,6 +50,9 @@ import sys
 import argparse
 import shutil
 import time
+import importlib
+import importlib.util
+import tempfile
 
 
 def _stamp():
@@ -59,6 +66,20 @@ def printImmediately(*args, **kwargs):
 def _fail(msg):
     printImmediately("ERROR:", msg, file=sys.stderr)
     sys.exit(1)
+
+
+def _quote_path(p):
+    """Wrap a filesystem path in double quotes when it contains spaces so that
+    shell=True (cmd.exe) does not split it into multiple tokens. Already-quoted
+    paths are left untouched."""
+    s = str(p)
+    if not s:
+        return s
+    if s[0] == '"' and s[-1] == '"':
+        return s
+    if ' ' in s or '\t' in s:
+        return f'"{s}"'
+    return s
 
 
 class OpenSplat4DHelper:
@@ -76,8 +97,7 @@ class OpenSplat4DHelper:
         parser.add_argument('-a', '--aligner', help='extra model_aligner params')
         parser.add_argument('-t', '--train', help='extra train params')
         parser.add_argument('--4d', dest='fourd', action='store_true', help='train a 4D (spatio-temporal) gaussian model')
-        parser.add_argument('--conda_env', help='conda env to activate before training', default=None)
-        parser.add_argument('--no_conda', action='store_true', help='skip conda activation (use current python)')
+        parser.add_argument('--python', dest='python_override', help='explicit python interpreter to run training/clip (overrides auto-detection)', default=None)
         parser.add_argument('--clip', action='store_true', help='execute clip')
         parser.add_argument('--hlod_clip', action='store_true', help='recursively clip all point clouds under work dir')
         parser.add_argument('--clip_threshold', type=float, help='', default=0.8)
@@ -147,76 +167,134 @@ class OpenSplat4DHelper:
             sys.exit(process.returncode)
 
     def executeSparseReconstruction(self):
+        colmap = _quote_path(self.args.colmap)
         if os.path.exists("./sparse"):
             shutil.rmtree("./sparse")
         os.makedirs("./images", exist_ok=True)
         os.makedirs("./sparse/0", exist_ok=True)
         if os.path.exists("./database.db"):
             os.remove("./database.db")
-        command = f"{self.args.colmap} feature_extractor --database_path ./database.db --image_path ./images --ImageReader.camera_model SIMPLE_PINHOLE"
+        command = f"{colmap} feature_extractor --database_path ./database.db --image_path ./images --ImageReader.camera_model SIMPLE_PINHOLE"
         if os.path.exists("./masks"):
             command += " --ImageReader.mask_path ./masks "
         if self.args.extractor:
             command += str(self.args.extractor)
         self.runCommand(command)
 
-        command = f"{self.args.colmap} exhaustive_matcher --database_path ./database.db "
+        command = f"{colmap} exhaustive_matcher --database_path ./database.db "
         if self.args.matcher:
             command += str(self.args.matcher)
         self.runCommand(command)
 
-        command = f"{self.args.colmap} mapper --database_path ./database.db --image_path ./images --output_path ./sparse  --Mapper.fix_existing_images 1 "
+        # NOTE: COLMAP 4.x removed the legacy `--Mapper.fix_existing_images`
+        # option (it now models "frames"/"rigs"); since the plugin always runs
+        # the mapper from scratch (database.db + sparse/ are wiped above), the
+        # option is unnecessary and only causes "unrecognised option" errors.
+        command = f"{colmap} mapper --database_path ./database.db --image_path ./images --output_path ./sparse "
         if self.args.mapper:
             command += str(self.args.mapper)
         self.runCommand(command)
 
-        command = f"{self.args.colmap} model_aligner --input_path ./sparse/0 --output_path ./sparse/0 --ref_images_path ./cameras.txt --ref_is_gps 0 --alignment_type custom --alignment_max_error 3 "
+        command = f"{colmap} model_aligner --input_path ./sparse/0 --output_path ./sparse/0 --ref_images_path ./cameras.txt --ref_is_gps 0 --alignment_type custom --alignment_max_error 3 "
         if self.args.aligner:
             command += str(self.args.aligner)
         self.runCommand(command)
 
     def executeColmapView(self):
-        colmap_executable_path = self.args.colmap
-        colmap_directory = os.path.dirname(os.path.dirname(colmap_executable_path))
+        colmap_executable_path = _quote_path(self.args.colmap)
+        colmap_directory = os.path.dirname(os.path.dirname(self.args.colmap))
         plugins_path = os.path.join(colmap_directory, "plugins")
         env = {"QT_PLUGIN_PATH": plugins_path}
-        command = f"{self.args.colmap} gui --database_path ./database.db --image_path ./images --import_path ./sparse/0"
+        command = f"{colmap_executable_path} gui --database_path ./database.db --image_path ./images --import_path ./sparse/0"
         self.runCommand(command, env)
 
     def executeColmapEdit(self):
-        colmap_executable_path = self.args.colmap
-        colmap_directory = os.path.dirname(os.path.dirname(colmap_executable_path))
+        colmap_executable_path = _quote_path(self.args.colmap)
+        colmap_directory = os.path.dirname(os.path.dirname(self.args.colmap))
         plugins_path = os.path.join(colmap_directory, "plugins")
         env = {"QT_PLUGIN_PATH": plugins_path}
-        command = f"{self.args.colmap} gui --database_path ./database.db --image_path ./images "
+        command = f"{colmap_executable_path} gui --database_path ./database.db --image_path ./images "
         if os.path.exists("./masks"):
             command += " --ImageReader.mask_path ./masks "
         self.runCommand(command, env)
 
+    # [E9] Resolve the Python interpreter used to launch the actual training /
+    # clip subprocesses. We do NOT use `conda activate X && python`: a shipped
+    # plugin must not assume the end user has conda, nor that PATH's `python` is
+    # ABI-compatible with the CUDA extensions (_C.pyd) we compiled. Resolution
+    # order:
+    #   1) --python <path>        (explicit override from the C++ / CLI caller)
+    #   2) OPENSPLAT4D_PYTHON     (env var for power users)
+    #   3) <Plugin>/ThirdParty/Python/python.exe   (bundled with the plugin)
+    #   4) sys.executable         (the interpreter UE launched THIS helper with)
+    #   5) "python"               (last-resort PATH lookup)
+    # Every candidate is checked for existence before being used.
+    def _python_executable(self):
+        candidates = []
+        if self.args.python_override:
+            candidates.append(self.args.python_override)
+        env_var = os.environ.get("OPENSPLAT4D_PYTHON")
+        if env_var:
+            candidates.append(env_var)
+        # Bundled python lives at <Plugin>/ThirdParty/Python/python.exe.
+        # scriptDir = <Plugin>/Scripts, so go up one level then into ThirdParty/Python.
+        plugin_root = os.path.dirname(self.scriptDir)
+        candidates.append(os.path.join(plugin_root, "ThirdParty", "Python", "python.exe"))
+        candidates.append(sys.executable)
+        candidates.append("python")
+        for cand in candidates:
+            if cand and os.path.exists(cand):
+                return cand
+        # Fall through: let it fail loudly with a clear "not found" downstream.
+        return candidates[-1]
+
+    # [E9] Prepend the selected python's native runtime dirs (Library/bin, etc.)
+    # to PATH so torch's CUDA runtime DLLs and any shipped native deps are found
+    # when the compiled extension modules (_C.pyd, _C.cp310...) are loaded.
+    def _env_path_ext(self):
+        exe = self._python_executable()
+        env_dir = os.path.dirname(exe)
+        extra = []
+        for sub in (os.path.join(env_dir, "Library", "bin"),
+                    os.path.join(env_dir, "Scripts"),
+                    os.path.join(env_dir, "bin")):
+            if os.path.isdir(sub):
+                extra.append(sub)
+        if not extra:
+            return {}
+        cur = os.environ.get("PATH", "")
+        return {"PATH": os.pathsep.join(extra + [cur])}
+
     def executeGaussianSplatting(self):
-        # [E7] Pick the conda env: explicit override > bundled default.
-        # Both 3DGS and 4DGS training share one env ("opensplat4d") that is
-        # shipped/bundled with the plugin, so 3d and 4d no longer need separate
-        # envs. Override with --conda_env <name> if you keep your own env.
-        if self.args.no_conda:
-            conda_prefix = ""
-        elif self.args.conda_env:
-            conda_prefix = f"conda activate {self.args.conda_env} && "
-        else:
-            conda_prefix = "conda activate opensplat4d && "
+        # [E10/E11] Ensure the CUDA extensions are available. Preferred path:
+        # the plugin was built WITH precompiled extensions (build_plugin.bat
+        # ships the _C.pyd in the dedicated <plugin>/Extensions folder, OUTSIDE
+        # ThirdParty), so the end user needs NO compiler. Only if a .pyd is
+        # genuinely missing AND a toolchain is present do we self-build it here.
+        # Either way, make sure the Extension folder is on PYTHONPATH for the
+        # train.py child process.
+        self.ensure_extensions_built()
+
+        # [E9] Use the resolved interpreter directly instead of
+        # `conda activate ... && python`. See _python_executable for why.
+        python_exe = _quote_path(self._python_executable())
+        gaussian = _quote_path(self.args.gaussian)
+        script_dir = _quote_path(self.scriptDir)
+        env_ext = self._env_path_ext()
+        env_ext.update(self._ext_pypath_env())
 
         if self.args.fourd:
             # 4d-gaussian-splatting (Wu et al.) training entry point.
-            command = f"{conda_prefix}python {self.args.gaussian}/train.py -s . -m ./output "
+            command = f'{python_exe} {gaussian}/train.py -s . -m ./output '
         elif os.path.exists("./depths"):
-            command = (f"{conda_prefix}python {self.scriptDir}/make_depth_scale.py --base_dir . "
-                       f"--depths_dir ./depths && python {self.args.gaussian}/train.py -s . -m ./output --depths ./depths ")
+            command = (f'{python_exe} {script_dir}/make_depth_scale.py --base_dir . '
+                       f'--depths_dir ./depths && {python_exe} {gaussian}/train.py -s . -m ./output --depths ./depths ')
         else:
-            command = f"{conda_prefix}python {self.args.gaussian}/train.py -s . -m ./output "
+            command = f'{python_exe} {gaussian}/train.py -s . -m ./output '
 
         if self.args.train:
             command += str(self.args.train)
-        self.runCommand(command)
+        self.runCommand(command, env_ext)
 
     def executeGaussianSplattingClip(self):
         # [E1] Fully implemented (the reference never defined this method).
@@ -231,29 +309,363 @@ class OpenSplat4DHelper:
         if not os.path.isdir(mask_dir):
             _fail(f"mask dir not found: {mask_dir}")
         command = (
-            f"python {self.scriptDir}/clip_model.py"
-            f" --base_dir {self.args.workDir}"
-            f" --ply_path {ply_path}"
-            f" --output_ply_path {out_ply_path}"
-            f" --mask_dir {mask_dir}"
+            f'{_quote_path(self._python_executable())} {_quote_path(self.scriptDir)}/clip_model.py'
+            f" --base_dir {_quote_path(self.args.workDir)}"
+            f" --ply_path {_quote_path(ply_path)}"
+            f" --output_ply_path {_quote_path(out_ply_path)}"
+            f" --mask_dir {_quote_path(mask_dir)}"
             f" --mask_dilation {self.args.mask_dilation}"
             f" --mask_clip_threshold {self.args.clip_threshold}"
             f" --model_type {self.args.model_type}"
         )
-        self.runCommand(command)
+        self.runCommand(command, self._env_path_ext())
 
     # [E6] Batch clip convenience wiring into the enhanced clip_model batch mode.
     def executeHLODBatchClip(self):
         mask_dir = self.args.mask_dir or os.path.join(self.args.workDir, "masks")
         command = (
-            f"python {self.scriptDir}/clip_model.py"
-            f" --batch_root {self.args.workDir}"
+            f'{_quote_path(self._python_executable())} {_quote_path(self.scriptDir)}/clip_model.py'
+            f" --batch_root {_quote_path(self.args.workDir)}"
             f" --batch_mask_subdir {self.args.batch_mask_subdir}"
             f" --mask_dilation {self.args.mask_dilation}"
             f" --mask_clip_threshold {self.args.clip_threshold}"
             f" --model_type {self.args.model_type}"
         )
-        self.runCommand(command)
+        self.runCommand(command, self._env_path_ext())
+
+    # ---------------------------------------------------------------------------
+    # [E10/E11] CUDA EXTENSION AVAILABILITY (prebuilt preferred, self-build fallback)
+    # ---------------------------------------------------------------------------
+    # Preferred (distribution): the plugin is built WITH precompiled extensions
+    # by build_plugin.bat, which compiles diff_gaussian_rasterization/_C,
+    # simple_knn/_C, fused_ssim_cuda and copies the built packages into a
+    # DEDICATED, lightweight folder: <plugin>/Extensions/ (at the plugin ROOT,
+    # OUTSIDE ThirdParty). This keeps the compiled binaries OUT of the huge
+    # ThirdParty tree (esp. ThirdParty/Python) so an end user can update just
+    # the small Extensions/ folder without re-copying the heavy Python. The
+    # .pyd is a FATBIN covering RTX 30/40/50 (sm_86/90/120 + PTX), so a single
+    # build runs on every target GPU. At runtime we add <plugin>/Extensions to
+    # sys.path/PYTHONPATH so the shipped .pyd imports with NO compiler on the
+    # user's machine (no editable .pth required).
+    #
+    # Fallback (developer only): if a .pyd is genuinely missing AND a toolchain
+    # is present, we self-build it in-place with the same toolchain as
+    # build_ext.bat, then COPY it into <plugin>/Extensions:
+    #   - Visual Studio 2026 x64 native tools (vcvars64, MSVC 14.38 toolset,
+    #     because CUDA 12.8 rejects the VS2026 default 14.51 toolset)
+    #   - CUDA 12.8 on PATH
+    #   - pip install -e . (editable compat mode => _C.pyd lands next to the
+    #     package __init__.py)
+    # The build only happens when a .pyd is actually absent, so normal training
+    # is unaffected after the one-time compile.
+    # ---------------------------------------------------------------------------
+    _EXT_PACKAGES = ["diff_gaussian_rasterization", "simple_knn", "fused_ssim"]
+
+    def _locate_vs(self):
+        """Return the VS install root via vswhere, or None."""
+        vswhere = os.path.join(
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+            "Microsoft Visual Studio", "Installer", "vswhere.exe")
+        if not os.path.isfile(vswhere):
+            return None
+        try:
+            out = subprocess.run(
+                [vswhere, "-latest", "-products", "*",
+                 "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                 "-property", "installationPath"],
+                capture_output=True, text=True, shell=True)
+            path = out.stdout.strip()
+            return path or None
+        except Exception:
+            return None
+
+    def _locate_cuda(self):
+        """Return the CUDA toolkit root (dir holding bin/nvcc.exe), or None."""
+        for env_key in ("CUDA_PATH", "CUDA_HOME"):
+            env = os.environ.get(env_key)
+            if env and os.path.isfile(os.path.join(env, "bin", "nvcc.exe")):
+                return env
+        toolkit = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+        if os.path.isdir(toolkit):
+            # newest v12.x first (torch cu128 expects CUDA 12.8)
+            cands = sorted((d for d in os.listdir(toolkit) if d.lower().startswith("v")),
+                           reverse=True)
+            for c in cands:
+                nvcc = os.path.join(toolkit, c, "bin", "nvcc.exe")
+                if os.path.isfile(nvcc):
+                    return os.path.join(toolkit, c)
+        return None
+
+    def _package_location(self, pkg):
+        """Directory of a package's __init__.py (via find_spec, no import)."""
+        try:
+            spec = importlib.util.find_spec(pkg)
+        except Exception:
+            spec = None
+        if spec is None or spec.origin is None:
+            return None
+        origin = spec.origin
+        if origin.endswith("__init__.py") or origin.endswith("__init__.pyc"):
+            return os.path.dirname(origin)
+        # single-module package
+        return os.path.dirname(origin)
+
+    # ---------------------------------------------------------------------------
+    # [E11] DISTRIBUTION-SAFE EXTENSION RESOLUTION (no editable .pth needed)
+    # ---------------------------------------------------------------------------
+    # The compiled _C.pyd / fused_ssim_cuda.pyd are SHIPPED in a DEDICATED,
+    # lightweight folder: <plugin>/Extensions/ (plugin ROOT, OUTSIDE ThirdParty),
+    # built ahead of time by build_plugin.bat and packaged with the plugin. This
+    # means an end user does NOT need a C++ compiler / CUDA toolkit to train:
+    # the .pyd is already in the plugin. We only have to make sure <plugin>/
+    # Extensions is on sys.path / PYTHONPATH so `import diff_gaussian_rasterization`
+    # (and the others) find the in-place .pyd WITHOUT relying on the editable
+    # `pip install -e` .pth file. <gaussian>/submodules is kept ONLY as a
+    # fallback (e.g. a developer self-build); at runtime Extensions wins.
+    # ---------------------------------------------------------------------------
+    def _ext_deploy_dir(self):
+        """Dedicated prebuilt-extensions folder at the plugin ROOT, OUTSIDE
+        ThirdParty (e.g. <plugin>/Extensions). This is the PRIMARY location the
+        shipped plugin imports the compiled CUDA extensions from."""
+        return os.path.join(os.path.dirname(self.scriptDir), "Extensions")
+
+    def _ext_search_dirs(self):
+        """Directories that must be on sys.path/PYTHONPATH so the compiled
+        CUDA extension packages can be imported without an editable .pth.
+        The plugin-bundled <plugin>/Extensions is PRIMARY; the requested repo's
+        `submodules` and the bundled 3DGS `submodules` are fallbacks only."""
+        dirs = []
+        ext = self._ext_deploy_dir()
+        if os.path.isdir(ext) and ext not in dirs:
+            dirs.append(ext)
+        if self.args.gaussian:
+            d = os.path.join(self.args.gaussian, "submodules")
+            if os.path.isdir(d) and d not in dirs:
+                dirs.append(d)
+        plugin_root = os.path.dirname(self.scriptDir)
+        bundled = os.path.join(plugin_root, "ThirdParty", "gaussian-splatting", "submodules")
+        if os.path.isdir(bundled) and bundled not in dirs:
+            dirs.append(bundled)
+        return dirs
+
+    def _ensure_ext_on_path(self):
+        """Prepend the extension search dirs to THIS process's sys.path so the
+        in-process import probe (_package_built) can find the shipped .pyd
+        without an editable .pth. Idempotent."""
+        for d in self._ext_search_dirs():
+            if d not in sys.path:
+                sys.path.insert(0, d)
+
+    def _ext_pypath_env(self):
+        """Env dict that extends PYTHONPATH with the extension search dirs so
+        child processes (train.py) can import the shipped extensions too."""
+        dirs = self._ext_search_dirs()
+        if not dirs:
+            return {}
+        cur = os.environ.get("PYTHONPATH", "")
+        new = os.pathsep.join(dirs + ([cur] if cur else []))
+        return {"PYTHONPATH": new}
+
+    def _package_built(self, pkg):
+        """True if the package imports successfully (its compiled extension is
+        present and loadable). We probe by actually importing rather than
+        globbing for a .pyd, because the compiled module may be a top-level
+        module (e.g. fused_ssim_cuda) rather than a _C inside the package dir.
+        The real exception is logged so an import failure is never masked.
+        We also drop any stale partial import from sys.modules first so a
+        re-probe after the search dirs were added sees the real result."""
+        try:
+            sys.modules.pop(pkg, None)
+            importlib.import_module(pkg)
+            return True
+        except Exception as e:
+            printImmediately(f"    (import probe failed for {pkg}: {type(e).__name__}: {e})")
+            return False
+
+    def _copy_ext_pkg(self, src_pkg_dir, deploy_pkg_dir):
+        """Copy a built extension package dir (e.g. diff_gaussian_rasterization,
+        which contains __init__.py + _C.pyd) into the deploy Extensions folder,
+        replacing any previous copy. Falls back to merge-copy if replacement
+        fails (e.g. a file is locked by a running editor)."""
+        if not os.path.isdir(src_pkg_dir):
+            return False
+        try:
+            if os.path.isdir(deploy_pkg_dir):
+                shutil.rmtree(deploy_pkg_dir)
+            shutil.copytree(src_pkg_dir, deploy_pkg_dir)
+        except Exception as e:
+            printImmediately(f"    (copy {deploy_pkg_dir} failed: {type(e).__name__}: {e}; trying merge)")
+            try:
+                if not os.path.isdir(deploy_pkg_dir):
+                    os.makedirs(deploy_pkg_dir)
+                for item in os.listdir(src_pkg_dir):
+                    s = os.path.join(src_pkg_dir, item)
+                    d = os.path.join(deploy_pkg_dir, item)
+                    if os.path.isdir(s):
+                        shutil.copytree(s, d, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(s, d)
+            except Exception as e2:
+                printImmediately(f"    (merge copy also failed: {type(e2).__name__}: {e2})")
+                return False
+        return True
+
+    def _deploy_built_extensions(self):
+        """Copy the freshly built extension packages from the gaussian repo's
+        submodules into the plugin's dedicated Extensions/ folder (plugin ROOT,
+        OUTSIDE ThirdParty). Idempotent; only copies when a built .pyd exists.
+        This is what makes the shipped plugin import the prebuilt extensions
+        from the lightweight Extensions/ folder with no compiler."""
+        src_root = None
+        if self.args.gaussian:
+            cand = os.path.join(self.args.gaussian, "submodules")
+            if os.path.isdir(cand):
+                src_root = cand
+        if src_root is None:
+            return
+        deploy = self._ext_deploy_dir()
+        os.makedirs(deploy, exist_ok=True)
+        # diff_gaussian_rasterization (inner package dir with _C.pyd)
+        self._copy_ext_pkg(
+            os.path.join(src_root, "diff-gaussian-rasterization", "diff_gaussian_rasterization"),
+            os.path.join(deploy, "diff_gaussian_rasterization"))
+        # simple_knn (inner package dir with _C.pyd)
+        self._copy_ext_pkg(
+            os.path.join(src_root, "simple-knn", "simple_knn"),
+            os.path.join(deploy, "simple_knn"))
+        # fused_ssim: top-level fused_ssim_cuda*.pyd + the fused_ssim package dir
+        fused_dir = os.path.join(src_root, "fused-ssim")
+        if os.path.isdir(fused_dir):
+            for f in os.listdir(fused_dir):
+                if f.startswith("fused_ssim_cuda") and f.endswith(".pyd"):
+                    shutil.copy2(os.path.join(fused_dir, f), os.path.join(deploy, f))
+            self._copy_ext_pkg(
+                os.path.join(fused_dir, "fused_ssim"),
+                os.path.join(deploy, "fused_ssim"))
+
+    def _ensure_py_runtime_on_path(self):
+        """Prepend the bundled python's native runtime dirs (Library/bin, which
+        holds torch's CUDA runtime DLLs) to PATH for the in-process import probe
+        AND register them as a DLL search dir, so `import diff_gaussian_rasterization`
+        can actually load torch/cu128 instead of failing with a DLL-not-found
+        that would otherwise masquerade as 'extension not built'."""
+        ext = self._env_path_ext()
+        p = ext.get("PATH")
+        if p:
+            os.environ["PATH"] = p
+        exe = self._python_executable()
+        lib_bin = os.path.join(os.path.dirname(exe), "Library", "bin")
+        if os.path.isdir(lib_bin):
+            try:
+                os.add_dll_directory(lib_bin)
+            except Exception:
+                pass
+
+    def ensure_extensions_built(self):
+        if not (self.args.gaussian or self.args.fourd):
+            return
+        # [E11] Make the shipped in-place .pyd discoverable BEFORE probing, so a
+        # plugin that was built WITH precompiled extensions (build_plugin.bat)
+        # works for the end user with no compiler at all. Only if the probe
+        # still fails do we fall back to self-building (which needs VS+CUDA).
+        self._ensure_ext_on_path()
+        # Make sure the bundled python's native runtime dirs (torch CUDA DLLs,
+        # etc.) are on PATH for the in-process import probe and the build.
+        self._ensure_py_runtime_on_path()
+        printImmediately("checking CUDA extensions (prebuilt if shipped, self-build if missing) ...")
+        python = self._python_executable()
+        built_any = False
+        for pkg in self._EXT_PACKAGES:
+            if self._package_built(pkg):
+                printImmediately(f"  [ok]   {pkg} (imports OK)")
+                continue
+            # Resolve the build dir explicitly to the gaussian repo's submodules
+            # (where setup.py lives). Prefer <gaussian>/submodules/<pkg>; only
+            # fall back to the import-resolved location if --gaussian is absent.
+            if self.args.gaussian:
+                build_dir = os.path.join(self.args.gaussian, "submodules", pkg)
+            else:
+                pkg_dir = self._package_location(pkg)
+                build_dir = os.path.dirname(pkg_dir) if pkg_dir else None
+            if not build_dir or not os.path.isdir(build_dir):
+                printImmediately(f"  [skip] {pkg}: build dir not found ({build_dir})")
+                continue
+            printImmediately(f"  [build] {pkg} import failed -> compiling in {build_dir}")
+            self._build_extension(python, build_dir)
+            # Ship the freshly built package into the dedicated Extensions/
+            # folder (outside ThirdParty) so the running plugin imports it from
+            # there; this also keeps the self-build result consistent with the
+            # prebuilt distribution layout.
+            self._deploy_built_extensions()
+            built_any = True
+        if built_any:
+            for pkg in self._EXT_PACKAGES:
+                if not self._package_built(pkg):
+                    _fail(f"self-build finished but {pkg} still fails to import")
+            printImmediately("self-build verified: all extensions import OK")
+
+    def _build_extension(self, python, build_dir):
+        vs = self._locate_vs()
+        cuda = self._locate_cuda()
+        if not vs:
+            _fail("Visual Studio (MSVC) not found via vswhere, and the CUDA "
+                  "extensions are not prebuilt in this plugin. The shipped plugin "
+                  "should already contain the compiled _C.pyd files (built by "
+                  "build_plugin.bat). If you are an end user, please obtain a plugin "
+                  "build that includes the precompiled extensions; if you are the "
+                  "developer, run build_plugin.bat (or install the 'Desktop "
+                  "development with C++' workload for Visual Studio 2026).")
+        if not cuda:
+            _fail("CUDA toolkit (nvcc) not found, and the CUDA extensions are not "
+                  "prebuilt in this plugin. The shipped plugin should already contain "
+                  "the compiled _C.pyd files (built by build_plugin.bat against "
+                  "CUDA 12.8). If you are an end user, please obtain a plugin build "
+                  "that includes the precompiled extensions; if you are the developer, "
+                  "install CUDA 12.8 and re-run build_plugin.bat.")
+        vcvars = os.path.join(vs, "VC", "Auxiliary", "Build", "vcvars64.bat")
+        # Build for RTX 20/30/40 (8.6/9.0) plus PTX for RTX 50 (12.0). Override
+        # with OPENSPLAT4D_CUDA_ARCHS if a different mix is needed.
+        archs = os.environ.get("OPENSPLAT4D_CUDA_ARCHS", "8.6;9.0;12.0+PTX")
+        # IMPORTANT: write a MULTI-LINE build script (mirroring build_ext.bat).
+        # A single-line `cmd /c "call vcvars && set PATH=x;%PATH% && ..."` expands
+        # %PATH% UP FRONT (before vcvars runs), which clobbers the MSVC bin that
+        # vcvars adds -> `cl.exe` disappears from PATH -> ninja fails with
+        # "CreateProcess failed / The system cannot find the file specified".
+        # With separate lines, %PATH% is re-expanded per line, so the vcvars-added
+        # MSVC path is preserved and cl.exe is found.
+        bat_lines = [
+            "@echo off",
+            "setlocal",
+            f'call "{vcvars}" -vcvars_ver=14.38.33130',
+            "if errorlevel 1 exit /b 1",
+            f'set "CUDA12={cuda}"',
+            "set PATH=%CUDA12%\\bin;%PATH%",
+            "set CUDA_PATH=%CUDA12%",
+            "set CUDA_HOME=%CUDA12%",
+            "set DISTUTILS_USE_SDK=1",
+            "set MSSdk=1",
+            f'set "TORCH_CUDA_ARCH_LIST={archs}"',
+            f'cd /d "{build_dir}"',
+            f'"{python}" -m pip install -e . --no-build-isolation --no-deps '
+            f'--config-settings editable_mode=compat',
+            "if errorlevel 1 exit /b 1",
+            "endlocal",
+        ]
+        bat = os.path.join(build_dir, "_opensplat4d_build_tmp.bat")
+        with open(bat, "w") as f:
+            f.write("\n".join(bat_lines) + "\n")
+        # runCommand honors cwd=self.args.workDir; point it at the build dir so
+        # the editable install resolves the right pyproject.toml, then restore.
+        prev_workdir = self.args.workDir
+        self.args.workDir = build_dir
+        try:
+            self.runCommand(f'"{bat}"', self._env_path_ext())
+        finally:
+            self.args.workDir = prev_workdir
+            try:
+                os.remove(bat)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
