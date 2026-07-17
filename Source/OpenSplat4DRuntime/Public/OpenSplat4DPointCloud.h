@@ -116,6 +116,9 @@ private:
 
 	void Serialize(FArchive& Ar) override;
 
+	/** Serialize SHRest arrays with a version guard (backward-compat with old assets). */
+	void SerializeSHRest(FArchive& Ar);
+
 	// [Robustness] Default is None (raw, lossless TArray<FOpenSplat4DPoint> bytes).
 	// This guarantees a freshly imported / re-imported cloud round-trips with every
 	// point intact -- the previous Spz default could, under certain point counts,

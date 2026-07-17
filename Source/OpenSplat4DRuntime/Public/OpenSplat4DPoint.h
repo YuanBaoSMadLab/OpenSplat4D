@@ -132,7 +132,8 @@ public:
 		return Hash;
 	}
 
-	/** Serialize a single point field-by-field. Used by the custom .4dgs binary format. */
+	/** Serialize a single point (core fields only; SHRest is serialised separately
+	 *  by UOpenSplat4DPointCloud::Serialize for backward compat with old assets). */
 	friend FArchive& operator<<(FArchive& Ar, FOpenSplat4DPoint& Point)
 	{
 		Ar << Point.Position;
@@ -143,7 +144,6 @@ public:
 		Ar << Point.TimeVariance;
 		Ar << Point.Velocity;
 		Ar << Point.bUseVelocity;
-		Ar << Point.SHRest;
 		return Ar;
 	}
 };

@@ -389,7 +389,7 @@ namespace
 			else break; // Stop at first missing f_rest — the PLY lists them contiguously.
 		}
 		const bool bHasSH = !RestIdx.empty();
-		const int32 SHDegree = bHasSH ? (RestIdx.Num() / 3 >= 15 ? 3 : RestIdx.Num() / 3 >= 8 ? 2 : 1) : 0;
+		const int32 SHDegree = bHasSH ? ((int32)RestIdx.size() / 3 >= 15 ? 3 : (int32)RestIdx.size() / 3 >= 8 ? 2 : 1) : 0;
 
 		// [FIX] Replace silent return with diagnostic so a 65 MB import that
 		// produces a 1 KB .uasset is immediately debuggable. Log every property
@@ -662,18 +662,80 @@ bool UOpenSplat4DPointCloud::LoadFrom4DGS(FString InFilePath)
 }
 
 // ----------------------------------------------------------------------------
+// SHRest backward-compatible serialization helper
+// ----------------------------------------------------------------------------
+namespace
+{
+	// Magic guard written before the SHRest block so old assets (without SH data)
+	// don't crash when loaded with the new code.
+	constexpr uint32 GOPEN_SHREST_GUARD = 0x4F534844; // "OSHD"
+} // namespace
+
+void UOpenSplat4DPointCloud::SerializeSHRest(FArchive& Ar)
+{
+	const uint32 Guard = GOPEN_SHREST_GUARD;
+
+	if (Ar.IsSaving())
+	{
+		// Check if any point has SH data.
+		bool bAnySH = false;
+		for (const FOpenSplat4DPoint& P : Points)
+		{
+			if (P.SHRest.Num() > 0) { bAnySH = true; break; }
+		}
+		Ar << const_cast<uint32&>(Guard);
+		Ar << bAnySH;
+		if (bAnySH)
+		{
+			for (const FOpenSplat4DPoint& P : Points)
+			{
+				Ar << const_cast<TArray<float>&>(P.SHRest);
+			}
+		}
+	}
+	else if (Ar.IsLoading())
+	{
+		// Peek at the next 4 bytes. If they match the guard, read SHRest data.
+		// If not, this is an old asset – leave SHRest empty (safe default).
+		const int64 PosBefore = Ar.Tell();
+		const int64 TotalSize = Ar.TotalSize();
+		if (PosBefore >= TotalSize)
+		{
+			return; // end of archive, old format
+		}
+		uint32 Test = 0;
+		Ar << Test;
+		if (Test == Guard)
+		{
+			bool bAnySH = false;
+			Ar << bAnySH;
+			if (bAnySH)
+			{
+				for (FOpenSplat4DPoint& P : Points)
+				{
+					Ar << P.SHRest;
+				}
+			}
+		}
+		else
+		{
+			// Old format: seek back. The 4 bytes we read were not a guard;
+			// they belong to whatever comes after this block (nothing in most
+			// cases — old assets end after Points). Seek to EOF so further
+			// reads fail gracefully rather than interpreting garbage data.
+			Ar.Seek(PosBefore);
+		}
+	}
+}
+
+// ----------------------------------------------------------------------------
 // Asset serialization
 // ----------------------------------------------------------------------------
 void UOpenSplat4DPointCloud::Serialize(FArchive& Ar)
 {
-	// [FIX] 瀵归綈鏁欏笀 GaussianSplattingPointCloud::Serialize 鐨勭ǔ濡ョ粨鏋勶細
-	// 鍏?Super::Serialize锛堝啓/璇?UPROPERTY锛屽寘鎷?CompressionMethod锛夛紝
-	// 鍐嶆寜鍘嬬缉鏂瑰紡澶勭悊 Points銆傛敞鎰?Points 鏄?Transient锛屽繀椤荤敱鏈嚱鏁版墜鍔ㄥ簭鍒楀寲銆?
-	// 鍏抽敭淇锛氫笉鍐嶇淮鎶ょ嫭绔嬬殑 Count 鍙橀噺銆佷笉鍐嶇敤 Loaded 鏁扮粍 + 涓嶅尮閰嶅嵆娓呴浂锛?
-	// 鑰屾槸鍍忔暀甯堥偅鏍锋妸 SPZ/Zlib 鐩存帴瑙ｅ帇杩?Points锛岄伩鍏?Points 琚剰澶栨竻闆躲€?
-
-	// 淇濆瓨鍓嶅厛鍐冲畾鏈€缁堣惤鍦版柟寮忥紙鑻?SPZ 鍘嬬缉澶辫触鍒欐暣浣撳洖閫€涓?Zlib锛?
-	// 涓斿湪 Super::Serialize 涔嬪墠淇敼 CompressionMethod锛岀‘淇濈鐩樿褰曟纭級銆?
+	// Before saving with Spz, test-compress to catch failures early and fall
+	// back to Zlib, updating CompressionMethod BEFORE Super::Serialize writes it.
+	// Points are Transient — manually serialised below in three paths.
 	if (Ar.IsSaving() && GetCompressionMethod() == EOpenSplat4DCompressionMethod::Spz)
 	{
 		std::vector<uint8_t> TestBuf;
@@ -691,6 +753,7 @@ void UOpenSplat4DPointCloud::Serialize(FArchive& Ar)
 	if (Method == EOpenSplat4DCompressionMethod::None)
 	{
 		Ar << Points;
+		SerializeSHRest(Ar);
 	}
 	else if (Method == EOpenSplat4DCompressionMethod::Zlib)
 	{
@@ -762,4 +825,5 @@ void UOpenSplat4DPointCloud::Serialize(FArchive& Ar)
 			Ar.Serialize(OutBuf.data(), OutBuf.size());
 		}
 	}
+
 }

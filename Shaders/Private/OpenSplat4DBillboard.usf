@@ -102,14 +102,13 @@ float EvalSH(float f_dc, int shBase, float3 dir, int deg)
 	return result;
 }
 
-float4 EvalSHColour(int5 shOffsets, float3 dir, int deg)
+float4 EvalSHColour(int dcBase, int rBase, int gBase, int bBase, float3 dir, int deg)
 {
-	// shOffsets: base for DC/opacity slot, then R, G, B f_rest bases
-	float4 dc = Points[shOffsets.x];  // (f_dc_r, f_dc_g, f_dc_b, raw_opacity)
+	float4 dc = Points[dcBase];  // (f_dc_r, f_dc_g, f_dc_b, raw_opacity)
 
-	float r = EvalSH(dc.x, shOffsets.y, dir, deg);
-	float g = EvalSH(dc.y, shOffsets.z, dir, deg);
-	float b = EvalSH(dc.z, shOffsets.w, dir, deg);
+	float r = EvalSH(dc.x, rBase, dir, deg);
+	float g = EvalSH(dc.y, gBase, dir, deg);
+	float b = EvalSH(dc.z, bBase, dir, deg);
 
 	float sig_r = 1.0 / (1.0 + exp(-r));
 	float sig_g = 1.0 / (1.0 + exp(-g));
@@ -203,8 +202,7 @@ FSplatVOut MainVS(uint VertexID : SV_VertexID, uint InstanceID : SV_InstanceID)
 		float3 viewDir = normalize(CameraPos.xyz - worldPos);
 		// SH data: slot 5 = (f_dc_r, f_dc_g, f_dc_b, raw_opacity)
 		// R f_rest at slot 6, G at slot 10, B at slot 14 (4 float4s each)
-		int5 shOffsets = int5(base + 5, base + 6, base + 10, base + 14, 0);
-		color = EvalSHColour(shOffsets, viewDir, SHDegree);
+		color = EvalSHColour(base + 5, base + 6, base + 10, base + 14, viewDir, SHDegree);
 	}
 
 	float2 corner = QuadCorner(VertexID);
