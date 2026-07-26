@@ -4,9 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "EditorViewportClient.h"
-#include "SAdvancedPreviewDetailsTab.h"
 #include "SEditorViewport.h"
-#include "GaussianSplatAssetViewport.generated.h"
 
 class UGaussianSplatAsset;
 class AGaussianSplatActor;
@@ -19,17 +17,11 @@ class FAdvancedPreviewScene;
 class FGaussianSplatAssetViewportClient : public FEditorViewportClient
 {
 public:
-	FGaussianSplatAssetViewportClient(FEditorViewportClient* InParentClient = nullptr);
+	FGaussianSplatAssetViewportClient(FPreviewScene* InPreviewScene = nullptr);
 	virtual ~FGaussianSplatAssetViewportClient();
-
-	//~ Begin FViewportClient Interface
-	virtual void Draw(FViewport* Viewport, FCanvas* Canvas) override;
-	virtual FLinearColor GetBackgroundColor() const override;
-	//~ End FViewportClient Interface
 
 	//~ Begin FEditorViewportClient Interface
 	virtual bool ShouldOrbitCamera() const override { return true; }
-	virtual bool CanSetWidgetMode(UE::Widget::EWidgetMode NewMode) const override { return false; }
 	virtual void Tick(float DeltaSeconds) override;
 	//~ End FEditorViewportClient Interface
 
@@ -63,7 +55,6 @@ public:
 
 	//~ Begin SEditorViewport Interface
 	virtual TSharedRef<FEditorViewportClient> MakeEditorViewportClient() override;
-	virtual TSharedPtr<SWidget> MakeViewportToolbar() override;
 	//~ End SEditorViewport Interface
 
 	/** Set the asset to preview */

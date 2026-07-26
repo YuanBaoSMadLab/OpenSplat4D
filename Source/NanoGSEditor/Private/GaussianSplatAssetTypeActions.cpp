@@ -2,6 +2,7 @@
 
 #include "GaussianSplatAssetTypeActions.h"
 #include "GaussianSplatAsset.h"
+#include "GaussianSplatAssetEditor.h"
 #include "EditorReimportHandler.h"
 #include "ToolMenuSection.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -132,9 +133,17 @@ void FAssetTypeActions_GaussianSplatAsset::GetActions(const TArray<UObject*>& In
 
 void FAssetTypeActions_GaussianSplatAsset::OpenAssetEditor(const TArray<UObject*>& InObjects, TSharedPtr<IToolkitHost> EditWithinLevelEditor)
 {
-	// For now, just open the default property editor
-	// In the future, we could create a custom editor with 3D preview
-	FAssetTypeActions_Base::OpenAssetEditor(InObjects, EditWithinLevelEditor);
+	// Open custom asset editor with 3D viewport + details panel
+	EToolkitMode::Type Mode = EditWithinLevelEditor.IsValid() ? EToolkitMode::WorldCentric : EToolkitMode::Standalone;
+
+	for (UObject* Object : InObjects)
+	{
+		if (UGaussianSplatAsset* Asset = Cast<UGaussianSplatAsset>(Object))
+		{
+			TSharedRef<FGaussianSplatAssetEditor> NewEditor = MakeShareable(new FGaussianSplatAssetEditor());
+			NewEditor->InitGaussianSplatAssetEditor(Mode, EditWithinLevelEditor, Asset);
+		}
+	}
 }
 
 void FAssetTypeActions_GaussianSplatAsset::ExecuteReimport(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects)

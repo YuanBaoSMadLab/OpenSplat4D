@@ -419,6 +419,11 @@ private:
 	float LODErrorThreshold = 0.03f;
 	bool bEnableFrustumCulling = true;
 
+	/** Shadow parameters */
+	bool bCastShadow = false;
+	uint8 ShadowProxyDetail = 1;  // 0=Box, 1=Convex, 2=Full
+	float ShadowIntensity = 1.0f;
+
 #if WITH_EDITOR
 	/** Cached hit proxy created in CreateHitProxies, used for editor viewport click selection. */
 	HHitProxy* SelectionHitProxy = nullptr;

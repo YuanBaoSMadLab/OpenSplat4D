@@ -7,9 +7,6 @@
 #include "AdvancedPreviewScene.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
-#include "Components/DirectionalLightComponent.h"
-#include "Components/SkyLightComponent.h"
-#include "Components/ExponentialHeightFogComponent.h"
 
 #define LOCTEXT_NAMESPACE "GaussianSplatAssetViewport"
 
@@ -17,53 +14,36 @@
 // FGaussianSplatAssetViewportClient
 //////////////////////////////////////////////////////////////////////////
 
-FGaussianSplatAssetViewportClient::FGaussianSplatAssetViewportClient(FEditorViewportClient* InParentClient)
+FGaussianSplatAssetViewportClient::FGaussianSplatAssetViewportClient(FPreviewScene* InPreviewScene)
 	: FEditorViewportClient(nullptr, nullptr, nullptr)
 {
 	// Create an advanced preview scene for proper lighting and environment
 	FAdvancedPreviewScene::ConstructionValues ConstructionValues;
 	ConstructionValues.LightBrightness = 3.0f;
 	ConstructionValues.SkyBrightness = 1.0f;
-	ConstructionValues.SkyLightBrightness = 1.0f;
 
 	PreviewScene = MakeShareable(new FAdvancedPreviewScene(ConstructionValues));
 
-	// Set the preview scene for the viewport client
-	PreviewScene->SetSimulatePhysics(false);
+	// Connect preview scene to the viewport client (protected member of FEditorViewportClient)
+	// This ensures the viewport renders the preview scene, not the main world
+	FEditorViewportClient::PreviewScene = PreviewScene.Get();
 
 	// Set default camera position
 	SetViewLocation(FVector(0, 0, 100));
 	SetViewRotation(FRotator(-15.0f, 0.0f, 0.0f));
-	SetViewLocationForOrbiting(FVector(0, 0, 0));
-	SetOrbitDistance(500.0f);
-
-	// Enable orbit camera by default
-	bSetListenerPosition = false;
-	bDrawAxes = false;
-	EngineShowFlags.SetStats(false);
-	EngineShowFlags.SetEnableLightFunctions(false);
-
-	// Set background color
-	BackgroundSettings.BackgroundColor = FLinearColor(0.1f, 0.1f, 0.1f, 1.0f);
 }
 
 FGaussianSplatAssetViewportClient::~FGaussianSplatAssetViewportClient()
 {
 	if (PreviewActor.IsValid())
 	{
-		PreviewScene->GetWorld()->DestroyActor(PreviewActor.Get(), false, false);
+		UWorld* PreviewWorld = PreviewScene.IsValid() ? PreviewScene->GetWorld() : nullptr;
+		if (PreviewWorld)
+		{
+			PreviewWorld->DestroyActor(PreviewActor.Get(), false, false);
+		}
 		PreviewActor.Reset();
 	}
-}
-
-void FGaussianSplatAssetViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
-{
-	FEditorViewportClient::Draw(Viewport, Canvas);
-}
-
-FLinearColor FGaussianSplatAssetViewportClient::GetBackgroundColor() const
-{
-	return FLinearColor(0.1f, 0.1f, 0.1f, 1.0f);
 }
 
 void FGaussianSplatAssetViewportClient::Tick(float DeltaSeconds)
@@ -76,7 +56,6 @@ void FGaussianSplatAssetViewportClient::Tick(float DeltaSeconds)
 		UWorld* PreviewWorld = PreviewScene->GetWorld();
 		if (PreviewWorld)
 		{
-			// Update the preview world
 			PreviewWorld->Tick(LEVELTICK_All, DeltaSeconds);
 		}
 	}
@@ -133,8 +112,10 @@ void FGaussianSplatAssetViewportClient::SetSplatAsset(UGaussianSplatAsset* InAss
 			float Extent = Bounds.GetExtent().Length();
 			if (Extent > 0.0f)
 			{
-				SetViewLocationForOrbiting(Center);
-				SetOrbitDistance(Extent * 2.5f);
+				// Position camera to view the asset
+				FVector CameraOffset(Extent * 1.5f, Extent * 1.5f, Extent * 0.8f);
+				SetViewLocation(Center + CameraOffset);
+				SetViewRotation((Center - (Center + CameraOffset)).Rotation());
 			}
 		}
 
@@ -160,11 +141,6 @@ void SGaussianSplatAssetViewport::Construct(const FArguments& InArgs, TSharedPtr
 		.IsEnabled(true)
 		.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("GaussianSplatAssetEditor.Viewport")))
 	);
-
-	if (ViewportClient.IsValid())
-	{
-		ViewportClient->Viewport = SharedThis(this);
-	}
 }
 
 TSharedRef<FEditorViewportClient> SGaussianSplatAssetViewport::MakeEditorViewportClient()
@@ -177,11 +153,6 @@ TSharedRef<FEditorViewportClient> SGaussianSplatAssetViewport::MakeEditorViewpor
 	// Create a default client if none provided
 	ViewportClient = MakeShareable(new FGaussianSplatAssetViewportClient());
 	return ViewportClient.ToSharedRef();
-}
-
-TSharedPtr<SWidget> SGaussianSplatAssetViewport::MakeViewportToolbar()
-{
-	return nullptr;
 }
 
 void SGaussianSplatAssetViewport::SetSplatAsset(UGaussianSplatAsset* InAsset)

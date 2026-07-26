@@ -9,11 +9,30 @@
 
 class UGaussianSplatAsset;
 class FGaussianSplatSceneProxy;
+class UBodySetup;
+
+/**
+ * Collision generation method for Gaussian Splat point clouds
+ */
+UENUM(BlueprintType)
+enum class EGaussianCollisionMethod : uint8
+{
+	/** No collision */
+	None UMETA(DisplayName = "无碰撞"),
+	/** Convex hull of all points */
+	ConvexHull UMETA(DisplayName = "凸包"),
+	/** Simplified convex decomposition (multiple convex hulls) */
+	ConvexDecomposition UMETA(DisplayName = "凸分解"),
+	/** Bounding box collision */
+	BoundingBox UMETA(DisplayName = "包围盒"),
+	/** Voxel-based collision (approximate shape) */
+	Voxel UMETA(DisplayName = "体素")
+};
 
 /**
  * Component for rendering Gaussian Splatting assets in the scene
  */
-UCLASS(ClassGroup = (Rendering), meta = (BlueprintSpawnableComponent), hidecategories = (Collision, Physics, Navigation))
+UCLASS(ClassGroup = (Rendering), meta = (BlueprintSpawnableComponent), hidecategories = (Navigation))
 class NANOGS_API UGaussianSplatComponent : public UPrimitiveComponent
 {
 	GENERATED_BODY()
@@ -38,6 +57,15 @@ public:
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials = false) const override;
+
+	/** Whether to cast shadows */
+	virtual bool CastShadow() const { return bCastShadow; }
+
+	/** Get the body setup for collision */
+	virtual UBodySetup* GetBodySetup() override;
+
+	/** Collision test */
+	virtual bool LineTraceComponent(struct FHitResult& OutHit, const FVector TraceStart, const FVector TraceEnd, const FCollisionQueryParams& TraceParams) override;
 	//~ End UPrimitiveComponent Interface
 
 	/** Set the Gaussian Splat asset to render */
@@ -51,6 +79,10 @@ public:
 	/** Get the number of splats being rendered */
 	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
 	int32 GetSplatCount() const;
+
+	/** Rebuild collision based on current settings */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Collision")
+	void RebuildCollision();
 
 public:
 	/** The Gaussian Splat asset to render */
@@ -84,6 +116,34 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Performance", meta = (ClampMin = "0.001", ClampMax = "1.0"))
 	float LODErrorThreshold = 0.03f;
 
+	/** 阴影投射 - 是否投射阴影到周围场景 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|阴影", meta = (DisplayName = "投射阴影"))
+	bool bCastShadow = false;
+
+	/** 阴影代理类型 - 控制阴影的精度和性能 (0=包围盒, 1=凸包, 2=完整) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|阴影", meta = (ClampMin = "0", ClampMax = "2", EditCondition = "bCastShadow"))
+	uint8 ShadowProxyDetail = 1;
+
+	/** 阴影强度缩放 - 控制阴影的深浅 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|阴影", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bCastShadow"))
+	float ShadowIntensity = 1.0f;
+
+	/** 碰撞生成方法 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|碰撞", meta = (DisplayName = "碰撞方法"))
+	EGaussianCollisionMethod CollisionMethod = EGaussianCollisionMethod::None;
+
+	/** 碰撞体面数 - 用于简化凸包的面数限制 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|碰撞", meta = (ClampMin = "4", ClampMax = "255", EditCondition = "CollisionMethod != EGaussianCollisionMethod::None"))
+	int32 CollisionMaxFaces = 32;
+
+	/** 忽略系数 - 稀疏区域的点被忽略的概率 (0=保留所有点, 1=忽略大部分点) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|碰撞", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "CollisionMethod != EGaussianCollisionMethod::None"))
+	float IgnoreFactor = 0.5f;
+
+	/** 体素大小 - 用于体素碰撞方法 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|碰撞", meta = (ClampMin = "1.0", ClampMax = "100.0", EditCondition = "CollisionMethod == EGaussianCollisionMethod::Voxel"))
+	float VoxelSize = 10.0f;
+
 protected:
 	/** Called when the asset changes */
 	void OnAssetChanged();
@@ -100,6 +160,18 @@ protected:
 	/** Unsubscribe from asset change notifications */
 	void UnsubscribeFromAssetChanges();
 
+	/** Build collision body setup from point cloud data */
+	void BuildCollisionBodySetup();
+
+	/** Generate convex hull from point cloud positions */
+	bool GenerateConvexHull(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
+
+	/** Generate simplified collision mesh */
+	bool GenerateSimplifiedCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
+
+	/** Generate voxel-based collision */
+	bool GenerateVoxelCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
+
 private:
 	/** Cached bounds */
 	mutable FBoxSphereBounds CachedBounds;
@@ -107,4 +179,11 @@ private:
 
 	/** Delegate handle for asset change subscription */
 	FDelegateHandle AssetChangedDelegateHandle;
+
+	/** Collision body setup */
+	UPROPERTY(Transient)
+	TObjectPtr<UBodySetup> BodySetup;
+
+	/** Whether collision needs rebuild */
+	bool bCollisionDirty = true;
 };

@@ -37,7 +37,12 @@ public class NanoGSEditor : ModuleRules
 				"AssetTools",
 				"EditorFramework",
 				"Projects",
-				"ToolMenus"
+				"ToolMenus",
+				"PropertyEditor",
+				"AdvancedPreviewScene",
+				"EditorStyle",
+				"ComponentVisualizers",
+				"WorkspaceMenuStructure"
 			}
 		);
 
