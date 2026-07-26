@@ -1,4 +1,4 @@
-﻿#include "OpenSplat4DPointCloud.h"
+#include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DCompression.h"
 #include "Compression/Spz.h"   // [ENHANCEMENT] Niantic SPZ (4D-aware) compression
 
@@ -10,6 +10,10 @@
 #include "HAL/FileManager.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+
+#if WITH_EDITOR
+#include "UObject/UnrealType.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -90,7 +94,25 @@ void UOpenSplat4DPointCloud::SetPoints(const TArray<FOpenSplat4DPoint>& InPoints
 			return A.Scale.Length() > B.Scale.Length();
 		});
 	}
+	if (PerPointSizeScale.Num() != Points.Num())
+	{
+		PerPointSizeScale.SetNum(Points.Num());
+		for (int32 i = 0; i < PerPointSizeScale.Num(); ++i)
+		{
+			PerPointSizeScale[i] = 1.0f;
+		}
+	}
 	OnPointsChanged.Broadcast();
+}
+
+void UOpenSplat4DPointCloud::ResetAllPointSizeScales()
+{
+	for (int32 i = 0; i < PerPointSizeScale.Num(); ++i)
+	{
+		PerPointSizeScale[i] = 1.0f;
+	}
+	OnPointsChanged.Broadcast();
+	MarkPackageDirty();
 }
 
 // ----------------------------------------------------------------------------
@@ -144,6 +166,8 @@ void UOpenSplat4DPointCloud::PostLoad()
 
 				*SourceFilePath, GetPointCount());
 
+			// Mark dirty so the reloaded data persists across saves.
+			MarkPackageDirty();
 			return;
 
 		}
@@ -465,12 +489,16 @@ namespace
 			Quat.Normalize();
 			Point.Quat = FQuat4f(Quat.X, -Quat.Z, -Quat.Y, Quat.W);
 
-			FLinearColor Color = FLinearColor(
-				GOPEN_SPLAT_SH_0 * Values[O + ColorIdx[0]] + 0.5f,
-				GOPEN_SPLAT_SH_0 * Values[O + ColorIdx[1]] + 0.5f,
-				GOPEN_SPLAT_SH_0 * Values[O + ColorIdx[2]] + 0.5f,
-				1.0f / (1.0f + FMath::Exp(-Values[O + AlphaIdx[0]])));
-			Point.Color = SRGBToLinear(Color);
+			// [v6] SH DC → 线性颜色（已是 linear，勿二次转换）
+			// SH_C0 * f_dc + 0.5 生成的就是线性空间颜色，不需要 SRGBToLinear
+			// 旧代码 SRGBToLinear(Color) 把暗色压暗 ~13×（0.05→0.004），
+			// 导致模型整体发黑、"粉噪"和"空洞"伪影
+			FLinearColor Color(
+				FMath::Clamp(GOPEN_SPLAT_SH_0 * Values[O + ColorIdx[0]] + 0.5f, 0.0f, 1.0f),
+				FMath::Clamp(GOPEN_SPLAT_SH_0 * Values[O + ColorIdx[1]] + 0.5f, 0.0f, 1.0f),
+				FMath::Clamp(GOPEN_SPLAT_SH_0 * Values[O + ColorIdx[2]] + 0.5f, 0.0f, 1.0f),
+				FMath::Clamp(1.0f / (1.0f + FMath::Exp(-Values[O + AlphaIdx[0]])), 0.0f, 1.0f));
+			Point.Color = Color;
 
 			// Collect SH coefficients for view-dependent colour.
 			// Layout: [raw_f_dc_0, raw_f_dc_1, raw_f_dc_2, raw_opacity, f_rest_0..f_rest_N]
@@ -752,8 +780,35 @@ void UOpenSplat4DPointCloud::Serialize(FArchive& Ar)
 
 	if (Method == EOpenSplat4DCompressionMethod::None)
 	{
-		Ar << Points;
-		SerializeSHRest(Ar);
+		if (Ar.IsLoading())
+		{
+			// Read point count manually, then read each point safely.
+			int32 Count = 0;
+			Ar << Count;
+			if (Count < 0 || Count > 50 * 1024 * 1024 || Ar.IsError())
+			{
+				UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: bad point count %d in asset, clearing."), Count);
+				Points.Reset();
+				return;
+			}
+			Points.SetNum(Count);
+			for (int32 i = 0; i < Count && !Ar.IsError(); i++)
+			{
+				Ar << Points[i];
+			}
+			if (Ar.IsError())
+			{
+				UE_LOG(LogOpenSplat4D, Warning, TEXT("OpenSplat4D: error reading points (expected %d), clearing cloud."), Count);
+				Points.Reset();
+				return;
+			}
+			SerializeSHRest(Ar);
+		}
+		else
+		{
+			Ar << Points;
+			SerializeSHRest(Ar);
+		}
 	}
 	else if (Method == EOpenSplat4DCompressionMethod::Zlib)
 	{
@@ -827,3 +882,19 @@ void UOpenSplat4DPointCloud::Serialize(FArchive& Ar)
 	}
 
 }
+
+#if WITH_EDITOR
+void UOpenSplat4DPointCloud::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+	const FName PropName = PropertyChangedEvent.GetPropertyName();
+	if (PropName == GET_MEMBER_NAME_CHECKED(UOpenSplat4DPointCloud, SplatScale) ||
+		PropName == GET_MEMBER_NAME_CHECKED(UOpenSplat4DPointCloud, MinSplatRadius) ||
+		PropName == GET_MEMBER_NAME_CHECKED(UOpenSplat4DPointCloud, LODDitherStartDistance) ||
+		PropName == GET_MEMBER_NAME_CHECKED(UOpenSplat4DPointCloud, LODDitherEndDistance) ||
+		PropName == GET_MEMBER_NAME_CHECKED(UOpenSplat4DPointCloud, MinSplatScreenSize))
+	{
+		OnPointsChanged.Broadcast();
+	}
+}
+#endif

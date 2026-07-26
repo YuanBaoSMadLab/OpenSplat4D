@@ -5,12 +5,15 @@
 #include "OpenSplat4DEdMode.h"
 #include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DPointCloudActor.h"
+#include "OpenSplat4DSplatActor.h"
 #include "OpenSplat4DSettings.h"
 #include "OpenSplat4DLocalization.h"
 #include "OpenSplat4DPointCloudEditor.h"
-#include "OpenSplat4DBillboardComponent.h"
+#include "NiagaraComponent.h"
 #include "SOpenSplat4DPointCloudEditorViewport.h"
+#include "OpenSplat4DNiagaraSetup.h"
 #include "HAL/IConsoleManager.h"
+#include "Containers/Ticker.h"
 
 #include "EditorModeRegistry.h"
 #include "ToolMenus.h"
@@ -154,16 +157,27 @@ void FOpenSplat4DEditorModule::StartupModule()
 				Cloud->OnPointsChanged.Broadcast();
 				if (TSharedPtr<SOpenSplat4DPointCloudEditorViewport> VP = Editor->GetViewport())
 				{
-					if (UOpenSplat4DBillboardComponent* Comp = VP->GetPreviewComponent())
-					{
-						Comp->RebuildBuffer();
-					}
+					// The DI's dirty tracking handles buffer rebuild automatically.
+					// Just broadcast so the Niagara component picks up the new data.
+					Cloud->OnPointsChanged.Broadcast();
 				}
 				UE_LOG(LogOpenSplat4DEditor, Log, TEXT("OpenSplat4D.Reload: loaded %s -> pointCount=%d"), *Path, Cloud->GetPointCount());
 			}));
 	}
 
-	UE_LOG(LogOpenSplat4DEditor, Log, TEXT("OpenSplat4D editor module started."));
+	// Niagara assets are auto-created lazily — the first time an
+	// AOpenSplat4DPointCloudActor tries to render (PushStateToNiagara),
+	// the runtime checks and triggers creation via the Editor module.
+	// This avoids DataValidation crashes during build/packaging.
+
+// [DISABLED] 全面禁用 Niagara 路径：不再自动创建 Niagara 资产。
+// 用户若需要 Niagara 路径（模式 2），可手动调用 OpenSplat4DNiagaraSetup::EnsureAssetsExist()。
+// FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool {
+// 	OpenSplat4DNiagaraSetup::EnsureAssetsExist();
+// 	return false;
+// }), 0.5f);
+
+UE_LOG(LogOpenSplat4DEditor, Log, TEXT("OpenSplat4D editor module started."));
 }
 
 void FOpenSplat4DEditorModule::ShutdownModule()
@@ -194,7 +208,7 @@ void FOpenSplat4DEditorModule::RegisterMenus()
 				{
 					UOpenSplat4DPointCloud* Cloud = Cast<UOpenSplat4DPointCloud>(Context->SelectedAssets[0].GetAsset());
 					if (Cloud)
-					{
+				{
 					Section.AddMenuEntry(
 						"OpenSplat4D_CreateActor",
 						OS4D_TEXT("Create OpenSplat4D Actor"),
@@ -217,7 +231,31 @@ void FOpenSplat4DEditorModule::RegisterMenus()
 										}
 									}
 								})));
-					}
+
+					// [DISABLED] 自研 ISMC 管线已停用，由 NanoGS 模块接管渲染。
+				// Section.AddMenuEntry(
+				// 	"OpenSplat4D_CreateSplatActor",
+				// 	OS4D_TEXT("Create OpenSplat4D Splat Actor (主模式/自研管线)"),
+				// 	OS4D_TEXT("使用此点云生成 SplatActor（基于 ISMC 的高 GPU 利用率自研渲染管线）"),
+				// 	FSlateIcon(),
+				// 	FUIAction(FExecuteAction::CreateLambda(
+				// 		[Cloud]()
+				// 		{
+				// 			if (GEditor)
+				// 			{
+				// 				UWorld* World = GEditor->GetEditorWorldContext().World;
+				// 				if (World)
+				// 				{
+				// 					AOpenSplat4DSplatActor* Actor = World->SpawnActor<AOpenSplat4DSplatActor>();
+				// 					if (Actor)
+				// 					{
+				// 						Actor->SetPointCloud(Cloud);
+				// 						GEditor->SelectActor(Actor, true, true);
+				// 					}
+				// 				}
+				// 			}
+				// 		})));
+				}
 				}
 			}
 		}));

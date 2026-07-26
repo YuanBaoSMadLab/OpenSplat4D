@@ -1,0 +1,84 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Composite pass: converts sRGB-blended gaussian splat accumulation to linear
+// for proper integration with UE's linear SceneColor buffer.
+//
+// Gaussian splatting trains and evaluates colors in sRGB space. Alpha blending
+// must happen in sRGB space to produce correct results. The splat rendering pass
+// writes sRGB premultiplied-alpha colors to an intermediate render target.
+// This composite pass un-premultiplies, converts sRGB→linear, re-premultiplies,
+// and blends the result onto SceneColor.
+
+#include "/Engine/Public/Platform.ush"
+
+Texture2D IntermediateTexture;
+SamplerState IntermediateSampler;
+
+// Attempt to invert UE's ACES filmic tone curve so that display-ready gaussian
+// splat colors survive tone mapping unchanged.  Uses the Narkowicz ACES fit
+// (same curve UE's default tone mapper approximates) and solves the quadratic
+// analytically.  Without this, already-display-ready sRGB colours appear
+// over-saturated after the engine applies its S-curve.
+float3 InverseACESTonemap(float3 color)
+{
+	// Narkowicz ACES fit: y = clamp((x*(a*x+b)) / (x*(c*x+d)+e))
+	float a = 2.51;
+	float b = 0.03;
+	float c = 2.43;
+	float d = 0.59;
+	float e = 0.14;
+
+	// Solve (a - y*c)*t^2 + (b - y*d)*t - y*e = 0  for t (pre-tonemap value)
+	color = clamp(color, 0.0, 0.99);  // avoid singularities near 1.0
+	float3 A = a - color * c;
+	float3 B = b - color * d;
+	float3 C = -color * e;
+
+	return (-B + sqrt(max(B * B - 4.0 * A * C, 0.0))) / (2.0 * A);
+}
+
+struct FCompositeVSOutput
+{
+	float4 Position : SV_POSITION;
+};
+
+// Full-screen triangle: 3 vertices cover the entire screen
+FCompositeVSOutput MainVS(uint VertexId : SV_VertexID)
+{
+	FCompositeVSOutput Output;
+	float2 UV = float2((VertexId << 1) & 2, VertexId & 2);
+	Output.Position = float4(UV * 2.0 - 1.0, 0.0, 1.0);
+	return Output;
+}
+
+float4 MainPS(FCompositeVSOutput Input) : SV_Target0
+{
+	// Use SV_Position to load directly from intermediate RT (1:1 pixel mapping)
+	// This avoids UV scaling issues when ViewRect != full texture extent
+	int2 PixelPos = int2(Input.Position.xy);
+	float4 srgbAccum = IntermediateTexture.Load(int3(PixelPos, 0));
+
+	// Early out for fully transparent pixels (no splat contribution)
+	if (srgbAccum.a <= 0.0)
+	{
+		discard;
+	}
+
+	// Un-premultiply to recover the actual composited sRGB color
+	float3 srgbColor = srgbAccum.rgb / srgbAccum.a;
+
+	// Convert sRGB to linear for UE's SceneColor buffer
+	float3 linearColor = pow(max(srgbColor, 0.0), 2.2);
+
+	// Apply inverse ACES tone curve so that UE's tone mapper maps us back to
+	// the intended display color.  Without this, the ACES S-curve boosts
+	// saturation and contrast of our already-display-ready splat colours.
+	linearColor = InverseACESTonemap(linearColor);
+
+	// Re-premultiply with accumulated alpha
+	float3 linearPremultiplied = linearColor * srgbAccum.a;
+
+	// Output: premultiplied linear color with accumulated alpha
+	// Blend state: result = src + dst * (1 - srcAlpha)
+	return float4(linearPremultiplied, srgbAccum.a);
+}

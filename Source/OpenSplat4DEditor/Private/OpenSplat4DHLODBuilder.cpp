@@ -1,6 +1,6 @@
 #include "OpenSplat4DHLODBuilder.h"
 #include "OpenSplat4DPointCloud.h"
-#include "OpenSplat4DBillboardComponent.h"
+#include "OpenSplat4DPointCloudActor.h"
 #include "OpenSplat4DEditorLibrary.h"
 
 #include "Interfaces/IPluginManager.h"
@@ -10,6 +10,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "Components/StaticMeshComponent.h"
+#include "NiagaraComponent.h"
 #include "LandscapeComponent.h"
 
 #include "WorldPartition/HLOD/HLODHashBuilder.h"
@@ -185,11 +186,16 @@ TArray<UActorComponent*> UOpenSplat4DHLODBuilder::Build(const FHLODBuildContext&
 		LoadPlyPath, InHLODBuildContext.AssetsOuter, FName(*InHLODBuildContext.AssetsBaseName));
 	if (PointCloud != nullptr)
 	{
-		UOpenSplat4DBillboardComponent* Component = NewObject<UOpenSplat4DBillboardComponent>(
-			InHLODBuildContext.AssetsOuter, NAME_None, InHLODBuildContext.AssetsObjectFlags);
-		Component->PointCloud = PointCloud;
-		Component->SetWorldLocation(Bounds.Origin);
-		return { Component };
+		AOpenSplat4DPointCloudActor* Actor = InHLODBuildContext.AssetsOuter->GetWorld()->SpawnActor<AOpenSplat4DPointCloudActor>(
+			AOpenSplat4DPointCloudActor::StaticClass(), Bounds.Origin, FRotator::ZeroRotator);
+		Actor->SetPointCloud(PointCloud);
+		Actor->bAutoPlay = false;
+		TArray<UActorComponent*> Components;
+		if (UActorComponent* NiagaraComp = Actor->GetNiagaraComponent())
+		{
+			Components.Add(NiagaraComp);
+		}
+		return Components;
 	}
 	return {};
 }

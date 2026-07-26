@@ -1,0 +1,224 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/NanoGS/Private/GaussianDataTypes.ush"
+#include "/Plugin/NanoGS/Private/SphericalHarmonics.ush"
+
+// Common parameters for Gaussian Splatting shaders
+// These should be bound by the render pass
+
+// Dynamic data buffer
+// RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
+
+//----------------------------------------------------------------------
+// Packed Splat Format (16 bytes = 4 x uint32)
+//----------------------------------------------------------------------
+// word0: R(8) | G(8) | B(8) | A(8)     — sRGB color + linear opacity
+// word1: PosX(f16) | PosY(f16)          — float16 position
+// word2: PosZ(f16) | QuatU(8) | QuatV(8) — float16 pos + octahedral axis
+// word3: ScaleX(8) | ScaleY(8) | ScaleZ(8) | QuatAngle(8) — log scale + angle
+//----------------------------------------------------------------------
+
+#define LN_SCALE_MIN (-8.0)
+#define LN_SCALE_MAX (14.0)
+
+struct FUnpackedSplat
+{
+	float3 Position;
+	float4 Rotation;  // quaternion (X, Y, Z, W)
+	float3 Scale;
+	float4 ColorOpacity; // (R, G, B, A) where RGB is sRGB, A is linear
+};
+
+// Unpack a splat from the packed buffer (16 bytes/splat)
+FUnpackedSplat UnpackSplat(ByteAddressBuffer packedBuffer, uint splatIndex)
+{
+	FUnpackedSplat result;
+
+	// Load 4 uint32 words (16 bytes)
+	uint offset = splatIndex * 16;
+	uint4 packed = packedBuffer.Load4(offset);
+
+	// Decode color (sRGB uint8 → [0,1])
+	result.ColorOpacity.r = (packed.x & 0xFF) / 255.0;
+	result.ColorOpacity.g = ((packed.x >> 8) & 0xFF) / 255.0;
+	result.ColorOpacity.b = ((packed.x >> 16) & 0xFF) / 255.0;
+	result.ColorOpacity.a = ((packed.x >> 24) & 0xFF) / 255.0;  // alpha is linear
+
+	// Decode position (float16)
+	result.Position.x = f16tof32(packed.y & 0xFFFF);
+	result.Position.y = f16tof32(packed.y >> 16);
+	result.Position.z = f16tof32(packed.z & 0xFFFF);
+
+	// Decode quaternion (octahedral axis-angle → quaternion)
+	uint quatU = (packed.z >> 16) & 0xFF;
+	uint quatV = (packed.z >> 24) & 0xFF;
+	uint quatAngleInt = (packed.w >> 24) & 0xFF;
+
+	// Octahedral decode: [0,255] → [-1,1]^2 → unit sphere
+	float fx = (quatU / 255.0 - 0.5) * 2.0;
+	float fy = (quatV / 255.0 - 0.5) * 2.0;
+	float fz = 1.0 - abs(fx) - abs(fy);
+	float t = max(-fz, 0.0);
+	fx += (fx >= 0.0) ? -t : t;
+	fy += (fy >= 0.0) ? -t : t;
+	float3 axis = normalize(float3(fx, fy, fz));
+
+	// Axis-angle → quaternion
+	float theta = (quatAngleInt / 255.0) * 3.14159265358979;
+	float halfTheta = theta * 0.5;
+	float sinHalf = sin(halfTheta);
+	result.Rotation = float4(axis * sinHalf, cos(halfTheta)); // (X, Y, Z, W)
+
+	// Decode scale (log-encoded uint8 → linear)
+	uint sx = packed.w & 0xFF;
+	uint sy = (packed.w >> 8) & 0xFF;
+	uint sz = (packed.w >> 16) & 0xFF;
+	float scaleRange = (LN_SCALE_MAX - LN_SCALE_MIN) / 254.0;
+	result.Scale.x = (sx == 0) ? 0.0 : exp(LN_SCALE_MIN + (sx - 1) * scaleRange);
+	result.Scale.y = (sy == 0) ? 0.0 : exp(LN_SCALE_MIN + (sy - 1) * scaleRange);
+	result.Scale.z = (sz == 0) ? 0.0 : exp(LN_SCALE_MIN + (sz - 1) * scaleRange);
+
+	return result;
+}
+
+// Legacy load functions (kept for reference, no longer used by CalcViewData)
+
+// Load position from buffer (Float32 format)
+float3 LoadPositionFloat32(ByteAddressBuffer buffer, uint splatIndex)
+{
+	uint o = splatIndex * 12; // 3 floats * 4 bytes
+	return asfloat(buffer.Load3(o));
+}
+
+// Load position from buffer with chunk dequantization (Norm16 format)
+float3 LoadPositionNorm16(ByteAddressBuffer buffer, StructuredBuffer<FGaussianChunkInfo> chunks, uint splatIndex)
+{
+	uint chunkIndex = splatIndex / SPLATS_PER_CHUNK;
+	FGaussianChunkInfo chunk = chunks[chunkIndex];
+
+	uint o = splatIndex * 6; // 3 shorts * 2 bytes
+	uint2 data = buffer.Load2(o);
+
+	float3 norm;
+	norm.x = (data.x & 0xFFFF) / 65535.0;
+	norm.y = (data.x >> 16) / 65535.0;
+	norm.z = (data.y & 0xFFFF) / 65535.0;
+
+	// Dequantize using chunk bounds
+	float3 pos;
+	pos.x = lerp(chunk.PosMinMaxX.x, chunk.PosMinMaxX.y, norm.x);
+	pos.y = lerp(chunk.PosMinMaxY.x, chunk.PosMinMaxY.y, norm.y);
+	pos.z = lerp(chunk.PosMinMaxZ.x, chunk.PosMinMaxZ.y, norm.z);
+
+	return pos;
+}
+
+// Load rotation (quaternion) from buffer
+float4 LoadRotation(ByteAddressBuffer buffer, uint splatIndex)
+{
+	// OtherData layout: 4 floats rotation + 3 floats scale = 28 bytes per splat
+	uint o = splatIndex * 28;
+	return asfloat(buffer.Load4(o));
+}
+
+// Load scale from buffer
+float3 LoadScale(ByteAddressBuffer buffer, uint splatIndex)
+{
+	// OtherData layout: 4 floats rotation + 3 floats scale = 28 bytes per splat
+	uint o = splatIndex * 28 + 16; // Skip rotation (16 bytes)
+	return asfloat(buffer.Load3(o));
+}
+
+// Load color and opacity from texture (Morton-swizzled)
+float4 LoadColor(Texture2D colorTex, SamplerState colorSampler, uint splatIndex, uint2 texSize)
+{
+	uint2 coord = SplatIndexToTextureCoord(splatIndex, texSize.x);
+	float2 uv = (float2(coord) + 0.5) / float2(texSize);
+	return colorTex.SampleLevel(colorSampler, uv, 0);
+}
+
+// Load SH coefficients from buffer (includes DC at index 0)
+// bufferCoeffs:  total coefficients stored per splat in the buffer (based on asset SHBands, e.g. 16 for band3)
+// numEvalCoeffs: how many coefficients to actually load/evaluate (based on SHOrder, <= bufferCoeffs)
+// Returns: shDC (DC coefficient), sh[15] (higher-order coefficients up to numEvalCoeffs-1, rest zeroed)
+void LoadSH(ByteAddressBuffer shBuffer, uint splatIndex, int bufferCoeffs, int numEvalCoeffs, out float3 shDC, out float3 sh[15])
+{
+	// Format: Float16, 3 channels * bufferCoeffs * 2 bytes
+	// Each coefficient = 3 x float16 = 6 bytes
+	// ByteAddressBuffer requires 4-byte aligned reads, so we read from 4-byte
+	// aligned boundaries and extract the float16 values properly.
+	//
+	// IMPORTANT: bytesPerSplat may NOT be a multiple of 4!
+	// - 1 band:  4 coeffs × 6 bytes = 24 bytes (aligned)
+	// - 2 bands: 9 coeffs × 6 bytes = 54 bytes (NOT aligned!)
+	// - 3 bands: 16 coeffs × 6 bytes = 96 bytes (aligned)
+	// For 2 bands, odd splat indices have misaligned baseOffset.
+
+	// Use bufferCoeffs (actual stored stride) for offset — NOT numEvalCoeffs.
+	uint bytesPerSplat = bufferCoeffs * 3 * 2;
+	uint baseOffset = splatIndex * bytesPerSplat;
+
+	// Helper function inlined: load 3 float16 values (6 bytes) from any byte offset
+	// For coeff at byte offset B:
+	//   - Aligned offset = B & ~3 (round down to 4-byte boundary)
+	//   - Misalignment = B & 3 (0 or 2, since all offsets are 2-byte aligned)
+
+	// Load DC coefficient (coeff index 0)
+	{
+		uint alignedOffset = baseOffset & ~3u;
+		uint misalignment = baseOffset & 3u;
+		uint3 data = shBuffer.Load3(alignedOffset);
+
+		if (misalignment == 0)
+		{
+			shDC.x = f16tof32(data.x & 0xFFFF);
+			shDC.y = f16tof32(data.x >> 16);
+			shDC.z = f16tof32(data.y & 0xFFFF);
+		}
+		else // misalignment == 2
+		{
+			shDC.x = f16tof32(data.x >> 16);
+			shDC.y = f16tof32(data.y & 0xFFFF);
+			shDC.z = f16tof32(data.y >> 16);
+		}
+	}
+
+	// Load higher-order coefficients (only up to numEvalCoeffs, rest are zeroed)
+	int numHigherCoeffs = numEvalCoeffs - 1;
+	[unroll]
+	for (int i = 0; i < 15; i++)
+	{
+		if (i < numHigherCoeffs)
+		{
+			// Coeff (i+1) starts at byte offset (i+1) * 6 from baseOffset
+			uint byteOffset = baseOffset + (i + 1) * 6;
+
+			// Round down to 4-byte aligned address
+			uint alignedOffset = byteOffset & ~3u;
+			uint misalignment = byteOffset & 3u;  // 0 or 2 (since 6-byte stride)
+
+			// Load 12 bytes (3 uints) to cover all cases
+			uint3 data = shBuffer.Load3(alignedOffset);
+
+			if (misalignment == 0)
+			{
+				sh[i].x = f16tof32(data.x & 0xFFFF);
+				sh[i].y = f16tof32(data.x >> 16);
+				sh[i].z = f16tof32(data.y & 0xFFFF);
+			}
+			else // misalignment == 2
+			{
+				sh[i].x = f16tof32(data.x >> 16);
+				sh[i].y = f16tof32(data.y & 0xFFFF);
+				sh[i].z = f16tof32(data.y >> 16);
+			}
+		}
+		else
+		{
+			sh[i] = float3(0, 0, 0);
+		}
+	}
+}

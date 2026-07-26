@@ -2,7 +2,8 @@
 #include "SOpenSplat4DPointCloudEditorViewport.h"
 #include "OpenSplat4DPointCloudEditor.h"
 #include "OpenSplat4DPointCloud.h"
-#include "OpenSplat4DBillboardComponent.h"
+#include "OpenSplat4DSplatActor.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "CanvasTypes.h"
 #include "CanvasItem.h"
 #include "EditorDragTools.h"
@@ -14,6 +15,8 @@
  * component's model-view-projection matrix and collects the ones whose screen
  * position falls inside the dragged rectangle. Selection is then forwarded to
  * the editor (used for deletion). Adapted from GaussianSplattingForUnrealEngine.
+ *
+ * [DISABLED] Niagara 路径已禁用：改用 SplatActor 的 ISMC transform 计算 MVP。
  */
 class FDragTool_PointsFrustumSelect : public FDragTool
 {
@@ -59,13 +62,15 @@ public:
 
 		FOpenSplat4DPointCloudEditor* Editor = ViewportClient->GetEditor();
 		TSharedPtr<SOpenSplat4DPointCloudEditorViewport> Viewport = Editor->GetViewport();
-		UOpenSplat4DBillboardComponent* PreviewComponent = Viewport->GetPreviewComponent();
+		// [DISABLED] Niagara 路径：改用 SplatActor 的 ISMC transform
+		AOpenSplat4DSplatActor* PreviewSplatActor = Viewport->GetPreviewSplatActor();
+		USceneComponent* PreviewComp = PreviewSplatActor ? PreviewSplatActor->GetSplatComponent() : nullptr;
 		UOpenSplat4DPointCloud* PointCloud = Editor->PointCloud;
 		const TArray<FOpenSplat4DPoint>& Points = PointCloud->GetPoints();
 
 		FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(ViewportClient->Viewport, Viewport->GetPreviewScene()->GetScene(), ViewportClient->EngineShowFlags));
 		FSceneView* View = ViewportClient->CalcSceneView(&ViewFamily);
-		const FMatrix ModelMatrix = PreviewComponent->GetComponentTransform().ToMatrixWithScale();
+		const FMatrix ModelMatrix = PreviewComp ? PreviewComp->GetComponentTransform().ToMatrixWithScale() : FMatrix::Identity;
 		const FMatrix MVPMatrix = ModelMatrix * View->ViewMatrices.GetWorldToClip();
 
 		TArray<uint32> SelectedIndices;

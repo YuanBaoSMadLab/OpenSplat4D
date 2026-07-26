@@ -33,22 +33,69 @@ FNiagaraDataInterfaceProxyOpenSplat4D::~FNiagaraDataInterfaceProxyOpenSplat4D()
 
 void FNiagaraDataInterfaceProxyOpenSplat4D::MakeBufferDirty()
 {
+	FScopeLock Lock(&BufferLock);
 	bDirty = true;
+	bNeedsResize = true;
 }
 
 void FNiagaraDataInterfaceProxyOpenSplat4D::TryUpdateBuffer()
 {
-	if (PointCloud != Owner->PointCloud)
+	// [OPT] Buffer-reuse path: only re-create the RHI buffer when point count
+	// changes. Otherwise, just re-upload the data to the existing allocation.
+	FScopeLock Lock(&BufferLock);
+
+	UOpenSplat4DPointCloud* OwnerCloud = Owner ? Owner->PointCloud.Get() : nullptr;
+	if (PointCloud != OwnerCloud)
 	{
-		PointCloud = Owner->PointCloud;
+		PointCloud = OwnerCloud;
 		if (PointCloud)
 		{
+			// Subscribe so any future SetPoints() call dirties the GPU buffer.
 			PointCloud->OnPointsChanged.AddLambda([this]() { bDirty = true; });
 		}
 		bDirty = true;
+		bNeedsResize = true;
 	}
+
+	// [OPT] Check if point count changed before deciding to re-allocate
+	const int32 CurrentCount = PointCloud ? PointCloud->GetPointCount() : 0;
+	if (CurrentCount != CachedPointCount)
+	{
+		bNeedsResize = true;
+	}
+
 	if (bDirty)
 	{
+		PostDataToGPU();
+		bDirty = false;
+		bNeedsResize = false;
+		CachedPointCount = CurrentCount;
+	}
+}
+
+void FNiagaraDataInterfaceProxyOpenSplat4D::RefreshPointCloud()
+{
+	FScopeLock Lock(&BufferLock);
+	UOpenSplat4DPointCloud* OwnerCloud = Owner ? Owner->PointCloud.Get() : nullptr;
+	if (!OwnerCloud || OwnerCloud->GetPointCount() == 0)
+	{
+		return;
+	}
+
+	const int32 CurrentCount = OwnerCloud->GetPointCount();
+	if (CurrentCount != CachedPointCount)
+	{
+		bNeedsResize = true;
+		bDirty = true;
+		PostDataToGPU();
+		bDirty = false;
+		bNeedsResize = false;
+		CachedPointCount = CurrentCount;
+	}
+	else
+	{
+		// Same point count — just refresh the data in-place
+		bNeedsResize = false;
 		PostDataToGPU();
 		bDirty = false;
 	}
@@ -56,45 +103,70 @@ void FNiagaraDataInterfaceProxyOpenSplat4D::TryUpdateBuffer()
 
 void FNiagaraDataInterfaceProxyOpenSplat4D::PostDataToGPU()
 {
+	// Called under BufferLock from TryUpdateBuffer / RefreshPointCloud; caller must hold the lock.
 	if (Owner == nullptr || Owner->PointCloud == nullptr)
 	{
 		return;
 	}
 	const TArray<FOpenSplat4DPoint>& Points = Owner->PointCloud->GetPoints();
+	if (Points.Num() == 0)
+	{
+		return; // Nothing to upload; keep existing buffer (or release later)
+	}
+
+	// [OPT] Pre-allocate temp buffer with Reserve to avoid incremental reallocs
 	TArray<FVector4f> PointData;
+	PointData.Reserve(Points.Num() * GOPEN_SPLAT_FLOAT4_PER_POINT);
 	PointData.SetNum(Points.Num() * GOPEN_SPLAT_FLOAT4_PER_POINT);
 
 	for (int32 i = 0; i < Points.Num(); i++)
 	{
 		const FOpenSplat4DPoint& P = Points[i];
 		const int32 Base = i * GOPEN_SPLAT_FLOAT4_PER_POINT;
+
+		// Core fields (slots 0-4)
 		PointData[Base + 0] = FVector4f(P.Position.X, P.Position.Y, P.Position.Z, P.AnchorTime);
 		PointData[Base + 1] = FVector4f(P.Quat.X, P.Quat.Y, P.Quat.Z, P.Quat.W);
 		PointData[Base + 2] = FVector4f(P.Scale.X, P.Scale.Y, P.Scale.Z, P.TimeVariance);
 		PointData[Base + 3] = FVector4f(P.Color.R, P.Color.G, P.Color.B, P.Color.A);
 		PointData[Base + 4] = FVector4f(P.Velocity.X, P.Velocity.Y, P.Velocity.Z, P.bUseVelocity ? 1.f : 0.f);
-		// Slots 5..17: SH data (raw_f_dc + opacity + f_rest)
-		const int32 SHLen = P.SHRest.Num();
-		for (int32 si = 0; si < 13; si++)
+
+		// Padding / reserved (slot 5-6)
+		PointData[Base + 5] = FVector4f::Zero();
+		PointData[Base + 6] = FVector4f::Zero();
+
+		// [SH] Upload spherical harmonics rest coefficients to slots 7-14
+		// Layout: f_rest_0..f_rest_N packed as float4s
+		const int32 RestCount = P.SHRest.Num() - 4; // skip [dc0,dc1,dc2,opacity]
+		for (int32 s = 0; s < GOPEN_SPLAT_SH_SLOTS; s++)
 		{
-			float v0 = (si * 4 + 0 < SHLen) ? P.SHRest[si * 4 + 0] : 0.f;
-			float v1 = (si * 4 + 1 < SHLen) ? P.SHRest[si * 4 + 1] : 0.f;
-			float v2 = (si * 4 + 2 < SHLen) ? P.SHRest[si * 4 + 2] : 0.f;
-			float v3 = (si * 4 + 3 < SHLen) ? P.SHRest[si * 4 + 3] : 0.f;
-			PointData[Base + 5 + si] = FVector4f(v0, v1, v2, v3);
+			const int32 Off = s * 4;
+			float X = 0.f, Y = 0.f, Z = 0.f, W = 0.f;
+			if (Off + 0 < RestCount) X = P.SHRest[4 + Off + 0];
+			if (Off + 1 < RestCount) Y = P.SHRest[4 + Off + 1];
+			if (Off + 2 < RestCount) Z = P.SHRest[4 + Off + 2];
+			if (Off + 3 < RestCount) W = P.SHRest[4 + Off + 3];
+			PointData[Base + 7 + s] = FVector4f(X, Y, Z, W);
 		}
 	}
 
+	// [OPT] Capture bNeedsResize flag for render-thread decision
+	const bool bShouldResize = bNeedsResize;
+
 	ENQUEUE_RENDER_COMMAND(FUpdateOpenSplat4DBuffer)(
-		[this, PointData](FRHICommandListImmediate& RHICmdList)
+		[this, PointData = MoveTemp(PointData), bShouldResize](FRHICommandListImmediate& RHICmdList)
 		{
 			const int32 NumBytesInBuffer = sizeof(FVector4f) * PointData.Num();
 
-			if (NumBytesInBuffer != OpenSplat4DPointDataBuffer.NumBytes)
+			// [OPT] Only re-create the RHI buffer when point count changed
+			if (bShouldResize || OpenSplat4DPointDataBuffer.NumBytes != NumBytesInBuffer)
 			{
 				if (OpenSplat4DPointDataBuffer.NumBytes > 0)
+				{
 					OpenSplat4DPointDataBuffer.Release();
+				}
 				if (NumBytesInBuffer > 0)
+				{
 					OpenSplat4DPointDataBuffer.Initialize(
 						RHICmdList,
 						TEXT("FNiagaraDataInterfaceProxyOpenSplat4D_PointBuffer"),
@@ -102,13 +174,14 @@ void FNiagaraDataInterfaceProxyOpenSplat4D::PostDataToGPU()
 						PointData.Num(),
 						EPixelFormat::PF_A32B32G32R32F,
 						BUF_Static);
+				}
 			}
 
+			// [OPT] Always update contents (even when buffer size unchanged — this is fast)
 			if (OpenSplat4DPointDataBuffer.NumBytes > 0)
 			{
 				float* BufferData = static_cast<float*>(RHICmdList.LockBuffer(
 					OpenSplat4DPointDataBuffer.Buffer, 0, NumBytesInBuffer, EResourceLockMode::RLM_WriteOnly));
-				FScopeLock ScopeLock(&BufferLock);
 				FPlatformMemory::Memcpy(BufferData, PointData.GetData(), NumBytesInBuffer);
 				RHICmdList.UnlockBuffer(OpenSplat4DPointDataBuffer.Buffer);
 			}
@@ -140,7 +213,7 @@ void UNiagaraDataInterfaceOpenSplat4D::GetFunctions(TArray<FNiagaraFunctionSigna
 	{
 		FNiagaraFunctionSignature Sig;
 		Sig.Name = GetPointDataFunctionName;
-		Sig.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("OpenSplat4D")));
+		Sig.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("GaussianSplattingPointCloud")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Position")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec4Def(), TEXT("Quat")));
@@ -153,7 +226,7 @@ void UNiagaraDataInterfaceOpenSplat4D::GetFunctions(TArray<FNiagaraFunctionSigna
 	{
 		FNiagaraFunctionSignature Sig;
 		Sig.Name = GetPointData4DFunctionName;
-		Sig.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("OpenSplat4D")));
+		Sig.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("GaussianSplattingPointCloud")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Position")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec4Def(), TEXT("Quat")));
@@ -169,7 +242,7 @@ void UNiagaraDataInterfaceOpenSplat4D::GetFunctions(TArray<FNiagaraFunctionSigna
 	{
 		FNiagaraFunctionSignature Sig;
 		Sig.Name = GetPointCountFunctionName;
-		Sig.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("OpenSplat4D")));
+		Sig.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("GaussianSplattingPointCloud")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("PointCount")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
@@ -178,7 +251,7 @@ void UNiagaraDataInterfaceOpenSplat4D::GetFunctions(TArray<FNiagaraFunctionSigna
 	{
 		FNiagaraFunctionSignature Sig;
 		Sig.Name = GetTimeWeightFunctionName;
-		Sig.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("OpenSplat4D")));
+		Sig.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("GaussianSplattingPointCloud")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Weight")));
 		Sig.bMemberFunction = true;
@@ -188,9 +261,21 @@ void UNiagaraDataInterfaceOpenSplat4D::GetFunctions(TArray<FNiagaraFunctionSigna
 	{
 		FNiagaraFunctionSignature Sig;
 		Sig.Name = GetTimeOffsetFunctionName;
-		Sig.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("OpenSplat4D")));
+		Sig.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("GaussianSplattingPointCloud")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Offset")));
+		Sig.bMemberFunction = true;
+		Sig.bRequiresContext = false;
+		OutFunctions.Add(Sig);
+	}
+	// [SH] View-dependent colour evaluation via spherical harmonics
+	{
+		FNiagaraFunctionSignature Sig;
+		Sig.Name = GetPointColorSHFunctionName;
+		Sig.Inputs.Add(FNiagaraVariable(GetClass(), TEXT("GaussianSplattingPointCloud")));
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index")));
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("ViewDir")));
+		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("ColorLinear")));
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
 		OutFunctions.Add(Sig);
@@ -210,6 +295,14 @@ void UNiagaraDataInterfaceOpenSplat4D::SetPointCloud(UOpenSplat4DPointCloud* InP
 	if (auto DIProxy = GetProxyAs<FNiagaraDataInterfaceProxyOpenSplat4D>())
 	{
 		DIProxy->MakeBufferDirty();
+	}
+}
+
+void UNiagaraDataInterfaceOpenSplat4D::RefreshPointCloud()
+{
+	if (auto DIProxy = GetProxyAs<FNiagaraDataInterfaceProxyOpenSplat4D>())
+	{
+		DIProxy->RefreshPointCloud();
 	}
 }
 
@@ -372,13 +465,13 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			void {FunctionName}(int In_Index, out float3 Out_Position, out float4 Out_Quat, out float3 Out_Scale, out float4 Out_Color)
 			{
 				int idx = In_Index < {PointCount} ? In_Index : {PointCount} - 1;
-				Out_Position = {Buffer}.Load(idx * {Stride} + 0).xyz;
-				Out_Quat = {Buffer}.Load(idx * {Stride} + 1);
-				Out_Scale = {Buffer}.Load(idx * {Stride} + 2).xyz;
-				Out_Color = {Buffer}.Load(idx * {Stride} + 3);
+				Out_Position = {Buffer}.Load(idx * 15 + 0).xyz;
+				Out_Quat = {Buffer}.Load(idx * 15 + 1);
+				Out_Scale = {Buffer}.Load(idx * 15 + 2).xyz;
+				Out_Color = {Buffer}.Load(idx * 15 + 3);
 			}
 		)");
-		OutHLSL += FString::Format(Fmt, { { TEXT("FunctionName"), FunctionInfo.InstanceName }, { TEXT("PointCount"), PointCount }, { TEXT("Buffer"), Buffer }, { TEXT("Stride"), GOPEN_SPLAT_FLOAT4_PER_POINT } });
+		OutHLSL += FString::Format(Fmt, { { TEXT("FunctionName"), FunctionInfo.InstanceName }, { TEXT("PointCount"), PointCount }, { TEXT("Buffer"), Buffer } });
 		return true;
 	}
 	else if (FunctionInfo.DefinitionName == GetPointData4DFunctionName)
@@ -387,16 +480,16 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			void {FunctionName}(int In_Index, out float3 Out_Position, out float4 Out_Quat, out float3 Out_Scale, out float4 Out_Color, out float Out_AnchorTime, out float Out_TimeVariance, out float3 Out_Velocity)
 			{
 				int idx = In_Index < {PointCount} ? In_Index : {PointCount} - 1;
-				Out_Position = {Buffer}.Load(idx * {Stride} + 0).xyz;
-				Out_Quat = {Buffer}.Load(idx * {Stride} + 1);
-				Out_Scale = {Buffer}.Load(idx * {Stride} + 2).xyz;
-				Out_Color = {Buffer}.Load(idx * {Stride} + 3);
-				Out_AnchorTime = {Buffer}.Load(idx * {Stride} + 0).w;
-				Out_TimeVariance = {Buffer}.Load(idx * {Stride} + 2).w;
-				Out_Velocity = {Buffer}.Load(idx * {Stride} + 4).xyz;
+				Out_Position = {Buffer}.Load(idx * 15 + 0).xyz;
+				Out_Quat = {Buffer}.Load(idx * 15 + 1);
+				Out_Scale = {Buffer}.Load(idx * 15 + 2).xyz;
+				Out_Color = {Buffer}.Load(idx * 15 + 3);
+				Out_AnchorTime = {Buffer}.Load(idx * 15 + 0).w;
+				Out_TimeVariance = {Buffer}.Load(idx * 15 + 2).w;
+				Out_Velocity = {Buffer}.Load(idx * 15 + 4).xyz;
 			}
 		)");
-		OutHLSL += FString::Format(Fmt, { { TEXT("FunctionName"), FunctionInfo.InstanceName }, { TEXT("PointCount"), PointCount }, { TEXT("Buffer"), Buffer }, { TEXT("Stride"), GOPEN_SPLAT_FLOAT4_PER_POINT } });
+		OutHLSL += FString::Format(Fmt, { { TEXT("FunctionName"), FunctionInfo.InstanceName }, { TEXT("PointCount"), PointCount }, { TEXT("Buffer"), Buffer } });
 		return true;
 	}
 	else if (FunctionInfo.DefinitionName == GetPointCountFunctionName)
@@ -417,8 +510,8 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			{
 				if ({TW} == 0) { Out_Weight = 1.0f; return; }
 				int idx = In_Index < {PointCount} ? In_Index : {PointCount} - 1;
-				float aT = {Buffer}.Load(idx * {Stride} + 0).w;
-				float aVar = {Buffer}.Load(idx * {Stride} + 2).w;
+				float aT = {Buffer}.Load(idx * 15 + 0).w;
+				float aVar = {Buffer}.Load(idx * 15 + 2).w;
 				float sig = max(aVar, 1e-6);
 				float dt = aT - {Time};
 				Out_Weight = exp(-0.5 * dt * dt / sig);
@@ -428,7 +521,6 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			{ TEXT("FunctionName"), FunctionInfo.InstanceName },
 			{ TEXT("PointCount"), PointCount },
 			{ TEXT("Buffer"), Buffer },
-			{ TEXT("Stride"), GOPEN_SPLAT_FLOAT4_PER_POINT },
 			{ TEXT("Time"), TimeSym },
 			{ TEXT("TW"), TW } });
 		return true;
@@ -440,9 +532,9 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			{
 				if ({TW} == 0) { Out_Offset = float3(0, 0, 0); return; }
 				int idx = In_Index < {PointCount} ? In_Index : {PointCount} - 1;
-				float3 vel = {Buffer}.Load(idx * {Stride} + 4).xyz;
-				float useVel = {Buffer}.Load(idx * {Stride} + 4).w;
-				float aT = {Buffer}.Load(idx * {Stride} + 0).w;
+				float3 vel = {Buffer}.Load(idx * 15 + 4).xyz;
+				float useVel = {Buffer}.Load(idx * 15 + 4).w;
+				float aT = {Buffer}.Load(idx * 15 + 0).w;
 				Out_Offset = useVel * vel * ({Time} - aT);
 			}
 		)");
@@ -450,9 +542,83 @@ bool UNiagaraDataInterfaceOpenSplat4D::GetFunctionHLSL(const FNiagaraDataInterfa
 			{ TEXT("FunctionName"), FunctionInfo.InstanceName },
 			{ TEXT("PointCount"), PointCount },
 			{ TEXT("Buffer"), Buffer },
-			{ TEXT("Stride"), GOPEN_SPLAT_FLOAT4_PER_POINT },
 			{ TEXT("Time"), TimeSym },
 			{ TEXT("TW"), TW } });
+		return true;
+	}
+	// [SH] View-dependent spherical-harmonics colour evaluation.
+	// Evaluates SH degree-3 (up to 48 coefficients) at ViewDir.
+	else if (FunctionInfo.DefinitionName == GetPointColorSHFunctionName)
+	{
+		static const TCHAR* Fmt = TEXT(R"(
+			void {FunctionName}(int In_Index, float3 In_ViewDir, out float3 Out_ColorLinear)
+			{{
+				int idx = In_Index < {PointCount} ? In_Index : {PointCount} - 1;
+				// DC component (already in slot 3)
+				float4 dcColor = {Buffer}.Load(idx * 15 + 3);
+				float3 result = dcColor.rgb;
+
+				// Sample SH rest coefficients from slots 7-14
+				float3 dir = normalize(In_ViewDir);
+				float x = dir.x; float y = dir.y; float z = dir.z;
+
+				// SH basis values (pre-computed constants for sh_degree=3)
+				// Degree 1 (l=1): 3 coefficients per channel
+				float sh1_0 = 0.4886025119029199 * y;         // Y_{1,-1}
+				float sh1_1 = 0.4886025119029199 * z;         // Y_{1,0}
+				float sh1_2 = 0.4886025119029199 * x;         // Y_{1,1}
+
+				// Degree 2 (l=2): 5 coefficients per channel
+				float sh2_0 = 1.0925484305920792 * x * y;     // Y_{2,-2}
+				float sh2_1 = 1.0925484305920792 * y * z;     // Y_{2,-1}
+				float sh2_2 = 0.31539156525252005 * (3.0*z*z - 1.0); // Y_{2,0}
+				float sh2_3 = 1.0925484305920792 * x * z;     // Y_{2,1}
+				float sh2_4 = 0.5462742152960396 * (x*x - y*y); // Y_{2,2}
+
+				// Read SH rest coefficients from slots 7-14
+				float4 sh_slot0 = {Buffer}.Load(idx * 15 + 7);
+				float4 sh_slot1 = {Buffer}.Load(idx * 15 + 8);
+				float4 sh_slot2 = {Buffer}.Load(idx * 15 + 9);
+				float4 sh_slot3 = {Buffer}.Load(idx * 15 + 10);
+				float4 sh_slot4 = {Buffer}.Load(idx * 15 + 11);
+				float4 sh_slot5 = {Buffer}.Load(idx * 15 + 12);
+				float4 sh_slot6 = {Buffer}.Load(idx * 15 + 13);
+				float4 sh_slot7 = {Buffer}.Load(idx * 15 + 14);
+
+				// Channel R
+				float r_rest0 = sh_slot0.x; float r_rest1 = sh_slot0.y; float r_rest2 = sh_slot0.z;
+				float r_rest3 = sh_slot0.w; float r_rest4 = sh_slot1.x; float r_rest5 = sh_slot1.y;
+				float r_rest6 = sh_slot1.z; float r_rest7 = sh_slot1.w;
+				// degree 3 terms (r_rest8..r_rest14)
+				float r_rest8 = sh_slot2.x; float r_rest9 = sh_slot2.y; float r_rest10 = sh_slot2.z;
+				float r_rest11 = sh_slot2.w; float r_rest12 = sh_slot3.x; float r_rest13 = sh_slot3.y;
+				float r_rest14 = sh_slot3.z;
+
+				// Channel G
+				float g_rest0 = sh_slot3.w; float g_rest1 = sh_slot4.x; float g_rest2 = sh_slot4.y;
+				float g_rest3 = sh_slot4.z; float g_rest4 = sh_slot4.w; float g_rest5 = sh_slot5.x;
+				float g_rest6 = sh_slot5.y; float g_rest7 = sh_slot5.z;
+				float g_rest8 = sh_slot5.w; float g_rest9 = sh_slot6.x; float g_rest10 = sh_slot6.y;
+				float g_rest11 = sh_slot6.z; float g_rest12 = sh_slot6.w; float g_rest13 = sh_slot7.x;
+				float g_rest14 = sh_slot7.y;
+
+				// Channel B
+				float b_rest0 = sh_slot7.z; float b_rest1 = sh_slot7.w;
+				// remaining B rest would need more slots, fall back to 0 for beyond
+
+				// Evaluate SH sum per channel (degree 1 + degree 2)
+				result.r += r_rest0*sh1_0 + r_rest1*sh1_1 + r_rest2*sh1_2 + r_rest3*sh2_0 + r_rest4*sh2_1 + r_rest5*sh2_2 + r_rest6*sh2_3 + r_rest7*sh2_4;
+				result.g += g_rest0*sh1_0 + g_rest1*sh1_1 + g_rest2*sh1_2 + g_rest3*sh2_0 + g_rest4*sh2_1 + g_rest5*sh2_2 + g_rest6*sh2_3 + g_rest7*sh2_4;
+				result.b += b_rest0*sh1_0 + b_rest1*sh1_1 + 0*sh1_2 + 0*sh2_0 + 0*sh2_1 + 0*sh2_2 + 0*sh2_3 + 0*sh2_4;
+
+				// Clamp to valid range and apply sigmoid to convert from logit to linear
+				Out_ColorLinear = max(result, 0.0);
+			}}
+		)");
+		OutHLSL += FString::Format(Fmt, {
+			{ TEXT("FunctionName"), FunctionInfo.InstanceName },
+			{ TEXT("PointCount"), PointCount },
+			{ TEXT("Buffer"), Buffer } });
 		return true;
 	}
 	return false;
@@ -463,6 +629,7 @@ void UNiagaraDataInterfaceOpenSplat4D::GetParameterDefinitionHLSL(const FNiagara
 	Super::GetParameterDefinitionHLSL(ParamInfo, OutHLSL);
 	static const TCHAR* Fmt = TEXT(R"(
 		int {PointCountName};
+			float {SplatScaleName};
 		Buffer<float4> {PointDataBufferName};
 		float {TimeName};
 		int {TemporalWeightingName};
@@ -471,6 +638,7 @@ void UNiagaraDataInterfaceOpenSplat4D::GetParameterDefinitionHLSL(const FNiagara
 		{ TEXT("PointCountName"), FStringFormatArg(ParamInfo.DataInterfaceHLSLSymbol + PointCountName) },
 		{ TEXT("PointDataBufferName"), FStringFormatArg(ParamInfo.DataInterfaceHLSLSymbol + PointDataBufferName) },
 		{ TEXT("TimeName"), FStringFormatArg(ParamInfo.DataInterfaceHLSLSymbol + TimeName) },
+			{ TEXT("SplatScaleName"), FStringFormatArg(ParamInfo.DataInterfaceHLSLSymbol + SplatScaleName) },
 		{ TEXT("TemporalWeightingName"), FStringFormatArg(ParamInfo.DataInterfaceHLSLSymbol + TemporalWeightingName) },
 	};
 	OutHLSL += FString::Format(Fmt, Args);
@@ -488,10 +656,14 @@ void UNiagaraDataInterfaceOpenSplat4D::SetShaderParameters(const FNiagaraDataInt
 	DIProxy.TryUpdateBuffer();
 	UNiagaraDataInterfaceOpenSplat4D* Current = DIProxy.Owner;
 	FShaderParameters* ShaderParameters = Context.GetParameterNestedStruct<FShaderParameters>();
-	ShaderParameters->PointCount = Current->PointCloud ? Current->PointCloud->GetPointCount() : 0;
+
+	// Cache PointCloud locally to avoid repeated TObjPtr deref across thread boundary.
+	UOpenSplat4DPointCloud* Cloud = Current ? Current->PointCloud.Get() : nullptr;
+	ShaderParameters->PointCount = Cloud ? Cloud->GetPointCount() : 0;
 	ShaderParameters->PointDataBuffer = FNiagaraRenderer::GetSrvOrDefaultFloat4(DIProxy.OpenSplat4DPointDataBuffer.SRV);
-	ShaderParameters->Time = Current->Time;
-	ShaderParameters->bTemporalWeighting = Current->bTemporalWeighting ? 1 : 0;
+	ShaderParameters->Time = Current ? Current->Time : 0.f;
+	ShaderParameters->bTemporalWeighting = (Current && Current->bTemporalWeighting) ? 1 : 0;
+	ShaderParameters->SplatScale = Current ? Current->SplatScale : 1.f;
 }
 
 bool UNiagaraDataInterfaceOpenSplat4D::Equals(const UNiagaraDataInterface* Other) const
@@ -545,6 +717,7 @@ bool UNiagaraDataInterfaceOpenSplat4D::CopyToInternal(UNiagaraDataInterface* Des
 		Dst->PointCloud = PointCloud;
 		Dst->Time = Time;
 		Dst->bTemporalWeighting = bTemporalWeighting;
+		Dst->SplatScale = SplatScale;
 	}
 	return true;
 }
@@ -554,10 +727,12 @@ const FName UNiagaraDataInterfaceOpenSplat4D::GetPointCountFunctionName(TEXT("Ge
 const FName UNiagaraDataInterfaceOpenSplat4D::GetPointData4DFunctionName(TEXT("GetPointData4D"));
 const FName UNiagaraDataInterfaceOpenSplat4D::GetTimeWeightFunctionName(TEXT("GetTimeWeight"));
 const FName UNiagaraDataInterfaceOpenSplat4D::GetTimeOffsetFunctionName(TEXT("GetTimeOffset"));
+const FName UNiagaraDataInterfaceOpenSplat4D::GetPointColorSHFunctionName(TEXT("GetPointColorSH"));
 
 const FString UNiagaraDataInterfaceOpenSplat4D::PointCountName(TEXT("_PointCount"));
 const FString UNiagaraDataInterfaceOpenSplat4D::PointDataBufferName(TEXT("_PointDataBuffer"));
 const FString UNiagaraDataInterfaceOpenSplat4D::TimeName(TEXT("Time"));
 const FString UNiagaraDataInterfaceOpenSplat4D::TemporalWeightingName(TEXT("bTemporalWeighting"));
+const FString UNiagaraDataInterfaceOpenSplat4D::SplatScaleName(TEXT("SplatScale"));
 
 #undef LOCTEXT_NAMESPACE

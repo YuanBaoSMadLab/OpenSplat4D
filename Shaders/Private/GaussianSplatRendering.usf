@@ -1,0 +1,264 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+// Shader version: 5 (Nanite-style velocity: use clip positions for both current/previous, no SV_Position conversion)
+
+//RASTERIZATION, Vertex Shader + Pixel Shader
+
+// NOTE: We intentionally do NOT include Common.ush here to avoid bringing in
+// InstancedStereo.ush which declares InstancedView uniform buffer that we don't bind.
+// Instead, we include only what we need.
+#include "/Engine/Public/Platform.ush"
+#include "/Plugin/NanoGS/Private/GaussianDataTypes.ush"
+
+// Velocity encoding matching UE5's Common.ush EncodeVelocityToTexture
+// Velocity is in NDC space [-2, 2] range, encoded to [0, 1] for texture
+// Uses 0.499f to avoid using the full range so that (0,0) clear color is special
+float4 EncodeVelocityToTexture(float3 V)
+{
+	// Gamma encoding for better precision in low velocity ranges (matches VELOCITY_ENCODE_GAMMA)
+	V.xy = sign(V.xy) * sqrt(abs(V.xy)) * (2.0 / sqrt(2.0));
+
+	// 0.499f is a value smaller than 0.5f to avoid using the full range
+	// 0.5f to allow for a range of -2..2 instead of -1..1
+	float4 EncodedV;
+	EncodedV.xy = V.xy * (0.499f * 0.5f) + 32767.0f / 65535.0f;
+
+	// Depth velocity encoding (not used for TAA/TSR, but included for completeness)
+	EncodedV.z = V.z * (0.499f * 0.5f) + 32767.0f / 65535.0f;
+	EncodedV.w = 0.0f;  // No pixel animation flag
+
+	return EncodedV;
+}
+
+// Vertex shader parameters
+#if VERTEXSHADER
+StructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
+StructuredBuffer<uint> SortKeysBuffer;
+uint SplatCount;
+uint DebugMode;  // 0=off, 1=cluster colors (Nanite-style debug view)
+uint EnableNanite;  // 1=Nanite enabled, 0=disabled (non-Nanite assets hidden in debug mode)
+#endif
+
+// Pixel shader parameters for velocity calculation
+// NOTE: All matrices are UN-JITTERED to ensure stable velocity when camera is static
+#if PIXELSHADER
+float4x4 PrevTranslatedWorldToClip;  // Previous frame's un-jittered matrix for velocity
+float3 PreViewTranslation;           // Current frame's pre-view translation
+float3 PrevPreViewTranslation;       // Previous frame's pre-view translation
+#endif
+
+// Convert HSV to RGB (Nanite-style saturated colors)
+float3 HSVToRGB(float3 hsv)
+{
+	float h = hsv.x;
+	float s = hsv.y;
+	float v = hsv.z;
+
+	float c = v * s;
+	float x = c * (1.0 - abs(fmod(h * 6.0, 2.0) - 1.0));
+	float m = v - c;
+
+	float3 rgb;
+	if (h < 1.0/6.0)      rgb = float3(c, x, 0);
+	else if (h < 2.0/6.0) rgb = float3(x, c, 0);
+	else if (h < 3.0/6.0) rgb = float3(0, c, x);
+	else if (h < 4.0/6.0) rgb = float3(0, x, c);
+	else if (h < 5.0/6.0) rgb = float3(x, 0, c);
+	else                  rgb = float3(c, 0, x);
+
+	return rgb + m;
+}
+
+// Hash function to generate pseudo-random color from cluster ID
+// Uses Nanite-style approach: saturated colors via HSV
+float3 HashToColor(uint id)
+{
+	// Use multiple primes for better distribution
+	uint h = id;
+	h = h * 2654435761u;  // Knuth multiplicative hash
+	h ^= h >> 16;
+	h *= 0x85ebca6b;
+	h ^= h >> 13;
+
+	// Generate HSV with pastel colors similar to Nanite debug visualization
+	// Colors go through sRGB→linear composite (pow 2.2), so use higher brightness to compensate
+	float hue = float(h & 0xFFFF) / 65535.0;  // Full hue range
+	float sat = 0.25 + 0.35 * float((h >> 16) & 0xFF) / 255.0;  // 0.25-0.60 saturation (pastel)
+	float val = 0.75 + 0.25 * float((h >> 24) & 0xFF) / 255.0;  // 0.75-1.0 value (bright)
+
+	return HSVToRGB(float3(hue, sat, val));
+}
+
+// Vertex shader output / Pixel shader input
+struct FVertexOutput
+{
+	float4 Position : SV_POSITION;
+	float2 LocalPos : TEXCOORD0;
+	float4 Color : TEXCOORD1;
+	uint DebugFlag : TEXCOORD2;  // 0=normal, 1=debug mode (skip Gaussian)
+	float3 TranslatedWorldPos : TEXCOORD3;  // For velocity calculation in pixel shader
+	float4 CenterClipPos : TEXCOORD4;       // Splat center clip position for velocity (Nanite-style)
+};
+
+// Pixel shader output with velocity for TAA/TSR
+struct FPixelOutput
+{
+	float4 Color : SV_Target0;
+	float4 Velocity : SV_Target1;
+};
+
+// Vertex shader: generate quad from instance data
+FVertexOutput MainVS(
+	uint VertexId : SV_VertexID,
+	uint InstanceId : SV_InstanceID)
+{
+	FVertexOutput Output;
+
+	// Quad corners based on vertex ID:
+	// 0=(-1,-1), 1=(1,-1), 2=(-1,1), 3=(1,1)
+	float2 corner;
+	corner.x = (VertexId & 1) ? 1.0 : -1.0;
+	corner.y = (VertexId & 2) ? 1.0 : -1.0;
+
+	// Get sorted splat index
+	uint splatIndex = SortKeysBuffer[InstanceId];
+	FGaussianSplatViewData viewData = ViewDataBuffer[splatIndex];
+
+	// Default: normal rendering mode
+	Output.DebugFlag = 0;
+	Output.TranslatedWorldPos = viewData.TranslatedWorldPos;
+	Output.CenterClipPos = viewData.ClipPosition;
+
+	// Check validity (w <= 0 means invalid/behind camera)
+	if (viewData.ClipPosition.w <= 0.0)
+	{
+		// Output degenerate triangle
+		Output.Position = float4(0, 0, 0, 1);
+		Output.LocalPos = float2(0, 0);
+		Output.Color = float4(0, 0, 0, 0);
+		Output.TranslatedWorldPos = float3(0, 0, 0);
+		Output.CenterClipPos = float4(0, 0, 0, 1);
+		return Output;
+	}
+
+	// NDC position of splat center
+	float2 ndc = viewData.ClipPosition.xy / viewData.ClipPosition.w;
+
+	// Use covariance-based axes for quad offset
+	float2 offset = corner.x * viewData.Axis1 + corner.y * viewData.Axis2;
+
+	// Unpack color
+	float2 rg = UnpackHalf2x16(viewData.PackedColorRG);
+	float2 ba = UnpackHalf2x16(viewData.PackedColorBA);
+	float4 color = float4(rg.x, rg.y, ba.x, ba.y);
+
+	// Debug mode: override color with cluster-based coloring (Nanite-style)
+	// Only show debug visualization for Nanite-enabled assets; non-Nanite assets are not rendered
+	if (DebugMode == 1)
+	{
+		if (EnableNanite == 1)
+		{
+			// Show cluster colors - each cluster gets a unique random color
+			// Use opaque rendering for clear debug visualization (like Nanite)
+			color.rgb = HashToColor(viewData.ClusterID);
+			color.a = 1.0;  // Fully opaque for solid colors
+			Output.DebugFlag = 1;  // Skip Gaussian falloff in pixel shader
+		}
+		else
+		{
+			// Non-Nanite asset: don't render (background is already cleared to black)
+			Output.Position = float4(0, 0, 0, 1);
+			Output.LocalPos = float2(0, 0);
+			Output.Color = float4(0, 0, 0, 0);
+			return Output;
+		}
+	}
+
+	Output.Color = color;
+
+	// Final clip position
+	Output.Position = float4(
+		(ndc + offset) * viewData.ClipPosition.w,
+		viewData.ClipPosition.z,
+		viewData.ClipPosition.w
+	);
+
+	Output.LocalPos = corner;
+
+	return Output;
+}
+
+// Pixel shader: Gaussian falloff with alpha blending + velocity output (Nanite-style)
+FPixelOutput MainPS(FVertexOutput Input)
+{
+	FPixelOutput Output;
+	float4 color = Input.Color;
+
+	// Calculate velocity for TAA/TSR reprojection
+	// IMPORTANT: Both current and previous clip positions use UN-JITTERED projection matrices.
+	// This ensures velocity is stable when camera is static (we skip CalcViewData recomputation
+	// when camera doesn't move, so jittered positions would cause velocity errors).
+
+	// Current NDC from the splat center's clip position (computed with un-jittered matrix)
+	float2 CurrentNDC = Input.CenterClipPos.xy / Input.CenterClipPos.w;
+
+	// Previous frame: convert TranslatedWorldPos to previous frame's translated world space
+	float3 WorldPos = Input.TranslatedWorldPos - PreViewTranslation;
+	float3 PrevTranslatedWorldPos = WorldPos + PrevPreViewTranslation;
+	float4 PrevClipPos = mul(float4(PrevTranslatedWorldPos, 1.0), PrevTranslatedWorldToClip);
+	float2 PrevNDC = PrevClipPos.xy / PrevClipPos.w;
+
+	// No jitter subtraction needed - both matrices are un-jittered
+
+	// Compute velocity in NDC space (current - previous position)
+	float CurrentDeviceZ = Input.CenterClipPos.z / Input.CenterClipPos.w;
+	float PrevDeviceZ = PrevClipPos.z / PrevClipPos.w;
+	float3 Velocity = float3(CurrentNDC - PrevNDC, CurrentDeviceZ - PrevDeviceZ);
+
+	// Debug mode: solid opaque colors without Gaussian falloff (Nanite-style)
+	if (Input.DebugFlag != 0)
+	{
+		// Simple circle cutoff for cleaner debug visualization
+		float distSq = dot(Input.LocalPos, Input.LocalPos);
+		if (distSq > 1.0)
+		{
+			discard;
+		}
+		// Output solid color (no premultiplied alpha, no Gaussian)
+		Output.Color = color;
+		Output.Velocity = EncodeVelocityToTexture(Velocity);
+		return Output;
+	}
+
+	// Normalized Gaussian falloff (matches SuperSplat)
+	// Shifts and rescales exp(-4*A) so it reaches exactly 0.0 at the quad edge,
+	// eliminating the visible discontinuity from a nonzero cutoff
+	float distSq = dot(Input.LocalPos, Input.LocalPos);
+
+	// Discard pixels outside the unit circle for efficiency
+	if (distSq > 1.0)
+	{
+		discard;
+	}
+
+	static const float EXP4 = exp(-4.0);           // ≈ 0.0183
+	static const float INV_EXP4 = 1.0 / (1.0 - EXP4); // normalization factor
+	float gaussianWeight = (exp(-4.0 * distSq) - EXP4) * INV_EXP4;
+
+	// Apply Gaussian to alpha
+	color.a = saturate(gaussianWeight * color.a);
+
+	// Premultiplied alpha
+	color.rgb *= color.a;
+
+	// Discard nearly transparent pixels for efficiency
+	// Match Unity's threshold: 1/255 ≈ 0.00392
+	if (color.a < 1.0/255.0)
+	{
+		discard;
+	}
+
+	Output.Color = color;
+	// Output velocity for TAA/TSR (Nanite-style encoding)
+	Output.Velocity = EncodeVelocityToTexture(Velocity);
+	return Output;
+}

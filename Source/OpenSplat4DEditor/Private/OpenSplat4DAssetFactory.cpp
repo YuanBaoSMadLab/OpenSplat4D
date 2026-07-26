@@ -1,23 +1,23 @@
-﻿#include "OpenSplat4DAssetFactory.h"
+#include "OpenSplat4DAssetFactory.h"
 #include "OpenSplat4DEditorModule.h"
 #include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DPointCloudEditor.h"
 #include "OpenSplat4DLocalization.h"
+#include "OpenSplat4DNiagaraSetup.h"
 #include "Misc/Paths.h"
 
 #define LOCTEXT_NAMESPACE "OpenSplat4DAssetFactory"
 
 UOpenSplat4DPointCloudAssetFactory::UOpenSplat4DPointCloudAssetFactory()
 {
-	// [FIX] 瀵归綈鏁欏笀椤圭洰锛歜CreateNew 蹇呴』涓?false銆?
-	// 鑻ヨ涓?true锛孶E 鍦ㄦ煇浜涙儏鍐典笅浼氳蛋 FactoryCreateNew 鍒涘缓绌鸿祫浜э紝
-	// 瀵艰嚧瀵煎叆鐨?ply 鏍规湰涓嶄細琚姞杞斤紙Points 姘歌繙涓虹┖锛夈€?
+	// [DISABLED] 自研管线已停用，PLY 导入由 NanoGS 模块的 GaussianSplatAssetFactory 接管。
+	// 保留此类以兼容已存在的 OpenSplat4DPointCloud 资产，但不再注册 PLY/4dgs 格式。
 	bCreateNew = false;
 	bEditAfterNew = true;
-	bEditorImport = true;
+	bEditorImport = false;
 	SupportedClass = UOpenSplat4DPointCloud::StaticClass();
-	Formats.Add(TEXT("ply;PLY Point Cloud (3DGS)"));
-	Formats.Add(TEXT("4dgs;OpenSplat4D Point Cloud"));
+	// Formats.Add(TEXT("ply;PLY Point Cloud (3DGS)"));
+	// Formats.Add(TEXT("4dgs;OpenSplat4D Point Cloud"));
 }
 
 UObject* UOpenSplat4DPointCloudAssetFactory::FactoryCreateNew(
@@ -50,6 +50,9 @@ UObject* UOpenSplat4DPointCloudAssetFactory::FactoryCreateFile(
 	bool& bOutOperationCanceled)
 {
 	bOutOperationCanceled = false;
+
+	// [DISABLED] 全面禁用 Niagara 路径：导入时不再自动创建 Niagara 资产。
+	// OpenSplat4DNiagaraSetup::EnsureAssetsExist();
 
 	UOpenSplat4DPointCloud* Asset = NewObject<UOpenSplat4DPointCloud>(InParent, InClass, InName, Flags);
 	if (!Asset)

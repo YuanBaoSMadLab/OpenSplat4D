@@ -1,0 +1,323 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+//Purpose: Transform 3D splat data → 2D screen-space data
+
+#include "/Plugin/NanoGS/Private/GaussianSplatting.ush"
+
+// Shader parameters
+ByteAddressBuffer PackedSplatBuffer;  // 16 bytes/splat packed data
+ByteAddressBuffer SHBuffer;           // SH data (currently unused)
+RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer; //pass calculated result to ViewDataBuffer
+
+// Cluster visibility integration (UNIFIED APPROACH)
+// SplatClusterIndexBuffer maps ALL splats (original + LOD) to their cluster
+// - Original splats (index < OriginalSplatCount) -> leaf cluster ID
+// - LOD splats (index >= OriginalSplatCount) -> parent cluster ID
+StructuredBuffer<uint> SplatClusterIndexBuffer;
+StructuredBuffer<uint> ClusterVisibilityBitmap;       // Leaf cluster visibility
+StructuredBuffer<uint> LODClusterSelectedBitmap;      // Parent cluster LOD selection
+StructuredBuffer<uint> SelectedClusterBuffer;  // Maps leaf cluster -> selected cluster for debug viz
+uint UseClusterCulling;  // 1 = check visibility, 0 = process all splats
+uint UseLODRendering;    // 1 = enable LOD rendering (unified approach)
+uint OriginalSplatCount; // Count of original splats (LOD splats start after this)
+
+// Compaction mode: process only visible splats from CompactedSplatIndices
+StructuredBuffer<uint> CompactedSplatIndices;  // Indices of visible splats
+uint UseCompaction;      // 1 = use compacted indices (skip visibility checks)
+uint VisibleSplatCount;  // Number of visible splats (when using compaction)
+
+float4x4 LocalToWorld;
+float4x4 WorldToPLY;   // Transforms world direction to PLY/SH space for SH evaluation
+float4x4 WorldToClip;
+float4x4 WorldToView;
+float3 PreViewTranslation;  // For translating world position (velocity calculation)
+float3 CameraPosition;
+float2 ScreenSize;
+float2 FocalLength;
+uint SplatCount;
+uint SHOrder;
+uint NumSHCoeffs;      // Coefficients to evaluate (based on SHOrder: 4, 9, or 16)
+uint SHBufferCoeffs;   // Coefficients actually stored per splat in SHBuffer (based on asset SHBands)
+uint UseSHRendering;   // 1 = use view-dependent SH evaluation, 0 = use pre-computed DC color
+float OpacityScale;
+float SplatScale;
+uint GlobalBaseOffset; // Offset into global ViewDataBuffer (for multi-proxy global accumulator, non-compaction path)
+
+// Global compaction path: read per-proxy base offset from GPU prefix-sum buffer
+StructuredBuffer<uint> GlobalBaseOffsetsBuffer; // [MAX_PROXY_COUNT+1] prefix sums
+uint ProxyIndex;             // Index of this proxy in the global array
+uint UseGlobalCompactionPath; // 1 = read offset from GlobalBaseOffsetsBuffer[ProxyIndex]
+uint MaxRenderBudget; // Budget cap: skip writes at indices >= this value (0 = no cap)
+
+// Check if a leaf cluster is visible using the visibility bitmap
+bool IsClusterVisible(uint clusterIndex)
+{
+	uint bitmapIndex = clusterIndex / 32;
+	uint bitMask = 1u << (clusterIndex % 32);
+	return (ClusterVisibilityBitmap[bitmapIndex] & bitMask) != 0;
+}
+
+// Check if a parent cluster is selected for LOD rendering
+bool IsLODClusterSelected(uint clusterIndex)
+{
+	uint bitmapIndex = clusterIndex / 32;
+	uint bitMask = 1u << (clusterIndex % 32);
+	return (LODClusterSelectedBitmap[bitmapIndex] & bitMask) != 0;
+}
+
+// Helper: write an invalid (culled) splat into ViewDataBuffer
+void WriteInvalidSplat(uint outputIndex, uint clusterID, uint lodLevel)
+{
+	FGaussianSplatViewData viewData;
+	viewData.ClipPosition = float4(0, 0, 0, -1);
+	viewData.TranslatedWorldPos = float3(0, 0, 0);
+	viewData.TranslatedWorldPosPad = 0;
+	viewData.PackedColorRG = 0;
+	viewData.PackedColorBA = 0;
+	viewData.Axis1 = float2(0, 0);
+	viewData.Axis2 = float2(0, 0);
+	viewData.ClusterID = clusterID;
+	viewData.Padding = lodLevel;
+	ViewDataBuffer[outputIndex] = viewData;
+}
+
+// Core: transform a single splat to screen space and write to ViewDataBuffer
+void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uint selectedLODLevel)
+{
+	// Unpack splat data from packed buffer
+	FUnpackedSplat splat = UnpackSplat(PackedSplatBuffer, splatIndex);
+
+	float3 localPos = splat.Position;
+	float4 rotation = splat.Rotation;
+	float3 scale = splat.Scale * SplatScale;
+	float4 colorOpacity = splat.ColorOpacity;
+	float opacity = colorOpacity.a * OpacityScale;
+
+	// Transform to world space
+	float4 worldPos = mul(float4(localPos, 1.0), LocalToWorld);
+	float4 clipPos = mul(worldPos, WorldToClip);
+
+	// Store translated world position for velocity calculation in pixel shader
+	// TranslatedWorld = World + PreViewTranslation (matches UE convention)
+	float3 translatedWorldPos = worldPos.xyz + PreViewTranslation;
+
+	// Cull if behind camera
+	if (clipPos.w <= 0.0)
+	{
+		WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
+		return;
+	}
+
+	// Transform to view space
+	float4 viewPos = mul(worldPos, WorldToView);
+
+	// Clamp view position to prevent extreme projections at edge of view
+	float tanFovX = (ScreenSize.x * 0.5) / FocalLength.x;
+	float tanFovY = (ScreenSize.y * 0.5) / FocalLength.y;
+	float limX = 1.3 * tanFovX;
+	float limY = 1.3 * tanFovY;
+	viewPos.x = clamp(viewPos.x / viewPos.z, -limX, limX) * viewPos.z;
+	viewPos.y = clamp(viewPos.y / viewPos.z, -limY, limY) * viewPos.z;
+
+	// Calculate covariance
+	float3x3 cov3D_local = CalcCovariance3D(rotation, scale);
+	float3x3 localToWorldRot = (float3x3)LocalToWorld;
+	float3x3 cov3D_world = mul(transpose(localToWorldRot), mul(cov3D_local, localToWorldRot));
+	float3x3 viewMat = (float3x3)WorldToView;
+	float2x2 cov2D = CalcCovariance2D(cov3D_world, viewMat, viewPos.xyz, FocalLength);
+
+	// Decompose to axes
+	float2 axis1, axis2;
+	DecomposeCovariance2D(cov2D, axis1, axis2);
+
+	// Convert to NDC
+	axis1 = axis1 / ScreenSize * 4.0;
+	axis2 = axis2 / ScreenSize * 4.0;
+
+	// Safety clamp
+	float maxAxisSize = 2.0;
+	if (any(isnan(axis1)) || any(isinf(axis1)) || length(axis1) > maxAxisSize)
+	{
+		axis1 = float2(0.01, 0.0);
+	}
+	if (any(isnan(axis2)) || any(isinf(axis2)) || length(axis2) > maxAxisSize)
+	{
+		axis2 = float2(0.0, 0.01);
+	}
+
+	// Frustum culling
+	float2 ndcCenter = clipPos.xy / clipPos.w;
+	float2 ndcExtent = abs(axis1) + abs(axis2);
+	if (ndcCenter.x - ndcExtent.x > 1.0 || ndcCenter.x + ndcExtent.x < -1.0 ||
+		ndcCenter.y - ndcExtent.y > 1.0 || ndcCenter.y + ndcExtent.y < -1.0)
+	{
+		WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
+		return;
+	}
+
+	// Compute final color
+	float3 finalColor;
+
+	if (UseSHRendering && NumSHCoeffs > 0)
+	{
+		// View-dependent SH rendering
+		// Load SH coefficients from buffer (DC + higher-order)
+		float3 shDC;
+		float3 sh[15];
+		LoadSH(SHBuffer, splatIndex, SHBufferCoeffs, NumSHCoeffs, shDC, sh);
+
+		// Compute view direction in world space (FROM splat TO camera)
+		float3 viewDirWorld = normalize(CameraPosition - worldPos.xyz);
+
+		// Transform view direction from world space to PLY/SH space
+		// Step 1: World to Local (for actor rotation support)
+		// For direction vectors, we use transpose of LocalToWorld (inverse for orthonormal rotation)
+		float3 viewDirLocal = mul(viewDirWorld, transpose((float3x3)LocalToWorld));
+
+		// Step 2: UE Local to PLY space (hardcoded, no matrix ambiguity)
+		// UE: X-forward, Y-right, Z-up
+		// PLY: X-right, Y-down, Z-forward
+		// Mapping: PLY.X = UE.Y, PLY.Y = -UE.Z, PLY.Z = UE.X
+		float3 viewDirPLY = float3(viewDirLocal.y, -viewDirLocal.z, viewDirLocal.x);
+
+		// Negate to convert from splat->camera to camera->splat direction (SH training convention)
+		viewDirPLY = -viewDirPLY;
+
+		// Renormalize: LocalToWorld may contain scale, which denormalizes viewDirLocal.
+		// SH basis functions require a unit direction vector.
+		viewDirPLY = normalize(viewDirPLY);
+
+		// Evaluate spherical harmonics with view direction
+		float3 shColor = EvaluateSH(viewDirPLY, shDC, sh, SHOrder);
+
+		// Convert SH result to displayable color (add 0.5 offset)
+		// This produces sRGB color values (same as f_dc storage format)
+		shColor = 0.5 + shColor;
+
+		// Output sRGB values directly — do NOT convert to linear here.
+		// Alpha blending must happen in sRGB space to match 3DGS training.
+		// The sRGB→linear conversion is deferred to the composite pass
+		// (after all splats are blended in sRGB space).
+		finalColor = max(shColor, 0.0);
+	}
+	else
+	{
+		// DC-only rendering (use pre-computed color from packed buffer)
+		// Output sRGB values directly — linear conversion deferred to composite pass.
+		finalColor = colorOpacity.rgb;
+	}
+
+	// Store view data
+	FGaussianSplatViewData viewData;
+	viewData.ClipPosition = clipPos;
+	viewData.TranslatedWorldPos = translatedWorldPos;
+	viewData.TranslatedWorldPosPad = 0;
+	viewData.PackedColorRG = PackHalf2x16(finalColor.rg);
+	viewData.PackedColorBA = PackHalf2x16(float2(finalColor.b, opacity));
+	viewData.Axis1 = axis1;
+	viewData.Axis2 = axis2;
+	viewData.ClusterID = selectedClusterID;
+	viewData.Padding = selectedLODLevel;
+	ViewDataBuffer[outputIndex] = viewData;
+}
+
+[numthreads(256, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint threadIndex = DispatchThreadId.x;
+
+	// COMPACTION MODE: Use pre-compacted visible splat indices
+	// This eliminates visibility checks and ensures contiguous output
+	if (UseCompaction)
+	{
+		if (threadIndex >= VisibleSplatCount)
+		{
+			return;
+		}
+
+		// Determine the base offset for writing into ViewDataBuffer.
+		uint CompactionGlobalBase = UseGlobalCompactionPath
+			? GlobalBaseOffsetsBuffer[ProxyIndex]
+			: GlobalBaseOffset;
+
+		// Budget cap: skip writes beyond MaxRenderBudget to prevent OOB access
+		if (MaxRenderBudget > 0u && (CompactionGlobalBase + threadIndex) >= MaxRenderBudget)
+		{
+			return;
+		}
+
+		// Read actual splat index from compacted list
+		uint splatIndex = CompactedSplatIndices[threadIndex];
+
+		// Get cluster info for debug visualization
+		uint clusterIndex = SplatClusterIndexBuffer[splatIndex];
+		bool isLODSplat = (splatIndex >= OriginalSplatCount);
+
+		uint selectedClusterID = clusterIndex;
+		uint selectedLODLevel = isLODSplat ? 1 : 0;
+
+		if (!isLODSplat)
+		{
+			uint packedSelected = SelectedClusterBuffer[clusterIndex];
+			selectedClusterID = packedSelected & 0x00FFFFFF;
+			selectedLODLevel = (packedSelected >> 24) & 0xFF;
+		}
+
+		ProcessSplat(splatIndex, CompactionGlobalBase + threadIndex, selectedClusterID, selectedLODLevel);
+		return;
+	}
+
+	// NON-COMPACTION MODE: Original behavior (process all splats)
+	uint splatIndex = threadIndex;
+	if (splatIndex >= SplatCount)
+	{
+		return;
+	}
+
+	// UNIFIED APPROACH: Handle both original and LOD splats
+	bool isLODSplat = (splatIndex >= OriginalSplatCount);
+	uint clusterIndex = 0;
+	uint selectedClusterID = 0;
+	uint selectedLODLevel = 0;
+
+	if (UseClusterCulling)
+	{
+		clusterIndex = SplatClusterIndexBuffer[splatIndex];
+
+		if (isLODSplat)
+		{
+			// LOD splat: check if its parent cluster is selected for LOD rendering
+			if (!UseLODRendering || !IsLODClusterSelected(clusterIndex))
+			{
+				WriteInvalidSplat(GlobalBaseOffset + splatIndex, clusterIndex, 1);
+				return;
+			}
+			selectedClusterID = clusterIndex;
+			selectedLODLevel = 1;
+		}
+		else
+		{
+			// Original splat: use leaf cluster visibility logic
+			uint leafClusterIndex = clusterIndex;
+
+			uint packedSelected = SelectedClusterBuffer[leafClusterIndex];
+			selectedClusterID = packedSelected & 0x00FFFFFF;
+			selectedLODLevel = (packedSelected >> 24) & 0xFF;
+
+			if (!IsClusterVisible(leafClusterIndex))
+			{
+				WriteInvalidSplat(GlobalBaseOffset + splatIndex, selectedClusterID, selectedLODLevel);
+				return;
+			}
+
+			// LOD Rendering: Skip original splats when covered by a parent's LOD representation
+			if (UseLODRendering && selectedClusterID != leafClusterIndex)
+			{
+				WriteInvalidSplat(GlobalBaseOffset + splatIndex, selectedClusterID, selectedLODLevel);
+				return;
+			}
+		}
+	}
+
+	ProcessSplat(splatIndex, GlobalBaseOffset + splatIndex, selectedClusterID, selectedLODLevel);
+}

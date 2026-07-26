@@ -4,8 +4,7 @@
 #include "Widgets/SWidget.h"
 #include "SEditorViewport.h"
 #include "AssetEditorViewportLayout.h"
-#include "OpenSplat4DBillboardComponent.h"
-#include "OpenSplat4DPointCloudActor.h"
+#include "OpenSplat4DSplatActor.h"
 #include "SAssetEditorViewport.h"
 
 class FEditorViewportClient;
@@ -16,8 +15,10 @@ class FOpenSplat4DPointCloudEditor;
 
 /**
  * Editor viewport for the OpenSplat4D point cloud asset editor. Hosts a preview
- * AOpenSplat4DPointCloudActor inside an FAdvancedPreviewScene so the self-contained
- * Billboard renderer draws the splats without needing a Niagara System asset.
+ * AOpenSplat4DSplatActor inside an FAdvancedPreviewScene. The actor's
+ * UInstancedStaticMeshComponent renders the splats (自研管线，不走 Niagara)。
+ *
+ * [DISABLED] Niagara 路径已禁用，资产编辑器预览改用自研 SplatActor。
  */
 class SOpenSplat4DPointCloudEditorViewport : public SAssetEditorViewport
 {
@@ -26,14 +27,17 @@ class SOpenSplat4DPointCloudEditorViewport : public SAssetEditorViewport
 	SLATE_END_ARGS()
 public:
 	void Construct(const FArguments& InArgs);
-	UOpenSplat4DBillboardComponent* GetPreviewComponent() { return PreviewComponent; }
 	TSharedRef<FAdvancedPreviewScene> GetPreviewScene() { return PreviewScene.ToSharedRef(); }
+
+	/** 获取预览 SplatActor（自研管线，ISMC 渲染） */
+	AOpenSplat4DSplatActor* GetPreviewSplatActor() { return PreviewActor.Get(); }
+
 protected:
 	virtual void BindCommands() override {}
 	virtual TSharedRef<FEditorViewportClient> MakeEditorViewportClient() override;
 private:
 	TWeakPtr<FOpenSplat4DPointCloudEditor> Editor;
 	TSharedPtr<FAdvancedPreviewScene> PreviewScene;
-	UOpenSplat4DBillboardComponent* PreviewComponent = nullptr;
-	TObjectPtr<AOpenSplat4DPointCloudActor> PreviewActor = nullptr;
+	// [DISABLED] 旧 NiagaraComponent 引用已移除，改用 SplatActor 的 ISMC
+	TWeakObjectPtr<AOpenSplat4DSplatActor> PreviewActor;
 };

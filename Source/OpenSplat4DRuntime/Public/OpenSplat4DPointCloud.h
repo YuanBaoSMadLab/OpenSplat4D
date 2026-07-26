@@ -4,9 +4,8 @@
 #include "UObject/NoExportTypes.h"
 #include "Curves/RichCurve.h"
 #include "OpenSplat4DPoint.h"
+#include "OpenSplat4DRuntimeModule.h"
 #include "OpenSplat4DPointCloud.generated.h"
-
-OPENSPLAT4DRUNTIME_API DECLARE_LOG_CATEGORY_EXTERN(LogOpenSplat4D, Log, All);
 
 class UOpenSplat4DPointCloud;
 
@@ -45,6 +44,41 @@ public:
 	/** LOD feature granularity used by CalcFeatureCurve. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D")
 	int32 FeatureLevel = 64;
+
+	/** Splat 尺寸缩放因子（渲染参数）。默认 1.0 为标准 3DGS 尺度。
+	 *  调大 splat 更粗（适合整体过小/稀疏），调小更精细。
+	 *  修改后资产编辑器预览和关卡Actor会自动重建。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D",
+		meta = (ClampMin = "0.01", ClampMax = "50.0", UIMin = "0.01", UIMax = "10.0"))
+	float SplatScale = 1.0f;
+
+	/** 最小 splat 半径（世界单位）。小于此值的 splat 会被钳制到此大小以防止亚像素消失。*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D|LOD",
+		meta = (ClampMin = "0.01", ClampMax = "10.0", UIMin = "0.01", UIMax = "5.0"))
+	float MinSplatRadius = 0.5f;
+
+	/** 距离相机多远（世界单位）开始减少粒子数量以优化性能。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D|LOD",
+		meta = (ClampMin = "50.0", ClampMax = "20000.0", UIMin = "50.0", UIMax = "5000.0"))
+	float LODDitherStartDistance = 500.0f;
+
+	/** 粒子数量减少到最大（保留10%）的距离。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D|LOD",
+		meta = (ClampMin = "500.0", ClampMax = "50000.0", UIMin = "500.0", UIMax = "10000.0"))
+	float LODDitherEndDistance = 5000.0f;
+
+	/** 远处 splat 最小屏幕占比（控制放大保可见尺寸的力度，0=不放大）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D|LOD",
+		meta = (ClampMin = "0.0", ClampMax = "0.05", UIMin = "0.0", UIMax = "0.02"))
+	float MinSplatScreenSize = 0.005f;
+
+	/** Per-point size multiplier (default 1.0). Edited via SplatActor box selection tool. Serialized with asset. */
+	UPROPERTY()
+	TArray<float> PerPointSizeScale;
+
+	/** Reset all per-point size scales to 1.0. */
+	UFUNCTION(BlueprintCallable, Category = "OpenSplat4D")
+	void ResetAllPointSizeScales();
 
 	// ---- point access -------------------------------------------------------
 	// NOTE: This asset is a *pure preview* object. The on-disk dataset locations
@@ -107,6 +141,10 @@ public:
 	 *  drag-into-level, actor-spawn and cook load paths (unlike the editor-only
 	 *  InitEditor reload). */
 	virtual void PostLoad() override;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 private:
 	/** When an asset loads with 0 points and no recorded SourceFilePath, look for

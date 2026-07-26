@@ -1,0 +1,374 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Purpose: Frustum culling and LOD selection at cluster level for Nanite-style optimization
+// Outputs list of visible clusters with LOD selection info
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/NanoGS/Private/GaussianDataTypes.ush"
+
+// Input: All clusters
+StructuredBuffer<FGaussianGPUCluster> ClusterBuffer;
+
+// Output: Visible cluster indices and count
+// Each entry is packed: lower 24 bits = cluster index, upper 8 bits = use LOD flag
+RWStructuredBuffer<uint> VisibleClusterBuffer;
+RWStructuredBuffer<uint> VisibleClusterCountBuffer;
+
+// Indirect draw argument buffer for GPU-driven rendering
+// Structure: [0] IndexCountPerInstance, [1] InstanceCount, [2] StartIndexLocation, [3] BaseVertexLocation, [4] StartInstanceLocation
+RWStructuredBuffer<uint> IndirectDrawArgsBuffer;
+
+// Cluster visibility bitmap (1 bit per cluster)
+// Used by CalcViewData to check if a splat's cluster is visible
+RWStructuredBuffer<uint> ClusterVisibilityBitmap;
+uint ClusterVisibilityBitmapSize;  // Number of uint32s in bitmap
+
+// Selected cluster buffer for Nanite-style debug visualization
+// Maps each leaf cluster to its selected cluster ID (may be parent if LOD is used)
+RWStructuredBuffer<uint> SelectedClusterBuffer;
+
+// LOD cluster tracking - for rendering parent LOD splats
+// Unique parent clusters that need their LOD splats rendered
+RWStructuredBuffer<uint> LODClusterBuffer;
+// Count of unique LOD clusters
+RWStructuredBuffer<uint> LODClusterCountBuffer;
+// Bitmap to track which parent clusters have been claimed (1 bit per cluster)
+RWStructuredBuffer<uint> LODClusterSelectedBitmap;
+// Total LOD splats to render (sum of all selected parent cluster LOD splat counts)
+RWStructuredBuffer<uint> LODSplatTotalBuffer;
+// Output count for GPU-driven LOD splat processing (reset before LOD processing)
+RWStructuredBuffer<uint> LODSplatOutputCountBuffer;
+// Whether LOD rendering is enabled
+uint UseLODRendering;
+
+// Debug: Force specific LOD level (-1 = auto, 0 = leaf only, 1+ = specific level)
+int DebugForceLODLevel;
+
+// Uniforms
+float4x4 LocalToWorld;
+float4x4 WorldToClip;
+uint ClusterCount;
+uint LeafClusterCount;
+
+// LOD selection parameters
+float3 CameraPosition;    // World space camera position
+float ScreenHeight;       // Projection scale factor: max(ProjMatrix[0][0], ProjMatrix[1][1]), FOV-based, resolution-independent
+float ErrorThreshold;     // Max acceptable projected error (resolution-independent)
+float LODBias;            // Bias to shift LOD selection (+/- to prefer coarser/finer)
+
+// Frustum planes in world space (extracted from ViewProjection matrix)
+// Each plane: float4(normal.xyz, distance)
+float4 FrustumPlanes[6];
+
+// Pack cluster index and LOD flag into single uint
+// Bits 0-23: cluster index (supports up to 16M clusters)
+// Bit 24: use LOD splats flag (1 = use LOD splats, 0 = use original splats)
+uint PackClusterInfo(uint clusterIndex, bool useLOD)
+{
+	return (clusterIndex & 0x00FFFFFF) | (useLOD ? 0x01000000 : 0);
+}
+
+// Unpack cluster index from packed value
+uint UnpackClusterIndex(uint packed)
+{
+	return packed & 0x00FFFFFF;
+}
+
+// Unpack LOD flag from packed value
+bool UnpackUseLOD(uint packed)
+{
+	return (packed & 0x01000000) != 0;
+}
+
+// Calculate projected error (resolution-independent, like Nanite)
+// ScreenHeight here is actually max(ProjMatrix[0][0], ProjMatrix[1][1]) = 1/tan(HalfFOV)
+// This depends only on FOV, not viewport pixel size, so LOD won't change on viewport resize
+float CalculateProjectedError(float worldSpaceError, float distanceToCamera)
+{
+	if (distanceToCamera < 0.001)
+	{
+		return 1000000.0; // Very close, use finest LOD
+	}
+
+	// projected_error = (error_world / distance) * projection_scale * 0.5
+	// projection_scale = max(Proj[0][0], Proj[1][1]) = 1/tan(HalfFOV)
+	return (worldSpaceError / distanceToCamera) * ScreenHeight * 0.5;
+}
+
+// Test if a sphere is potentially visible (intersects or inside frustum)
+// Returns true if sphere should be considered visible
+bool IsSphereInFrustum(float3 center, float radius)
+{
+	// Test against all 6 frustum planes
+	// A sphere is culled only if it's completely outside any single plane
+	[unroll]
+	for (int i = 0; i < 6; i++)
+	{
+		float3 normal = FrustumPlanes[i].xyz;
+		float distance = FrustumPlanes[i].w;
+
+		// Signed distance from sphere center to plane
+		float dist = dot(normal, center) + distance;
+
+		// If sphere is completely behind plane (outside frustum), cull it
+		if (dist < -radius)
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+// Alternative: Test bounding box against frustum (more accurate but slower)
+bool IsAABBInFrustum(float3 boundsMin, float3 boundsMax)
+{
+	// Test against all 6 frustum planes
+	[unroll]
+	for (int i = 0; i < 6; i++)
+	{
+		float3 normal = FrustumPlanes[i].xyz;
+		float distance = FrustumPlanes[i].w;
+
+		// Find the corner most in the direction of the plane normal (p-vertex)
+		float3 pVertex;
+		pVertex.x = (normal.x >= 0) ? boundsMax.x : boundsMin.x;
+		pVertex.y = (normal.y >= 0) ? boundsMax.y : boundsMin.y;
+		pVertex.z = (normal.z >= 0) ? boundsMax.z : boundsMin.z;
+
+		// If p-vertex is behind the plane, AABB is completely outside
+		if (dot(normal, pVertex) + distance < 0)
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+[numthreads(64, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint clusterIndex = DispatchThreadId.x;
+
+	// Only process leaf clusters (LODLevel == 0)
+	// LOD selection will determine if we use this leaf or a parent's LOD representation
+	if (clusterIndex >= LeafClusterCount)
+	{
+		return;
+	}
+
+	FGaussianGPUCluster cluster = ClusterBuffer[clusterIndex];
+
+	// Skip empty clusters
+	if (cluster.SplatCount == 0)
+	{
+		return;
+	}
+
+	// Transform bounding sphere center to world space
+	float4 worldCenter = mul(float4(cluster.BoundingSphere.xyz, 1.0), LocalToWorld);
+
+	// Scale radius by maximum scale factor of LocalToWorld
+	// This is conservative (may overestimate) but ensures we don't cull visible clusters
+	float3 scaleX = float3(LocalToWorld[0][0], LocalToWorld[0][1], LocalToWorld[0][2]);
+	float3 scaleY = float3(LocalToWorld[1][0], LocalToWorld[1][1], LocalToWorld[1][2]);
+	float3 scaleZ = float3(LocalToWorld[2][0], LocalToWorld[2][1], LocalToWorld[2][2]);
+	float maxScale = max(max(length(scaleX), length(scaleY)), length(scaleZ));
+	float worldRadius = cluster.BoundingSphere.w * maxScale;
+
+	// Frustum culling test
+	bool isVisible = IsSphereInFrustum(worldCenter.xyz, worldRadius);
+
+	if (!isVisible)
+	{
+		return;
+	}
+
+	// LOD Selection: Walk up the parent chain to find the coarsest cluster
+	// whose projected error is still below the threshold
+	// This determines which cluster should be used for debug visualization
+	bool useLOD = false;
+	uint selectedClusterID = clusterIndex;  // Default to leaf cluster
+
+	// Calculate distance from camera to cluster center
+	float distanceToCamera = length(worldCenter.xyz - CameraPosition);
+
+	// Debug: Force specific LOD level
+	// DebugForceLODLevel: -1 = auto, 0 = leaf only, 1+ = force specific level
+	if (DebugForceLODLevel == 0)
+	{
+		// Force leaf cluster only - skip LOD walk-up
+		useLOD = false;
+		selectedClusterID = clusterIndex;
+	}
+	else if (DebugForceLODLevel > 0)
+	{
+		// Force walk up to specific LOD level
+		uint targetLODLevel = (uint)DebugForceLODLevel;
+		uint currentClusterIdx = clusterIndex;
+
+		while (true)
+		{
+			FGaussianGPUCluster currentCluster = ClusterBuffer[currentClusterIdx];
+
+			// Check if we've reached the target LOD level
+			if (currentCluster.LODLevel >= targetLODLevel)
+			{
+				selectedClusterID = currentClusterIdx;
+				useLOD = (currentClusterIdx != clusterIndex);
+				break;
+			}
+
+			// Check if this cluster has a valid parent
+			if (currentCluster.ParentIndex == INVALID_CLUSTER_ID || currentCluster.ParentIndex >= ClusterCount)
+			{
+				// Reached root without finding target level - use current (highest available)
+				selectedClusterID = currentClusterIdx;
+				useLOD = (currentClusterIdx != clusterIndex);
+				break;
+			}
+
+			// Move to parent
+			currentClusterIdx = currentCluster.ParentIndex;
+		}
+	}
+	else
+	{
+		// Auto mode: Walk up parent chain based on projected error threshold
+		uint currentClusterIdx = clusterIndex;
+		while (true)
+		{
+			FGaussianGPUCluster currentCluster = ClusterBuffer[currentClusterIdx];
+
+			// Check if this cluster has a valid parent
+			if (currentCluster.ParentIndex == INVALID_CLUSTER_ID || currentCluster.ParentIndex >= ClusterCount)
+			{
+				break;  // Reached root or invalid parent
+			}
+
+			FGaussianGPUCluster parentCluster = ClusterBuffer[currentCluster.ParentIndex];
+
+			// Floor MaxError at half the bounding sphere radius to prevent dense clusters
+			// (with tiny merge displacement) from selecting LOD when too close to camera.
+			// This ensures LOD only kicks in when the cluster projects to < ~64px radius.
+			float effectiveError = max(parentCluster.MaxError, parentCluster.BoundingSphere.w * 0.5);
+
+			// Calculate projected error for parent cluster
+			float projectedError = CalculateProjectedError(effectiveError * maxScale, distanceToCamera);
+
+			// Apply LOD bias (positive = prefer coarser LOD)
+			projectedError = projectedError * exp(-LODBias * 0.1);
+
+			// If parent's error is acceptable, use the parent as selected cluster
+			if (projectedError < ErrorThreshold)
+			{
+				selectedClusterID = currentCluster.ParentIndex;
+				useLOD = true;
+				currentClusterIdx = currentCluster.ParentIndex;
+				// Continue walking up to find the coarsest acceptable cluster
+			}
+			else
+			{
+				break;  // Parent's error is too large, stop here
+			}
+		}
+	}
+
+	// Atomically append to visible cluster list with LOD info
+	uint visibleIndex;
+	InterlockedAdd(VisibleClusterCountBuffer[0], 1, visibleIndex);
+	VisibleClusterBuffer[visibleIndex] = PackClusterInfo(clusterIndex, useLOD);
+
+	// Atomically add this cluster's splat count to indirect draw instance count
+	// IndirectDrawArgsBuffer[1] is InstanceCount in the draw indirect args structure
+	uint dummy;
+	InterlockedAdd(IndirectDrawArgsBuffer[1], cluster.SplatCount, dummy);
+
+	// Set visibility bit for this cluster in the bitmap
+	// CalcViewData will check this to skip processing culled splats
+	uint bitmapIndex = clusterIndex / 32;
+	uint bitMask = 1u << (clusterIndex % 32);
+	InterlockedOr(ClusterVisibilityBitmap[bitmapIndex], bitMask);
+
+	// Write selected cluster ID for Nanite-style debug visualization
+	// This maps the leaf cluster to its selected cluster (may be a parent if LOD is used)
+	// Pack LOD level into upper 8 bits for debug visualization (DebugMode 2)
+	uint selectedLODLevel = ClusterBuffer[selectedClusterID].LODLevel;
+	SelectedClusterBuffer[clusterIndex] = (selectedClusterID & 0x00FFFFFF) | ((selectedLODLevel & 0xFF) << 24);
+
+	// LOD Rendering: Track unique parent clusters that need their LOD splats rendered
+	// Only when LOD rendering is enabled and a parent cluster was selected
+	if (UseLODRendering && selectedClusterID != clusterIndex)
+	{
+		// Atomically claim this parent cluster (only first thread wins)
+		// This ensures each parent cluster is only added once to LODClusterBuffer
+		uint bitmapIdx = selectedClusterID / 32;
+		uint bitMask = 1u << (selectedClusterID % 32);
+		uint original;
+		InterlockedOr(LODClusterSelectedBitmap[bitmapIdx], bitMask, original);
+
+		if ((original & bitMask) == 0)  // We claimed it (bit was 0 before)
+		{
+			// Add this parent cluster to the LOD cluster list
+			FGaussianGPUCluster parentCluster = ClusterBuffer[selectedClusterID];
+			uint lodIdx;
+			InterlockedAdd(LODClusterCountBuffer[0], 1, lodIdx);
+			LODClusterBuffer[lodIdx] = selectedClusterID;
+
+			// Add this cluster's LOD splat count to the total
+			InterlockedAdd(LODSplatTotalBuffer[0], parentCluster.LODSplatCount);
+		}
+	}
+}
+
+// Reset counter shader (run before culling)
+// Also initializes indirect draw args, clears visibility bitmap, and initializes selected cluster buffer
+[numthreads(64, 1, 1)]
+void ResetCounterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint threadIndex = DispatchThreadId.x;
+
+	// Thread 0 resets counters and indirect draw args
+	if (threadIndex == 0)
+	{
+		VisibleClusterCountBuffer[0] = 0;
+
+		// Initialize indirect draw args
+		// [0] IndexCountPerInstance = 6 (2 triangles per quad)
+		// [1] InstanceCount = 0 (will be accumulated by culling shader)
+		// [2] StartIndexLocation = 0
+		// [3] BaseVertexLocation = 0
+		// [4] StartInstanceLocation = 0
+		IndirectDrawArgsBuffer[0] = 6;
+		IndirectDrawArgsBuffer[1] = 0;
+		IndirectDrawArgsBuffer[2] = 0;
+		IndirectDrawArgsBuffer[3] = 0;
+		IndirectDrawArgsBuffer[4] = 0;
+
+		// Reset LOD cluster tracking counters
+		LODClusterCountBuffer[0] = 0;
+		LODSplatTotalBuffer[0] = 0;
+
+		// Reset LOD splat output counter for GPU-driven LOD processing
+		LODSplatOutputCountBuffer[0] = 0;
+	}
+
+	// All threads help clear the visibility bitmap
+	if (threadIndex < ClusterVisibilityBitmapSize)
+	{
+		ClusterVisibilityBitmap[threadIndex] = 0;
+	}
+
+	// Clear LOD cluster selected bitmap (same size as cluster visibility bitmap)
+	if (threadIndex < ClusterVisibilityBitmapSize)
+	{
+		LODClusterSelectedBitmap[threadIndex] = 0;
+	}
+
+	// Initialize selected cluster buffer (each leaf cluster defaults to itself)
+	if (threadIndex < LeafClusterCount)
+	{
+		SelectedClusterBuffer[threadIndex] = threadIndex;
+	}
+}

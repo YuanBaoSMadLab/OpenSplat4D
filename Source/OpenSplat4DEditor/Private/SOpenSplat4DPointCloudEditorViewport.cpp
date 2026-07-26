@@ -20,31 +20,26 @@ void SOpenSplat4DPointCloudEditorViewport::Construct(const FArguments& InArgs)
 	PreviewScene->SetFloorVisibility(false);
 	PreviewScene->SetEnvironmentVisibility(true);
 
-	// Spawn a transient preview actor bound to the edited point cloud. The
-	// self-contained Billboard component renders the splats inside the preview scene.
+	// Spawn a transient preview actor bound to the edited point cloud.
+	// [DISABLED] Niagara 路径：改用 AOpenSplat4DSplatActor（自研 ISMC 渲染管线）
 	UWorld* PreviewWorld = PreviewScene->GetWorld();
 	if (PreviewWorld)
 	{
-		PreviewActor = PreviewWorld->SpawnActor<AOpenSplat4DPointCloudActor>();
-		if (PreviewActor)
+		PreviewActor = PreviewWorld->SpawnActor<AOpenSplat4DSplatActor>();
+		if (PreviewActor.Get())
 		{
 			PreviewActor->SetPointCloud(Editor.Pin()->GetPointCloud());
 			PreviewActor->SetActorLocation(FVector::ZeroVector);
 			PreviewActor->SetActorLabel(TEXT("OpenSplat4D Preview"));
-			PreviewActor->bAutoPlay = false;
-			PreviewComponent = PreviewActor->Billboard;
 		}
 	}
 
-	// [DIAG] Print the truth on open so a blank preview is never a mystery:
-	// how many points the asset holds, whether a source file is recorded, and
-	// whether the billboard component that actually draws the splats exists.
+	// [DIAG] Print the truth on open so a blank preview is never a mystery.
 	if (UOpenSplat4DPointCloud* PC = Editor.Pin()->GetPointCloud())
 	{
 		UE_LOG(LogOpenSplat4D, Log,
-			TEXT("OpenSplat4D: editor opened point cloud '%s' -> pointCount=%d, sourceFile='%s', billboardComponent=%s"),
-			*PC->GetName(), PC->GetPointCount(), *PC->SourceFilePath,
-			PreviewComponent ? TEXT("valid") : TEXT("MISSING"));
+			TEXT("OpenSplat4D: editor opened point cloud '%s' -> pointCount=%d, sourceFile='%s' (自研管线 SplatActor)"),
+			*PC->GetName(), PC->GetPointCount(), *PC->SourceFilePath);
 		if (PC->GetPointCount() == 0)
 		{
 			UE_LOG(LogOpenSplat4D, Warning,
