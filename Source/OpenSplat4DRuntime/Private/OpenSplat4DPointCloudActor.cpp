@@ -69,3 +69,16 @@ void AOpenSplat4DPointCloudActor::Seek(float Time)
 		CurrentTime = FMath::Clamp(Time, Cloud->TimeStart, Cloud->TimeEnd);
 	}
 }
+
+void AOpenSplat4DPointCloudActor::SetPointCloud(UGaussianSplatAsset* InCloud)
+{
+	if (GaussianSplatComponent)
+	{
+		GaussianSplatComponent->SetSplatAsset(InCloud);
+	}
+	UOpenSplat4DPointCloud* Cloud = Cast<UOpenSplat4DPointCloud>(InCloud);
+	if (Cloud)
+	{
+		CurrentTime = Cloud->TimeStart;
+	}
+}

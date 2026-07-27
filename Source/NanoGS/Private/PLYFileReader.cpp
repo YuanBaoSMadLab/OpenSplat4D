@@ -358,7 +358,7 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 			// PLY uses (w, x, y, z) format with Y-down (COLMAP convention)
 			// Pattern: when position axis is NOT negated, quaternion component IS negated (and vice versa)
 			// Position: PLY.X -> UE.Y (not negated), PLY.Y -> UE.-Z (negated), PLY.Z -> UE.X (not negated)
-			float QW = GetPropertyFloat(VertexData, Header, TEXT("rot_0"), 1.0f)  // identity w;
+			float QW = GetPropertyFloat(VertexData, Header, TEXT("rot_0"), 1.0f); // identity w
 			float QX = GetPropertyFloat(VertexData, Header, TEXT("rot_1"), 0.0f);
 			float QY = GetPropertyFloat(VertexData, Header, TEXT("rot_2"), 0.0f);
 			float QZ = GetPropertyFloat(VertexData, Header, TEXT("rot_3"), 0.0f);
