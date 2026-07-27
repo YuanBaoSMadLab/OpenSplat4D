@@ -5,6 +5,10 @@
 #include "OpenSplat4DEditorLibrary.h"
 #include "OpenSplat4DSettings.h"
 #include "OpenSplat4DLocalization.h"
+#include "GaussianSplatAsset.h"
+#include "PLYFileReader.h"
+#include "GaussianDataTypes.h"
+#include "HAL/FileManager.h"
 
 #include "UObject/Object.h"
 
@@ -193,13 +197,13 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildContent()
 				SNew(SSegmentedControl<int32>)
 				.Value(0)
 				.OnValueChanged(this, &SOpenSplat4DEdModePanel::OnTabChanged)
-				+ SSegmentedControl<int32>::Slot(0).Text(OS4D_TEXT("Capture"))
-				+ SSegmentedControl<int32>::Slot(1).Text(OS4D_TEXT("Sparse"))
-				+ SSegmentedControl<int32>::Slot(2).Text(OS4D_TEXT("Gaussian"))
+				+ SSegmentedControl<int32>::Slot(0).Text(OS4D_TEXT("捕获"))
+				+ SSegmentedControl<int32>::Slot(1).Text(OS4D_TEXT("稀疏重建"))
+				+ SSegmentedControl<int32>::Slot(2).Text(OS4D_TEXT("高斯训练"))
 				+ SSegmentedControl<int32>::Slot(3)
 					.Icon(FAppStyle::Get().GetBrush("Icons.Settings"))
-					.Text(OS4D_TEXT("Settings"))
-				+ SSegmentedControl<int32>::Slot(4).Text(OS4D_TEXT("Usage"))
+					.Text(OS4D_TEXT("设置"))
+				+ SSegmentedControl<int32>::Slot(4).Text(OS4D_TEXT("用法"))
 			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
@@ -207,7 +211,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildContent()
 			[
 				PropertyCustomizationHelpers::MakeBrowseButton(
 					FSimpleDelegate::CreateSP(this, &SOpenSplat4DEdModePanel::OnClicked_Browse),
-					OS4D_TEXT("Open the working directory"))
+					OS4D_TEXT("打开工作目录"))
 			]
 		]
 
@@ -236,7 +240,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildContent()
 			.Padding(5, 0)
 			[
 				SNew(SButton)
-				.ToolTipText(OS4D_TEXT("Cancel Current Task"))
+				.ToolTipText(OS4D_TEXT("取消当前任务"))
 				.OnClicked(this, &SOpenSplat4DEdModePanel::OnClicked_Cancel)
 				.ContentPadding(0.0f)
 				[
@@ -325,7 +329,7 @@ bool SOpenSplat4DEdModePanel::OnRequestTaskStart(UOpenSplat4DStepBase* Step)
 {
 	if (CurrentTask != nullptr)
 	{
-		FNotificationInfo NotifyInfo(OS4D_TEXT("Execution failed\n there is currently a running task"));
+		FNotificationInfo NotifyInfo(OS4D_TEXT("执行失败：当前已有任务在运行，请等待完成或取消后再试"));
 		NotifyInfo.ExpireDuration = 5.0f;
 		NotifyInfo.bUseSuccessFailIcons = true;
 		TSharedPtr<SNotificationItem> NotificationPtr = FSlateNotificationManager::Get().AddNotification(NotifyInfo);
@@ -610,7 +614,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 					SNew(SVerticalBox)
 					+ SVerticalBox::Slot().AutoHeight()
 					[
-						SNew(STextBlock).Text(OS4D_TEXT("0. Create from Scene (Scan)"))
+						SNew(STextBlock).Text(OS4D_TEXT("0. 从场景创建（扫描）"))
 					]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
@@ -623,14 +627,14 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 					]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
-						SNew(STextBlock).Text(OS4D_TEXT("Camera Depth Scan (off = Mesh Surface)"))
+						SNew(STextBlock).Text(OS4D_TEXT("相机深度扫描（关闭=网格表面采样）"))
 					]
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 2.f)
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
-					[ SNew(STextBlock).Text(OS4D_TEXT("Density")) ]
+					[ SNew(STextBlock).Text(OS4D_TEXT("密度")) ]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
 						SNew(SNumericEntryBox<int32>)
@@ -639,7 +643,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 						.MinValue(1).MaxValue(64)
 					]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
-					[ SNew(STextBlock).Text(OS4D_TEXT("Point Size")) ]
+					[ SNew(STextBlock).Text(OS4D_TEXT("点尺寸")) ]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
 						SNew(SNumericEntryBox<float>)
@@ -651,14 +655,14 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
 					SNew(SButton)
-					.Text(OS4D_TEXT("Scan Selected -> Point Cloud"))
+					.Text(OS4D_TEXT("扫描选中对象 → 点云"))
 					.OnClicked(this, &SOpenSplat4DEdModePanel::OnScanClicked)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 2.f)
 				[
 					SNew(STextBlock)
 					.AutoWrapText(true)
-					.Text(OS4D_TEXT("Select one or more actors in the viewport, then scan. Mesh Surface samples static-mesh geometry directly; Camera Depth places a camera rig and reconstructs depth. No colmap / python needed -- you can create a point cloud and test rendering immediately."))
+					.Text(OS4D_TEXT("在视口中选中一个或多个 Actor 后点击扫描。网格表面模式直接采样静态网格几何体；相机深度模式放置相机阵列并重建深度。无需 colmap / python，可立即生成点云并测试渲染。"))
 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 				]
 			]
@@ -674,19 +678,19 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot().AutoHeight()
 				[
-					SNew(STextBlock).Text(OS4D_TEXT("1. Import"))
+					SNew(STextBlock).Text(OS4D_TEXT("1. 导入"))
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
 					SNew(SButton)
-					.Text(OS4D_TEXT("Import .ply / .4dgs ..."))
+					.Text(OS4D_TEXT("导入 .ply / .4dgs ..."))
 					.OnClicked(this, &SOpenSplat4DEdModePanel::OnImportClicked)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 2.f)
 				[
 					SNew(STextBlock)
 					.AutoWrapText(true)
-					.Text(OS4D_TEXT("Or drag a .ply / .4dgs file into the Content Browser. The asset is created under /Game/OpenSplat4D/."))
+					.Text(OS4D_TEXT("也可将 .ply / .4dgs 文件拖入内容浏览器。资产会创建在 /Game/OpenSplat4D/ 下。"))
 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 				]
 			]
@@ -702,7 +706,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot().AutoHeight()
 				[
-					SNew(STextBlock).Text(OS4D_TEXT("2. Place in level"))
+					SNew(STextBlock).Text(OS4D_TEXT("2. 放入关卡"))
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
@@ -713,14 +717,14 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
 					SNew(SButton)
-					.Text(OS4D_TEXT("Spawn Actor in Level"))
+					.Text(OS4D_TEXT("在关卡中生成 Actor"))
 					.OnClicked(this, &SOpenSplat4DEdModePanel::OnAddToSceneClicked)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 2.f)
 				[
 					SNew(STextBlock)
 					.AutoWrapText(true)
-					.Text(OS4D_TEXT("Or drag the asset from the Content Browser into the viewport. You can also right-click the asset -> 'Create OpenSplat4D Actor'."))
+					.Text(OS4D_TEXT("也可将资产从内容浏览器拖入视口。或右键资产 → '创建 OpenSplat4D Actor'。"))
 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 				]
 			]
@@ -736,12 +740,12 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot().AutoHeight()
 				[
-					SNew(STextBlock).Text(OS4D_TEXT("3. 4D Playback"))
+					SNew(STextBlock).Text(OS4D_TEXT("3. 4D 回放"))
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
 					SNew(SButton)
-					.Text(OS4D_TEXT("Use Selected Actor"))
+					.Text(OS4D_TEXT("使用选中 Actor"))
 					.OnClicked(this, &SOpenSplat4DEdModePanel::OnUseSelectedClicked)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
@@ -749,18 +753,18 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
-						SNew(SButton).Text(OS4D_TEXT("Play")).OnClicked(this, &SOpenSplat4DEdModePanel::OnPlayClicked)
+						SNew(SButton).Text(OS4D_TEXT("播放")).OnClicked(this, &SOpenSplat4DEdModePanel::OnPlayClicked)
 					]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
-						SNew(SButton).Text(OS4D_TEXT("Pause")).OnClicked(this, &SOpenSplat4DEdModePanel::OnPauseClicked)
+						SNew(SButton).Text(OS4D_TEXT("暂停")).OnClicked(this, &SOpenSplat4DEdModePanel::OnPauseClicked)
 					]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot().AutoHeight()
 						[
-							SNew(STextBlock).Text(OS4D_TEXT("Time")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
+							SNew(STextBlock).Text(OS4D_TEXT("时间")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
 						]
 						+ SVerticalBox::Slot().AutoHeight()
 						[
@@ -775,7 +779,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot().AutoHeight()
 						[
-							SNew(STextBlock).Text(OS4D_TEXT("Speed")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
+							SNew(STextBlock).Text(OS4D_TEXT("速度")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
 						]
 						+ SVerticalBox::Slot().AutoHeight()
 						[
@@ -790,7 +794,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot().AutoHeight()
 						[
-							SNew(STextBlock).Text(OS4D_TEXT("Loop")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
+							SNew(STextBlock).Text(OS4D_TEXT("循环")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
 						]
 						+ SVerticalBox::Slot().AutoHeight()
 						[
@@ -837,45 +841,43 @@ FReply SOpenSplat4DEdModePanel::OnImportClicked()
 
 	const FString File = OutFiles[0];
 	const FString AssetName = FPaths::GetBaseFilename(File);
-	const FString PackageName = FString::Printf(TEXT("/Game/OpenSplat4D/%s"), *AssetName);
+	const FString PackageName = FString::Printf(TEXT("/Game/OpenSplat4D/Models/%s"), *AssetName);
 
 	UPackage* Pkg = CreatePackage(*PackageName);
-	UOpenSplat4DPointCloud* Cloud = NewObject<UOpenSplat4DPointCloud>(
-		Pkg, UOpenSplat4DPointCloud::StaticClass(), *AssetName, RF_Public | RF_Standalone);
+	UGaussianSplatAsset* SplatAsset = NewObject<UGaussianSplatAsset>(
+		Pkg, UGaussianSplatAsset::StaticClass(), *AssetName, RF_Public | RF_Standalone);
 
-	const FString Ext = FPaths::GetExtension(File).ToLower();
-	bool bOk = false;
-	if (Ext == TEXT("ply"))
-	{
-		Cloud->LoadFromFile(File);
-		bOk = Cloud->GetPointCount() > 0;
-	}
-	else if (Ext == TEXT("4dgs"))
-	{
-		bOk = Cloud->LoadFrom4DGS(File);
-	}
+	TArray<FGaussianSplatData> SplatData;
+	FString ErrorMessage;
+	int32 DetectedSHBands = 0;
+	bool bOk = FPLYFileReader::ReadPLYFile(File, SplatData, ErrorMessage, &DetectedSHBands);
 
 	if (!bOk)
 	{
 		FMessageDialog::Open(EAppMsgType::Ok,
-			FText::Format(OpenSplat4DLocalization::GetText(TEXT("Failed to import '{0}'. Not a valid .ply / .4dgs.")), FText::FromString(File)));
+			FText::Format(OpenSplat4DLocalization::GetText(TEXT("导入失败：'{0}' 不是有效的 .ply / .4dgs 文件。")), FText::FromString(File)));
 		return FReply::Handled();
 	}
 
-	Cloud->SourceFilePath = File;
-	Cloud->MarkPackageDirty();
-	FAssetRegistryModule::AssetCreated(Cloud);
+	SplatAsset->SourceFilePath = File;
+	SplatAsset->SHBands = DetectedSHBands;
+	SplatAsset->InitializeFromSplatData(SplatData, EGaussianQualityLevel::High);
+	SplatAsset->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(SplatAsset);
 
-	FPackagePath PkgPath = FPackagePath::FromPackageNameChecked(Pkg->GetName());
-	const FString LocalPath = PkgPath.GetLocalFullPath();
-	FSavePackageArgs SaveArgs;
-	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-	SaveArgs.SaveFlags = SAVE_NoError;
-	SaveArgs.bWarnOfLongFilename = false;
-	UPackage::SavePackage(Pkg, Cloud, *LocalPath, SaveArgs);
+	FString LocalPath;
+	if (FPackageName::TryConvertLongPackageNameToFilename(PackageName, LocalPath, FPackageName::GetAssetPackageExtension()))
+	{
+		IFileManager::Get().MakeDirectory(*FPaths::GetPath(LocalPath), true);
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		SaveArgs.SaveFlags = SAVE_NoError;
+		SaveArgs.bWarnOfLongFilename = false;
+		UPackage::SavePackage(Pkg, SplatAsset, *LocalPath, SaveArgs);
+	}
 
 	TArray<UObject*> ObjectsToSync;
-	ObjectsToSync.Add(Cloud);
+	ObjectsToSync.Add(SplatAsset);
 	GEditor->SyncBrowserToObjects(ObjectsToSync);
 
 	return FReply::Handled();
@@ -886,7 +888,7 @@ FReply SOpenSplat4DEdModePanel::OnAddToSceneClicked()
 	UOpenSplat4DPointCloud* Cloud = PickedCloud.Get();
 	if (!Cloud)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, OS4D_TEXT("Pick a point cloud asset first."));
+		FMessageDialog::Open(EAppMsgType::Ok, OS4D_TEXT("请先选择一个点云资产。"));
 		return FReply::Handled();
 	}
 

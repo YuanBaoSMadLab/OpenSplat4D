@@ -13,16 +13,28 @@ class UBodySetup;
 
 /**
  * Collision generation method for Gaussian Splat point clouds
+ *
+ * NOTE on quality:
+ *   - BoundingBox / Voxel / None: implemented and production-ready.
+ *   - ConvexHull / ConvexDecomposition: STUB implementations — see the
+ *     WARNING comments in GaussianSplatComponent.cpp::GenerateConvexHull /
+ *     GenerateSimplifiedCollision. They return sampled points rather than
+ *     real convex hulls, so physics behavior is unreliable. Use BoundingBox
+ *     or Voxel collision for accurate collision until real QuickHull / V-HACD
+ *     is integrated.
  */
 UENUM(BlueprintType)
 enum class EGaussianCollisionMethod : uint8
 {
 	/** No collision */
 	None UMETA(DisplayName = "无碰撞"),
-	/** Convex hull of all points */
-	ConvexHull UMETA(DisplayName = "凸包"),
-	/** Simplified convex decomposition (multiple convex hulls) */
-	ConvexDecomposition UMETA(DisplayName = "凸分解"),
+	/** [STUB] Convex hull of all points — see WARNING in GenerateConvexHull.
+	 *  Currently just samples points; not a real convex hull. Use BoundingBox
+	 *  or Voxel for accurate physics. */
+	ConvexHull UMETA(DisplayName = "凸包（实验性）"),
+	/** [STUB] Simplified convex decomposition (multiple convex hulls) —
+	 *  currently delegates to the ConvexHull stub. */
+	ConvexDecomposition UMETA(DisplayName = "凸分解（实验性）"),
 	/** Bounding box collision */
 	BoundingBox UMETA(DisplayName = "包围盒"),
 	/** Voxel-based collision (approximate shape) */
@@ -50,7 +62,9 @@ public:
 	//~ Begin UActorComponent Interface
 	virtual void OnRegister() override;
 	virtual void OnUnregister() override;
-	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	// TickComponent intentionally not overridden: rendering is GPU-driven via
+	// ViewExtension, so the component has no per-frame CPU work. Tick is
+	// disabled in the constructor (PrimaryComponentTick.bCanEverTick = false).
 	//~ End UActorComponent Interface
 
 	//~ Begin UPrimitiveComponent Interface

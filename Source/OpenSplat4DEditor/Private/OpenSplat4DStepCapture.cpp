@@ -169,6 +169,25 @@ void UOpenSplat4DStep_Capture::Capture()
 	FakeEngineTick(World, 0.03f, 6);
 	TaskProgressPercent = 0.f;
 
+	// ============================================================================
+	// 深度归一化全局参考（跨帧一致）
+	// ============================================================================
+	// 旧实现每帧独立做 min-max 归一化，朝阳光方向相机 Max≈天空距离，导致近处物体
+	// 深度被压缩到极小范围；下一帧背光相机 Max=物体距离，深度范围截然不同。
+	// 3DGS depth loss / COLMAP scale alignment 都假设 depth 跨帧尺度一致，
+	// 尺度漂移会把高斯点拉出真实表面形成 floaters。
+	//
+	// 修复：所有帧共享同一个全局最大距离参考（基于场景包围球），保证 device z →
+	// linear z 的反推公式在所有相机中得到一致的米制深度。
+	// 包围球直径 ×2 覆盖"相机在 bounds 外看对侧"的最远情况。
+	const float GlobalMaxDistCm = FMath::Max(CurrentBounds.SphereRadius * 2.0f, 100.0f);
+	// USceneCaptureComponent2D 没有公开的 NearClipPlane 成员（UE 用 PostProcessSettings
+	// 或相机默认近裁面）。这里用 UE 默认相机近裁面 10 cm 作为反推下限，足够稳定。
+	// 这个值只影响 device-z 反推的精度，不会显著影响最终 [0,1] 归一化结果。
+	constexpr float ZNear = 10.0f;                                 // cm
+	const float ZFar  = GlobalMaxDistCm;                           // 用全局参考距离作有效远裁
+	const float InvGlobalMax = 1.0f / GlobalMaxDistCm;
+
 	FString CamContent;
 	int32 CapturedCount = 0;
 	for (int i = 0; i < CameraActors.Num(); i++)
@@ -186,9 +205,26 @@ void UOpenSplat4DStep_Capture::Capture()
 			SCC->CaptureScene();
 			TArray<FLinearColor> DepthColors;
 			RTRes->ReadLinearColorPixels(DepthColors, Flags, Region);
-			float Min = FFloat16::MaxF16Float, Max = 0;
-			for (const FLinearColor& C : DepthColors) { Min = FMath::Min(Min, C.R); if (C.R < FFloat16::MaxF16Float) Max = FMath::Max(Max, C.R); }
-			for (FLinearColor& C : DepthColors) { C.R = (C.R < FFloat16::MaxF16Float) ? (1 - 0.5f * (C.R - Min) / (Max - Min)) : 0.f; }
+			// device_z (C.R) ∈ (0, 1] 反推为 view-space linear depth (cm)，
+			// 再除以 GlobalMaxDistCm 归一化到 [0, 1] —— 跨帧一致。
+			// 反推公式：linear_z = (2*Zn*Zf) / (Zf+Zn - device_z*(Zf-Zn))
+			// 这是 OpenGL/D3D 通用透视投影反解（精度足够能用，UE 的 projection
+			// matrix 也是这个形式）。背景像素（C.R = MaxF16）置 0 表示"无效"。
+			const float Numer = 2.0f * ZNear * ZFar;
+			const float DenomBase = ZFar + ZNear;
+			const float DenomSlope = ZFar - ZNear;
+			for (FLinearColor& C : DepthColors)
+			{
+				if (C.R >= FFloat16::MaxF16Float || C.R <= 0.f)
+				{
+					C.R = 0.f;  // 背景 / 天空 = 0（3DGS inverse depth 期望远=0）
+				}
+				else
+				{
+					const float LinearZ = Numer / (DenomBase - C.R * DenomSlope);
+					C.R = FMath::Clamp(LinearZ * InvGlobalMax, 0.f, 1.f);
+				}
+			}
 			FImageView DV(DepthColors.GetData(), RenderTarget->SizeX, RenderTarget->SizeY);
 			FImage DI; DI.Init(DV.SizeX, DV.SizeY, ERawImageFormat::G16, EGammaSpace::Linear);
 			FImageCore::CopyImage(DV, DI);
@@ -209,15 +245,50 @@ void UOpenSplat4DStep_Capture::Capture()
 			RTRes->ReadLinearColorPixels(Final, Flags, Region);
 		}
 		Mask.SetNum(Raw.Num());
+		// ============================================================================
+		// Mask 软化：用连续 alpha 替代硬二值化
+		// ============================================================================
+		// 旧实现 `M = A > 0 ? 1 : 0` 在 mask 边界形成硬切，3DGS Densification
+		// 在硬边界处产生极大梯度 → 高斯点无限分裂 → 边界"杂云"。
+		//
+		// 修复：直接用 alpha 作为 soft mask（场景渲染 alpha 已是 [0, 1] 连续值）。
+		// 对完全透明的像素（天空）仍置 0，对完全不透明像素置 1，对半透明边缘像素
+		// （抗锯齿后的物体轮廓）保留中间值，让 L1 loss 在边缘自动降权。
+		// 同时做一次轻量高斯模糊（3x3）进一步平滑亚像素锯齿。
 		for (int j = 0; j < Raw.Num(); j++)
 		{
 			FLinearColor& F = Final[j];
 			F = LinearToSRGB(F);
+			// Raw[j].A 是场景不透明度（post-tonsmap），1=不透明，0=背景。
+			// 我们要把 0/1 之间的抗锯齿过渡保留下来，所以直接 1-A 当 mask。
 			const float A = 1.f - Raw[j].A;
-			const float M = A > 0.f ? 1.f : 0.f;
-			Mask[j] = FLinearColor(M, M, M, 1.f);
+			Mask[j] = FLinearColor(A, A, A, 1.f);
 			F.A = A;
 		}
+		// 3x3 高斯模糊软化边缘（kernel = [1 2 1; 2 4 2; 1 2 1] / 16）。
+		// 在图像边缘做 clamp 处理。这一步是可选的——如果 SoftMask 已经够用，
+		// 后续训练可以靠 alpha 直接做 L1 加权，不需要再模糊。
+		const int32 W = RenderTarget->SizeX;
+		const int32 H = RenderTarget->SizeY;
+		TArray<FLinearColor> BlurredMask;
+		BlurredMask.SetNum(Mask.Num());
+		for (int y = 0; y < H; y++)
+		{
+			for (int x = 0; x < W; x++)
+			{
+				const int idx = y * W + x;
+				const int xm = FMath::Max(x - 1, 0);
+				const int xp = FMath::Min(x + 1, W - 1);
+				const int ym = FMath::Max(y - 1, 0);
+				const int yp = FMath::Min(y + 1, H - 1);
+				const float sum =
+					Mask[ym * W + xm].R * 1.f + Mask[ym * W + x].R * 2.f + Mask[ym * W + xp].R * 1.f +
+					Mask[y  * W + xm].R * 2.f + Mask[y  * W + x].R * 4.f + Mask[y  * W + xp].R * 2.f +
+					Mask[yp * W + xm].R * 1.f + Mask[yp * W + x].R * 2.f + Mask[yp * W + xp].R * 1.f;
+				BlurredMask[idx] = FLinearColor(sum / 16.f, sum / 16.f, sum / 16.f, 1.f);
+			}
+		}
+		Mask = MoveTemp(BlurredMask);
 		ReceiveMessage(FString::Printf(TEXT("Capturing %s"), *ImgName));
 		if (bRequestCancelTask) { bRequestCancelTask = false; break; }
 

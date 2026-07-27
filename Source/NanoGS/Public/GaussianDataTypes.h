@@ -113,7 +113,7 @@ struct FGaussianSplatData
 /**
  * Per-frame view data computed by compute shader, used by vertex shader
  * This structure must match the HLSL definition in GaussianDataTypes.ush
- * Total: 64 bytes per splat (with TranslatedWorldPos for velocity, 16-byte aligned)
+ * Total: 60 bytes per splat (with TranslatedWorldPos for velocity, 16-byte aligned)
  */
 USTRUCT()
 struct FGaussianSplatViewData
@@ -144,14 +144,7 @@ struct FGaussianSplatViewData
 	/** Cluster ID for debug visualization (Nanite-style) */
 	uint32 ClusterID = 0;
 
-	/** World-space normal (octahedral packed, 2 x half float) */
-	uint32 PackedNormal = 0;
 
-	/** World-space splat center (for lighting calculations) */
-	FVector3f WorldCenter = FVector3f::ZeroVector;
-
-	/** Padding for 16-byte alignment */
-	float Padding2 = 0.0f;
 };
 
 /**

@@ -11,8 +11,11 @@
 UGaussianSplatComponent::UGaussianSplatComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	PrimaryComponentTick.bCanEverTick = true;
-	PrimaryComponentTick.bStartWithTickEnabled = true;
+	// Gaussian splat rendering is fully GPU-driven via ViewExtension; the component
+	// itself has no per-frame CPU work. Disabling Tick saves a tick slot per proxy
+	// and avoids needless GameThread overhead for scenes with many splat actors.
+	PrimaryComponentTick.bCanEverTick = false;
+	PrimaryComponentTick.bStartWithTickEnabled = false;
 
 	bUseAsOccluder = false;
 	SetGenerateOverlapEvents(false);
@@ -79,11 +82,6 @@ void UGaussianSplatComponent::OnUnregister()
 {
 	UnsubscribeFromAssetChanges();
 	Super::OnUnregister();
-}
-
-void UGaussianSplatComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
-{
-	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 }
 
 FPrimitiveSceneProxy* UGaussianSplatComponent::CreateSceneProxy()
@@ -260,6 +258,37 @@ void UGaussianSplatComponent::RebuildCollision()
 		BodySetup->AggGeom.EmptyElements();
 	}
 
+	// BoundingBox method: use the asset's cached bounds directly, avoiding the
+	// O(N) decompression + copy of all splat positions (can be millions of points).
+	// This is the cheapest collision method and should stay allocation-free.
+	if (CollisionMethod == EGaussianCollisionMethod::BoundingBox)
+	{
+		const FBox LocalBounds = SplatAsset->GetBounds();
+		if (!LocalBounds.IsValid || LocalBounds.GetSize().IsNearlyZero())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: Asset bounds invalid for BoundingBox collision"));
+			return;
+		}
+		FKBoxElem BoxElem;
+		BoxElem.Center = LocalBounds.GetCenter();
+		BoxElem.X = LocalBounds.GetExtent().X * 2.0f;
+		BoxElem.Y = LocalBounds.GetExtent().Y * 2.0f;
+		BoxElem.Z = LocalBounds.GetExtent().Z * 2.0f;
+		BodySetup->AggGeom.BoxElems.Add(BoxElem);
+
+		BodySetup->bGenerateMirroredCollision = false;
+		BodySetup->bDoubleSidedGeometry = true;
+		BodySetup->InvalidatePhysicsData();
+		BodySetup->CreatePhysicsMeshes();
+
+		SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
+		bCollisionDirty = false;
+
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplat: BoundingBox collision rebuilt (bounds=%s)"), *LocalBounds.GetExtent().ToString());
+		return;
+	}
+
+	// All other methods need the actual point positions.
 	TArray<FVector> Points = SplatAsset->GetDecompressedPositions();
 	if (Points.Num() == 0)
 	{
@@ -267,15 +296,18 @@ void UGaussianSplatComponent::RebuildCollision()
 		return;
 	}
 
-	// Apply ignore factor: skip points based on density
+	// Apply ignore factor: skip points pseudo-randomly to reduce collision geometry
+	// complexity. Uses a hash (not rand()) so the same input yields deterministic
+	// output across runs (reproducible collision shapes).
 	if (IgnoreFactor > 0.0f && IgnoreFactor < 1.0f)
 	{
 		TArray<FVector> FilteredPoints;
-		FilteredPoints.Reserve(Points.Num() * (1.0f - IgnoreFactor));
+		FilteredPoints.Reserve(FMath::Max(1, FMath::TruncToInt(Points.Num() * (1.0f - IgnoreFactor))));
+		const uint32 Threshold = (uint32)(IgnoreFactor * 1000.0f);
 		for (int32 i = 0; i < Points.Num(); i++)
 		{
-			// Use simple hash to skip points pseudo-randomly
-			if ((i * 2654435761u) % 1000 >= (uint32)(IgnoreFactor * 1000))
+			// Knuth multiplicative hash - fast and well-distributed for sequential ints
+			if ((i * 2654435761u) % 1000u >= Threshold)
 			{
 				FilteredPoints.Add(Points[i]);
 			}
@@ -300,19 +332,6 @@ void UGaussianSplatComponent::RebuildCollision()
 		break;
 	case EGaussianCollisionMethod::Voxel:
 		bSuccess = GenerateVoxelCollision(Points, Vertices, Indices);
-		break;
-	case EGaussianCollisionMethod::BoundingBox:
-		{
-			// Simple bounding box collision
-			FBox LocalBounds(Points);
-			FKBoxElem BoxElem;
-			BoxElem.Center = LocalBounds.GetCenter();
-			BoxElem.X = LocalBounds.GetExtent().X * 2;
-			BoxElem.Y = LocalBounds.GetExtent().Y * 2;
-			BoxElem.Z = LocalBounds.GetExtent().Z * 2;
-			BodySetup->AggGeom.BoxElems.Add(BoxElem);
-			bSuccess = true;
-		}
 		break;
 	default:
 		break;
@@ -347,20 +366,41 @@ void UGaussianSplatComponent::BuildCollisionBodySetup()
 
 bool UGaussianSplatComponent::GenerateConvexHull(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
 {
-	// Simple convex hull using gift wrapping algorithm
+	// ============================================================================
+	// WARNING: STUB IMPLEMENTATION — NOT A REAL CONVEX HULL
+	// ============================================================================
+	// This is a placeholder that simply samples input points. It does NOT compute
+	// a true convex hull and the result may be non-convex, contain interior points,
+	// and produce incorrect collision behavior (e.g. false positives, missed
+	// contacts, broken physics simulation).
+	//
+	// Use cases affected:
+	//   - ConvexHull collision method (CollisionMethod == EGaussianCollisionMethod::ConvexHull)
+	//   - Simplified collision (falls through to this stub)
+	//
+	// For production use, replace this with a real algorithm such as QuickHull
+	// (see FConvexVolume::ComputeConvexHull in Engine) or integrate a third-party
+	// library (e.g. V-HACD for decomposed convex hulls). The placeholder exists
+	// only to avoid crashes when users select this collision method on a splat
+	// asset; it should not be relied upon for accurate physics.
+	//
+	// TODO: Implement real QuickHull. For now, prefer BoundingBox collision
+	// (cheap, correct for simple cases) or Voxel collision (approximate but
+	// bounded) until this is replaced.
+	// ============================================================================
 	if (Points.Num() < 4)
 	{
 		return false;
 	}
 
-	// For simplicity, use all points as convex hull vertices
-	// A proper implementation would use QuickHull or similar
-	// For now, we sample points to reduce count
+	// Placeholder: sample points uniformly. NOT a convex hull — kept only so the
+	// collision pipeline has *something* to render into BodySetup instead of
+	// failing silently. OutIndices is left empty, which means no convex element
+	// will actually be created in the BodySetup (see RebuildCollision).
 	int32 TargetCount = FMath::Min(Points.Num(), CollisionMaxFaces * 4);
 
 	if (Points.Num() > TargetCount)
 	{
-		// Sample points evenly
 		OutVertices.Reserve(TargetCount);
 		float Step = (float)Points.Num() / TargetCount;
 		for (int32 i = 0; i < TargetCount; i++)
@@ -374,20 +414,32 @@ bool UGaussianSplatComponent::GenerateConvexHull(const TArray<FVector>& Points, 
 		OutVertices = Points;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: Convex hull generated with %d vertices"), OutVertices.Num());
+	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: ConvexHull collision is a STUB (not a real convex hull). ")
+		TEXT("Returned %d sampled points — physics may be incorrect. Use BoundingBox or Voxel collision for now."), OutVertices.Num());
 	return true;
 }
 
 bool UGaussianSplatComponent::GenerateSimplifiedCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
 {
-	// Simplified collision: divide space into cells and create a convex hull per cell
+	// ============================================================================
+	// WARNING: STUB — DELEGATES TO GenerateConvexHull (also a stub)
+	// ============================================================================
+	// A proper Simplified collision would use V-HACD (Volumetric Hierarchical
+	// Approximate Convex Decomposition) to produce multiple small convex hulls
+	// that together approximate the original geometry. This is critical for
+	// non-convex splat assets (e.g. a statue, a room interior) where a single
+	// convex hull would be wildly inaccurate.
+	//
+	// Until V-HACD or equivalent is integrated, this method falls through to
+	// the convex-hull stub, which itself is just point sampling. Treat the
+	// Simplified collision method as "best-effort, not for production" and
+	// prefer Voxel or BoundingBox collision.
+	// ============================================================================
 	if (Points.Num() < 4)
 	{
 		return false;
 	}
 
-	// For now, use the same convex hull approach but with fewer points
-	// A proper implementation would use V-HACD or similar
 	return GenerateConvexHull(Points, OutVertices, OutIndices);
 }
 

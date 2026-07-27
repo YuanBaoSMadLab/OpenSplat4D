@@ -69,6 +69,14 @@ TAutoConsoleVariable<int32> CVarDebugForceLODLevel(
 // Export for other modules
 int32 GGaussianSplatShowClusterBounds = 0;
 
+// LOD error threshold lower bound. Mirrors GaussianSplatRenderConstants::MinLODErrorThreshold
+// in GaussianSplatRenderer.cpp (kept file-local because it's only used in two files; if a
+// third consumer appears, hoist to a shared header).
+namespace NanoGSConstants
+{
+	constexpr float MinLODErrorThreshold = 0.1f;
+}
+
 // Helper to get the renderer module
 static IRendererModule& GetRendererModuleRef()
 {
@@ -266,7 +274,7 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 
 		// Check camera-static skip: if nothing has changed, skip Phase 1+2 and reuse cached sort
 		// Use ProjectionNoAAMatrix to ignore TSR/TAA per-frame jitter that changes every frame
-		FMatrix CurrentVP = SceneView->ViewMatrices.GetViewMatrix() * SceneView->ViewMatrices.GetProjectionNoAAMatrix();
+		FMatrix CurrentVP = SceneView->ViewMatrices.GetWorldToView() * SceneView->ViewMatrices.GetProjectionNoAAMatrix();
 		int32 CurrentDebugMode = DebugMode;
 		int32 CurrentDebugForceLODLevel = CVarDebugForceLODLevel.GetValueOnRenderThread();
 
@@ -279,7 +287,7 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 			for (const FProxyRenderInfo& Info : VisibleProxies)
 			{
 				FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
-				float ProxyErrorThreshold = FMath::Max(0.1f, Info.Proxy->GetLODErrorThreshold());
+				float ProxyErrorThreshold = FMath::Max(NanoGSConstants::MinLODErrorThreshold, Info.Proxy->GetLODErrorThreshold());
 				if (!GPUResources->bHasCachedSortData ||
 					!GPUResources->CachedViewProjectionMatrix.Equals(CurrentVP, 0.0f) ||
 					!GPUResources->CachedLocalToWorld.Equals(Info.LocalToWorld, 0.0f) ||

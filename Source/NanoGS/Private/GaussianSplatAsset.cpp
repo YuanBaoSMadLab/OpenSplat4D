@@ -43,6 +43,13 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 	if (Ar.IsLoading() && (Magic != GAUSSIAN_SPLAT_ASSET_MAGIC || Version != GAUSSIAN_SPLAT_ASSET_VERSION))
 	{
 		UE_LOG(LogTemp, Error, TEXT("GaussianSplatAsset: Incompatible asset format (Magic=0x%08X, Version=%d). Please reimport the asset."), Magic, Version);
+		// Explicitly reset state so the asset fails IsValid() cleanly instead of
+		// being left in a half-loaded state with stale SplatCount / dangling BulkData.
+		SplatCount = 0;
+		OriginalSplatCount = 0;
+		BoundingBox.Init();
+		SHBands = 0;
+		ClusterHierarchy.Reset();
 		return;
 	}
 
@@ -241,19 +248,31 @@ TArray<FVector> UGaussianSplatAsset::GetDecompressedPositions() const
 
 	Positions.SetNum(SplatCount);
 
-	// Lock bulk data for reading
+	// Lock bulk data for reading. ON_SCOPE_EXIT guarantees Unlock() runs even
+	// if anything below returns early or throws — without it, a stuck lock
+	// would prevent future serialize/deserialize of this asset.
 	const uint8* DataPtr = static_cast<const uint8*>(PositionBulkData.LockReadOnly());
+	ON_SCOPE_EXIT
+	{
+		PositionBulkData.Unlock();
+	};
 
 	// Simplified: Always Float32 format (12 bytes per position)
 	const int32 BytesPerSplat = 12;
+
+	// Defensive: make sure DataPtr is valid before dereferencing.
+	if (!DataPtr)
+	{
+		UE_LOG(LogTemp, Error, TEXT("GaussianSplatAsset: PositionBulkData.LockReadOnly returned null"));
+		Positions.Reset();
+		return Positions;
+	}
 
 	for (int32 i = 0; i < SplatCount; i++)
 	{
 		const float* FloatPtr = reinterpret_cast<const float*>(DataPtr + i * BytesPerSplat);
 		Positions[i] = FVector(FloatPtr[0], FloatPtr[1], FloatPtr[2]);
 	}
-
-	PositionBulkData.Unlock();
 
 	return Positions;
 }
@@ -901,9 +920,20 @@ void UGaussianSplatAsset::CreateThumbnailTextureFromData()
 	// Copy the stored pixel data to the mip
 	Mip->BulkData.Lock(LOCK_READ_WRITE);
 	uint8* MipData = reinterpret_cast<uint8*>(Mip->BulkData.Realloc(ThumbnailData.Num()));
-	FMemory::Memcpy(MipData, ThumbnailData.GetData(), ThumbnailData.Num());
+	if (MipData)
+	{
+		FMemory::Memcpy(MipData, ThumbnailData.GetData(), ThumbnailData.Num());
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("GaussianSplatAsset: Thumbnail BulkData.Realloc returned null (size=%d)"), ThumbnailData.Num());
+	}
 	Mip->BulkData.Unlock();
 
-	ThumbnailTexture->UpdateResource();
+	// Only update GPU resource if we actually wrote pixel data
+	if (MipData)
+	{
+		ThumbnailTexture->UpdateResource();
+	}
 }
 #endif

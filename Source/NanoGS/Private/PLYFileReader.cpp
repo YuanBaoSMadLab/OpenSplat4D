@@ -265,7 +265,24 @@ bool FPLYFileReader::ParseHeader(IFileHandle* FileHandle, FPLYHeader& OutHeader,
 		return false;
 	}
 
+	// Sanity check on vertex count: 3DGS models rarely exceed ~50M splats.
+	// Rejecting implausibly large counts up-front prevents OOM from a corrupt
+	// or hostile header (e.g. VertexCount = INT_MAX).
+	constexpr int32 MaxReasonableVertexCount = 200 * 1024 * 1024;  // 200 M
+	if (OutHeader.VertexCount > MaxReasonableVertexCount)
+	{
+		OutError = FString::Printf(TEXT("Vertex count %d exceeds safety limit %d (likely a corrupt PLY header)"),
+			OutHeader.VertexCount, MaxReasonableVertexCount);
+		return false;
+	}
+
 	OutHeader.VertexStride = CurrentOffset;
+
+	if (OutHeader.VertexStride <= 0)
+	{
+		OutError = TEXT("Parsed vertex stride is 0 — PLY header has no recognized properties");
+		return false;
+	}
 
 	// Verify we have the minimum required properties for a point cloud.
 	// x, y, z are mandatory; gaussian properties (opacity, scale, rotation,

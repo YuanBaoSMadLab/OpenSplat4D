@@ -38,10 +38,11 @@ UObject* UOpenSplat4DPointCloudAssetFactory::FactoryCreateNew(
 	return NewObject<UOpenSplat4DPointCloud>(InParent, InClass, InName, Flags);
 }
 
+// [DISABLED] PLY 导入由 NanoGS 模块接管，此工厂不再处理 PLY。仅保留 4dgs 格式。
 bool UOpenSplat4DPointCloudAssetFactory::FactoryCanImport(const FString& Filename)
 {
 	const FString Ext = FPaths::GetExtension(Filename).ToLower();
-	return Ext == TEXT("ply") || Ext == TEXT("4dgs");
+	return Ext == TEXT("4dgs");
 }
 
 UObject* UOpenSplat4DPointCloudAssetFactory::FactoryCreateFile(

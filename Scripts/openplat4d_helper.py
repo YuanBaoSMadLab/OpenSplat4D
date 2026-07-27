@@ -156,6 +156,20 @@ class OpenSplat4DHelper:
         parser.add_argument('-a', '--aligner', help='extra model_aligner params')
         parser.add_argument('-t', '--train', help='extra train params')
         parser.add_argument('--4d', dest='fourd', action='store_true', help='train a 4D (spatio-temporal) gaussian model')
+        # [Enhanced] 使用 OpenSplat4D/Scripts/train_enhanced.py 替代 teachers/train.py，
+        # 启用 depth loss / 过曝降权 / mask-aware L1 / Coarse-to-Fine 等增强项。
+        # 详见 train_enhanced.py 顶部文档。开启后 --gaussian 仍指向 teachers 目录
+        # (用于 import GaussianModel/Scene)，但实际执行的是 overlay 脚本。
+        parser.add_argument('--enhanced', action='store_true',
+                            help='use train_enhanced.py overlay (depth loss, overexp downweight, mask-aware L1)')
+        parser.add_argument('--lambda_depth', type=float, default=0.05,
+                            help='[enhanced only] depth loss weight, 0=off, recommended 0.02~0.1')
+        parser.add_argument('--overexp_weight', type=float, default=0.2,
+                            help='[enhanced only] L1 weight for overexposed pixels (0=ignore, 1=no downweight)')
+        parser.add_argument('--resolution_coarse', type=int, default=0,
+                            help='[enhanced only] coarse-to-fine first-stage long-edge resolution, 0=off')
+        parser.add_argument('--coarse_until_iter', type=int, default=5000,
+                            help='[enhanced only] iterations to stay at coarse resolution')
         parser.add_argument('--python', dest='python_override', help='explicit python interpreter to run training/clip (overrides auto-detection)', default=None)
         parser.add_argument('--clip', action='store_true', help='execute clip')
         parser.add_argument('--hlod_clip', action='store_true', help='recursively clip all point clouds under work dir')
@@ -210,9 +224,13 @@ class OpenSplat4DHelper:
     # COLMAP is known to exit non-zero on recoverable warnings (discarded
     # reconstructions, CHOLMOD issues).  Pass bStrict=False for commands where
     # the output files are the real signal of success.
-    def runCommand(self, command, env_ext={}, bStrict=True):
+    # NOTE: env_ext defaults to None (not {}) to avoid the classic Python
+    # mutable-default-argument bug — a shared dict would accumulate state
+    # across calls if anything ever appended to it.
+    def runCommand(self, command, env_ext=None, bStrict=True):
         env = os.environ.copy()
-        env.update(env_ext)
+        if env_ext:
+            env.update(env_ext)
         printImmediately("run command:", command)
         process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -371,6 +389,23 @@ class OpenSplat4DHelper:
         if self.args.fourd:
             # 4d-gaussian-splatting (Wu et al.) training entry point.
             command = f'{python_exe} {gaussian}/train.py -s . -m ./output '
+        elif self.args.enhanced:
+            # [Enhanced] 走 train_enhanced.py overlay —— 在 teachers 之上添加
+            # depth loss / 过曝降权 / mask-aware L1 / Coarse-to-Fine。
+            # --gaussian 仍指向 teachers 目录（用于 import GaussianModel/Scene/render），
+            # 但实际入口是 OpenSplat4D/Scripts/train_enhanced.py。
+            enhanced_script = _quote_path(os.path.join(self.scriptDir, "train_enhanced.py"))
+            cmd_parts = [f'{python_exe} {enhanced_script} -s . -m ./output',
+                         f'--lambda_depth {self.args.lambda_depth}',
+                         f'--overexp_weight {self.args.overexp_weight}']
+            if os.path.exists("./depths"):
+                # depths 目录存在时，让 train_enhanced.py 自动加载（用 image_name 匹配）
+                # 不需要显式 --depths 参数（train_enhanced.py 会从 source_path/depths 自动找）
+                pass
+            if self.args.resolution_coarse > 0:
+                cmd_parts.append(f'--resolution_coarse {self.args.resolution_coarse}')
+                cmd_parts.append(f'--coarse_until_iter {self.args.coarse_until_iter}')
+            command = ' '.join(cmd_parts) + ' '
         elif os.path.exists("./depths"):
             command = (f'{python_exe} {script_dir}/make_depth_scale.py --base_dir . '
                        f'--depths_dir ./depths && {python_exe} {gaussian}/train.py -s . -m ./output --depths ./depths ')

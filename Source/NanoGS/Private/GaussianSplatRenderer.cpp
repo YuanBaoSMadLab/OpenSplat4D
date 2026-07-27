@@ -22,6 +22,31 @@
 extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
 extern TAutoConsoleVariable<int32> CVarDebugForceLODLevel;
 
+// ----------------------------------------------------------------------------
+// Named constants replacing magic numbers used across the renderer.
+// Keep these in one place so they can be tuned without grepping for literals.
+// ----------------------------------------------------------------------------
+namespace GaussianSplatRenderConstants
+{
+	/** Minimum LOD error threshold (world-space units). Below this the LOD
+	 *  selector clamps to avoid degenerate behavior when the user sets
+	 *  LODErrorThreshold to 0 or very small values. */
+	constexpr float MinLODErrorThreshold = 0.1f;
+
+	/** Minimum culling error threshold inside the GPU culling shader.
+	 *  Smaller than MinLODErrorThreshold because culling is per-frame and
+	 *  should be allowed to be more aggressive, but still > 0 to avoid div-by-0
+	 *  in error-based cluster selection. */
+	constexpr float MinCullingErrorThreshold = 0.001f;
+
+	/** Stencil bit used to mark pixels covered by Gaussian splats.
+	 *  Bit 3 (0x08) is chosen to avoid clashing with UE's stencil usage
+	 *  (bits 0-2 are reserved by the engine for material / lighting passes).
+	 *  Read/Write mask = 0x08 means we only touch this bit. */
+	constexpr uint8 StencilReadMask = 0x08;
+	constexpr uint8 StencilWriteMask = 0x08;
+}
+
 // Helper: Set pixel shader velocity parameters using self-tracked previous frame data.
 // UE5's PrevViewInfo is not populated for PostOpaqueRender callbacks, so we store
 // current frame matrices and use them as "previous" data next frame.
@@ -167,9 +192,9 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.WorldToPLY = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
 	// Use un-jittered projection matrix so ClipPosition is stable when camera is static
 	// (TAA/TSR jitter changes every frame, but we skip CalcViewData when camera is static)
-	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewMatrix() * View.ViewMatrices.GetProjectionNoAAMatrix());
+	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetWorldToView() * View.ViewMatrices.GetProjectionNoAAMatrix());
 	Parameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
-	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
+	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetWorldToView());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
 
 	FIntRect ViewRect = ViewInfo.ViewRect;
@@ -575,7 +600,8 @@ void FGaussianSplatRenderer::DrawSplats(
 		false, CF_DepthNearOrEqual,                      // Depth: NO write (transparent splats), near/equal test
 		true, CF_Always, SO_Keep, SO_Keep, SO_Replace,   // Front stencil: replace on pass
 		false, CF_Always, SO_Keep, SO_Keep, SO_Keep,     // Back stencil: no-op
-		0x08, 0x08                                       // Read mask, Write mask = bit 3 only
+		GaussianSplatRenderConstants::StencilReadMask,
+		GaussianSplatRenderConstants::StencilWriteMask  // Stencil bit 3 — see constants above
 	>::GetRHI();
 
 	// Blend mode for MRT:
@@ -807,9 +833,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.WorldToPLY = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
 	// Use un-jittered projection matrix so ClipPosition is stable when camera is static
 	// (TAA/TSR jitter changes every frame, but we skip CalcViewData when camera is static)
-	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewMatrix() * View.ViewMatrices.GetProjectionNoAAMatrix());
+	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetWorldToView() * View.ViewMatrices.GetProjectionNoAAMatrix());
 	Parameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
-	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
+	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetWorldToView());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
 
 	FIntRect ViewRect = ViewInfo.ViewRect;
@@ -952,9 +978,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	Parameters.WorldToPLY = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
 	// Use un-jittered projection matrix so ClipPosition is stable when camera is static
 	// (TAA/TSR jitter changes every frame, but we skip CalcViewData when camera is static)
-	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewMatrix() * View.ViewMatrices.GetProjectionNoAAMatrix());
+	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetWorldToView() * View.ViewMatrices.GetProjectionNoAAMatrix());
 	Parameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
-	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
+	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetWorldToView());
 	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
 
 	FIntRect ViewRect = ViewInfo.ViewRect;
@@ -1201,7 +1227,8 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 		false, CF_DepthNearOrEqual,                      // Depth: NO write (transparent splats), near/equal test
 		true, CF_Always, SO_Keep, SO_Keep, SO_Replace,   // Front stencil: replace on pass
 		false, CF_Always, SO_Keep, SO_Keep, SO_Keep,     // Back stencil: no-op
-		0x08, 0x08                                       // Read mask, Write mask = bit 3 only
+		GaussianSplatRenderConstants::StencilReadMask,
+		GaussianSplatRenderConstants::StencilWriteMask  // Stencil bit 3 — see constants above
 	>::GetRHI();
 	// Blend mode for MRT: RT0 (sRGB intermediate) with premultiplied alpha, RT1 (Velocity) with replacement
 	// CW_RGBA on RT0 so accumulated alpha is tracked for the composite pass
@@ -1209,8 +1236,6 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 		// RT0: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
 		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
 		// RT1: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
-		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero,
-		// RT2: Normal (R32_UINT) - write replacement, no blending
 		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero
 	>::GetRHI();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
@@ -1403,9 +1428,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	Parameters.WorldToPLY      = FMatrix44f(ComputeWorldToPLY(LocalToWorld));
 	// Use un-jittered projection matrix so ClipPosition is stable when camera is static
 	// (TAA/TSR jitter changes every frame, but we skip CalcViewData when camera is static)
-	Parameters.WorldToClip     = FMatrix44f(View.ViewMatrices.GetViewMatrix() * View.ViewMatrices.GetProjectionNoAAMatrix());
+	Parameters.WorldToClip     = FMatrix44f(View.ViewMatrices.GetWorldToView() * View.ViewMatrices.GetProjectionNoAAMatrix());
 	Parameters.PreViewTranslation = FVector3f(View.ViewMatrices.GetPreViewTranslation());
-	Parameters.WorldToView     = FMatrix44f(View.ViewMatrices.GetViewMatrix());
+	Parameters.WorldToView     = FMatrix44f(View.ViewMatrices.GetWorldToView());
 	Parameters.CameraPosition  = FVector3f(View.ViewMatrices.GetViewOrigin());
 
 	FIntRect ViewRect = ViewInfo.ViewRect;
@@ -1637,7 +1662,8 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 		false, CF_DepthNearOrEqual,                      // Depth: NO write (transparent splats), near/equal test
 		true, CF_Always, SO_Keep, SO_Keep, SO_Replace,   // Front stencil: replace on pass
 		false, CF_Always, SO_Keep, SO_Keep, SO_Keep,     // Back stencil: no-op
-		0x08, 0x08                                       // Read mask, Write mask = bit 3 only
+		GaussianSplatRenderConstants::StencilReadMask,
+		GaussianSplatRenderConstants::StencilWriteMask  // Stencil bit 3 — see constants above
 	>::GetRHI();
 	// Blend mode for MRT: RT0 (sRGB intermediate) with premultiplied alpha, RT1 (Velocity) with replacement
 	// CW_RGBA on RT0 so accumulated alpha is tracked for the composite pass
@@ -1645,8 +1671,6 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 		// RT0: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
 		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
 		// RT1: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
-		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero,
-		// RT2: Normal (R32_UINT) - write replacement, no blending
 		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero
 	>::GetRHI();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
@@ -1870,7 +1894,7 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		// ProjMatrix[1][1] = 1/tan(HalfFOV_Y), depends only on FOV, not viewport pixel size
 		const FMatrix& ProjMatrix = View.ViewMatrices.GetProjectionMatrix();
 		CullingParams.ScreenHeight = FMath::Max(ProjMatrix.M[0][0], ProjMatrix.M[1][1]);
-		CullingParams.ErrorThreshold = FMath::Max(0.001f, ErrorThreshold);
+		CullingParams.ErrorThreshold = FMath::Max(GaussianSplatRenderConstants::MinCullingErrorThreshold, ErrorThreshold);
 		CullingParams.LODBias = 0.0f;         // No bias (can be made configurable)
 		CullingParams.UseLODRendering = bUseLODRendering ? 1 : 0;
 		// Debug: Force specific LOD level (-1 = auto, 0 = leaf, 1+ = specific level)

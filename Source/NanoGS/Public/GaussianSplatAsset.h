@@ -179,11 +179,42 @@ public:
 	EGaussianQualityLevel ImportQuality = EGaussianQualityLevel::Medium;
 
 	/**
-	 * Whether Nanite-style LOD and culling is enabled for this asset
-	 * Enable via Asset Actions > Nanite in Content Browser
+	 * Whether Nanite-style LOD and culling is enabled for this asset.
+	 * Toggleable at runtime — disabling it makes the asset render at full
+	 * resolution (all splats, no LOD compaction). Useful for quality
+	 * comparison or when the cluster hierarchy is corrupted.
+	 *
+	 * When you change this in the editor, the owning SceneProxy will pick
+	 * up the new value on next re-create (e.g. when the actor is moved
+	 * or the level is saved/loaded). To force an immediate update in the
+	 * viewport, close and re-open the asset editor.
 	 */
-	UPROPERTY(VisibleAnywhere, Category = "Nanite", meta = (DisplayName = "启用 Nanite"))
+	UPROPERTY(EditAnywhere, Category = "Nanite", meta = (DisplayName = "启用 Nanite"))
 	bool bEnableNanite = false;
+
+	// ============================================================================
+	// 预览设置（在 OpenSplat 资产编辑器中可调，仅影响预览渲染，不修改资产数据）
+	// ============================================================================
+	// 这些字段让用户在 Asset Editor 中调整渲染参数，立即看到效果。
+	// 它们不参与序列化的资产数据，仅作为编辑器预览状态存在。
+	// ============================================================================
+	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "预览 Splat 缩放"))
+	float PreviewSplatScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "预览不透明度系数", ClampMin = "0.0", ClampMax = "2.0"))
+	float PreviewOpacityScale = 1.0f;
+
+	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "预览 SH 阶数", ClampMin = "0", ClampMax = "3", UIMin = "0", UIMax = "3"))
+	int32 PreviewSHOrder = 3;
+
+	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "预览 LOD 误差阈值", ClampMin = "0.0"))
+	float PreviewLODErrorThreshold = 0.1f;
+
+	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "显示包围盒"))
+	bool bPreviewShowBounds = false;
+
+	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "显示簇边界（调试）"))
+	bool bPreviewShowClusterBounds = false;
 
 	/**
 	 * Hierarchical cluster structure for Nanite-style LOD and culling

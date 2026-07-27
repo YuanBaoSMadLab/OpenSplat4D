@@ -112,6 +112,21 @@ public:
 
 	virtual void ReceiveMessage(const FString& Message);
 
+	/** Decode a chunk of UTF-8 bytes received from a subprocess pipe and feed
+	 *  complete lines (terminated by '\n') to ReceiveMessage.
+	 *
+	 *  Why this exists: FPlatformProcess::ReadPipeToArray returns raw bytes,
+	 *  not a string. The naive FString(std::string(...)) conversion truncates
+	 *  at the first embedded '\0' and mis-decodes multibyte UTF-8 sequences
+	 *  on Windows (where the C locale is often not UTF-8). By buffering bytes
+	 *  here and decoding with FString::FromUtf8 we get correct Chinese /
+	 *  emoji output in the editor log and progress UI.
+	 *
+	 *  Partial lines (no trailing '\n' yet) are kept in PendingPipeBuffer
+	 *  until the next chunk arrives — pipe reads are streaming, so a single
+	 *  read may contain half a line or two-and-a-half lines. */
+	void ReceiveMessageFromBinary(const TArray<uint8>& BinaryData);
+
 	TObjectPtr<UWorld> World;
 
 	FString WorkDir;
@@ -123,6 +138,11 @@ public:
 	float TaskProgressPercent = 0.0f;
 	FText LastTaskStatusText = FText::FromString("");
 	bool bRequestCancelTask = false;
+
+	/** Byte buffer for UTF-8 pipe data that hasn't reached a '\n' yet.
+	 *  Mutable because ReceiveMessageFromBinary is logically const (it only
+	 *  mutates internal buffering state, not user-visible step state). */
+	mutable TArray<uint8> PendingPipeBuffer;
 
 	FOnRequestTaskStart OnRequestTaskStart;
 	FSimpleMulticastDelegate OnTaskFinished;
@@ -257,6 +277,11 @@ public:
 	UPROPERTY(EditAnywhere, Config, Category = "特征提取器", DisplayName = "最大特征数")
 	int MaxNumFeatures = 8192;
 
+	/** 自定义 COLMAP feature_extractor 命令行参数。
+	 *  TRUST BOUNDARY: 这些参数由本机用户在编辑器中配置，直接拼入传给 python
+	 *  helper 的命令行字符串（helper 内部用 subprocess.Popen(shell=True) 执行）。
+	 *  不接受来自网络/序列化资产的输入，因此无需转义；但用户应避免在其中
+	 *  放置会被 cmd.exe 误解的字符（如未配对的双引号）。 */
 	UPROPERTY(EditAnywhere, Config, Category = "特征提取器", DisplayName = "特征提取参数（自定义）")
 	FString FeatureExtractorParamsCustom;
 

@@ -1,6 +1,19 @@
 using System.IO;
 using UnrealBuildTool;
 
+// ============================================================================
+// LEGACY MODULE — retained for backward compatibility.
+// ============================================================================
+// The active editor pipeline lives in `NanoGSEditor`. This module still hosts
+// the EdMode panel, capture / reconstruction / training step UI, and the
+// legacy ISMC + Niagara actor factories, so users can keep opening older
+// maps. The SplatActor factory is disabled (see OpenSplat4DActorFactory.cpp);
+// dragging a PLY into the viewport now creates a NanoGS actor instead.
+//
+// New editor features should go in NanoGSEditor. Do not extend this module
+// unless you are fixing a regression in legacy content.
+// ============================================================================
+
 public class OpenSplat4DEditor : ModuleRules
 {
 	public OpenSplat4DEditor(ReadOnlyTargetRules Target) : base(Target)

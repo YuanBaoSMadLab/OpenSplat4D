@@ -1,6 +1,19 @@
 using System.IO;
 using UnrealBuildTool;
 
+// ============================================================================
+// LEGACY MODULE — retained for backward compatibility, NOT actively used.
+// ============================================================================
+// The primary rendering pipeline is now `NanoGS` (custom Compute Shader +
+// RDG). This module contains the older ISMC + Niagara code path, which is
+// kept compilable so existing assets/levels that reference the legacy
+// AOpenSplat4DSplatActor / UOpenSplat4DPointCloud types still load, but the
+// Actor factory is disabled (see OpenSplat4DActorFactory.cpp) and no new
+// content should target this path.
+//
+// Do not add new features here. New work belongs in NanoGS / NanoGSEditor.
+// ============================================================================
+
 public class OpenSplat4DRuntime : ModuleRules
 {
 	public OpenSplat4DRuntime(ReadOnlyTargetRules Target) : base(Target)

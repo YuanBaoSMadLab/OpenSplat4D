@@ -408,8 +408,10 @@ private:
 	/** GPU resources */
 	FGaussianSplatGPUResources* GPUResources = nullptr;
 
-	/** Cached asset for initialization */
-	UGaussianSplatAsset* CachedAsset = nullptr;
+	/** Cached asset for initialization - weak ptr to prevent dangling pointer
+	 *  if asset is GC'd or replaced via SetSplatAsset while proxy exists.
+	 *  Must call .Get() and check validity before each access on render thread. */
+	TWeakObjectPtr<UGaussianSplatAsset> CachedAsset;
 
 	/** Rendering parameters */
 	int32 SplatCount = 0;

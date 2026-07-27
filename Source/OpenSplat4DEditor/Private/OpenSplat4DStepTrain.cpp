@@ -212,8 +212,15 @@ UGaussianSplatAsset* UOpenSplat4DStep_GaussianSplatting::SaveToContent()
 
 	FAssetRegistryModule::AssetCreated(NewAsset);
 
-	FPackagePath NewPackagePath = FPackagePath::FromPackageNameChecked(NewPackage->GetName());
-	FString LocalPath = NewPackagePath.GetLocalFullPath();
+	FString LocalPath;
+	if (!FPackageName::TryConvertLongPackageNameToFilename(PackagePath, LocalPath, FPackageName::GetAssetPackageExtension()))
+	{
+		UE_LOG(LogOpenSplat4DStep, Error, TEXT("OpenSplat4D: 自动导入失败，无法解析文件路径 %s。"), *PackagePath);
+		return nullptr;
+	}
+	// Ensure parent directory exists
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(LocalPath), true);
+
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 	SaveArgs.SaveFlags = SAVE_NoError;

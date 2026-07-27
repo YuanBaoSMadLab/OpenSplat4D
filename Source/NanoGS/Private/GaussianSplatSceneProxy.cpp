@@ -683,7 +683,7 @@ void FGaussianSplatGPUResources::CreatePerInstanceBuffers(FRHICommandListBase& R
 //Constructor. Copies rendering parameters from the component
 FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent* InComponent)
 	: FPrimitiveSceneProxy(InComponent)
-	, CachedAsset(InComponent->SplatAsset)
+	, CachedAsset(InComponent->SplatAsset.Get())
 	, SplatCount(InComponent->SplatAsset ? InComponent->SplatAsset->GetSplatCount() : 0)
 	, SHOrder(InComponent->SHOrder)
 	, OpacityScale(InComponent->OpacityScale)
@@ -825,49 +825,53 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 	}
 }
 
-//critical setup. creates FGaussianSplatGPUResources which uploads all the GPU buffers 
+//critical setup. creates FGaussianSplatGPUResources which uploads all the GPU buffers
 // registers itself with the ViewExtension
 void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& RHICmdList)
 {
-	if (CachedAsset && CachedAsset->IsValid())
+	// Snapshot weak ptr on render thread - if asset was GC'd/replaced on GameThread, skip init
+	UGaussianSplatAsset* Asset = CachedAsset.Get();
+	if (!Asset || !Asset->IsValid())
 	{
-		GPUResources = new FGaussianSplatGPUResources();
-		GPUResources->Initialize(CachedAsset);
+		return;
+	}
 
-		// Get color texture reference
-		if (CachedAsset->ColorTexture)
+	GPUResources = new FGaussianSplatGPUResources();
+	GPUResources->Initialize(Asset);
+
+	// Get color texture reference
+	if (Asset->ColorTexture)
+	{
+		// If platform data exists but no resource, try to create it
+		FTextureResource* TextureResource = Asset->ColorTexture->GetResource();
+		FTexturePlatformData* PlatformData = Asset->ColorTexture->GetPlatformData();
+		int64 BulkDataSize = 0;
+		if (PlatformData && PlatformData->Mips.Num() > 0)
 		{
-			// If platform data exists but no resource, try to create it
-			FTextureResource* TextureResource = CachedAsset->ColorTexture->GetResource();
-			FTexturePlatformData* PlatformData = CachedAsset->ColorTexture->GetPlatformData();
-			int64 BulkDataSize = 0;
-			if (PlatformData && PlatformData->Mips.Num() > 0)
-			{
-				BulkDataSize = PlatformData->Mips[0].BulkData.GetBulkDataSize();
-			}
-
-			if (!TextureResource && PlatformData && BulkDataSize > 0)
-			{
-				CachedAsset->ColorTexture->UpdateResource();
-				TextureResource = CachedAsset->ColorTexture->GetResource();
-			}
-
-			if (TextureResource && TextureResource->TextureRHI)
-			{
-				GPUResources->ColorTexture = TextureResource->TextureRHI;
-				GPUResources->ColorTextureSRV = RHICmdList.CreateShaderResourceView(
-					GPUResources->ColorTexture,
-					FRHIViewDesc::CreateTextureSRV()
-						.SetDimension(ETextureDimension::Texture2D));
-			}
+			BulkDataSize = PlatformData->Mips[0].BulkData.GetBulkDataSize();
 		}
 
-		// Register with view extension for rendering
-		FGaussianSplatViewExtension* ViewExtension = FGaussianSplatViewExtension::Get();
-		if (ViewExtension)
+		if (!TextureResource && PlatformData && BulkDataSize > 0)
 		{
-			ViewExtension->RegisterProxy(const_cast<FGaussianSplatSceneProxy*>(this));
+			Asset->ColorTexture->UpdateResource();
+			TextureResource = Asset->ColorTexture->GetResource();
 		}
+
+		if (TextureResource && TextureResource->TextureRHI)
+		{
+			GPUResources->ColorTexture = TextureResource->TextureRHI;
+			GPUResources->ColorTextureSRV = RHICmdList.CreateShaderResourceView(
+				GPUResources->ColorTexture,
+				FRHIViewDesc::CreateTextureSRV()
+					.SetDimension(ETextureDimension::Texture2D));
+		}
+	}
+
+	// Register with view extension for rendering (no const_cast needed - method is non-const)
+	FGaussianSplatViewExtension* ViewExtension = FGaussianSplatViewExtension::Get();
+	if (ViewExtension)
+	{
+		ViewExtension->RegisterProxy(this);
 	}
 }
 
@@ -882,16 +886,17 @@ void FGaussianSplatSceneProxy::DestroyRenderThreadResources()
 	FGaussianSplatViewExtension* ViewExtension = FGaussianSplatViewExtension::Get();
 	if (ViewExtension)
 	{
-		ViewExtension->UnregisterProxy(const_cast<FGaussianSplatSceneProxy*>(this));
+		ViewExtension->UnregisterProxy(this);
 	}
 
-	// Flush any pending render commands that might be referencing our resources.
-	// This ensures that any RDG passes that captured our proxy pointer have completed
-	// before we release the GPU resources.
-	// Note: We're already on the render thread, so this flushes GPU work.
-	FRHICommandListImmediate& RHICmdList = FRHICommandListImmediate::Get();
-	RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
-
+	// Note: We intentionally do NOT call ImmediateFlush(EImmediateFlushType::FlushRHIThread)
+	// here. Doing so on every proxy destruction caused noticeable frame hitches when
+	// multiple splat actors were removed at once. Synchronization is already handled by:
+	//   1. bPendingDestruction atomic flag — checked by IsValidForRendering() in any
+	//      in-flight RDG pass before it touches our resources.
+	//   2. UnregisterProxy() lock — no new passes will reference this proxy after return.
+	//   3. FRenderResource::ReleaseResource() below — internally flushes the RHI thread
+	//      to guarantee GPU resources are safe to free before ReleaseRHI() runs.
 	if (GPUResources)
 	{
 		GPUResources->ReleaseResource();
@@ -914,17 +919,19 @@ void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RH
 		return;
 	}
 
-	if (!CachedAsset || !CachedAsset->ColorTexture)
+	// Check weak ptr validity - asset may have been GC'd/replaced
+	UGaussianSplatAsset* Asset = CachedAsset.Get();
+	if (!Asset || !Asset->ColorTexture)
 	{
 		return;
 	}
 
-	FTextureResource* TextureResource = CachedAsset->ColorTexture->GetResource();
+	FTextureResource* TextureResource = Asset->ColorTexture->GetResource();
 
 	// If resource doesn't exist but platform data does, try to create it
 	if (!TextureResource)
 	{
-		FTexturePlatformData* PlatformData = CachedAsset->ColorTexture->GetPlatformData();
+		FTexturePlatformData* PlatformData = Asset->ColorTexture->GetPlatformData();
 		int64 BulkDataSize = 0;
 		if (PlatformData && PlatformData->Mips.Num() > 0)
 		{
@@ -933,8 +940,8 @@ void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RH
 
 		if (PlatformData && BulkDataSize > 0)
 		{
-			CachedAsset->ColorTexture->UpdateResource();
-			TextureResource = CachedAsset->ColorTexture->GetResource();
+			Asset->ColorTexture->UpdateResource();
+			TextureResource = Asset->ColorTexture->GetResource();
 		}
 	}
 

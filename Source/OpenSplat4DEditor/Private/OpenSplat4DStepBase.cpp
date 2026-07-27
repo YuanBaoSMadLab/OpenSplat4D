@@ -25,6 +25,8 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "HAL/ThreadManager.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Framework/Notifications/NotificationManager.h"
 
 DEFINE_LOG_CATEGORY(LogOpenSplat4DStep);
 
@@ -127,7 +129,8 @@ DEFINE_LOG_CATEGORY(LogOpenSplat4DStep);
         return Asset;
     }
 
-	void OpenSplat4DUpdateCaptureSet(UOpenSplat4DCaptureSet* Asset, const FString& WorkDir, int32 ImageCount)
+	void OpenSplat4DUpdateCaptureSet(UOpenSplat4DCaptureSet* Asset, const FString& WorkDir,
+		int32 ImageCount)
     {
         if (!Asset)
         {
@@ -135,9 +138,6 @@ DEFINE_LOG_CATEGORY(LogOpenSplat4DStep);
         }
         Asset->WorkDirectory = WorkDir;
         Asset->ImageCount = ImageCount;
-        Asset->ImagesDir.Path = Asset->GetImagesDir();
-        Asset->InitialModelDir.Path = Asset->GetInitialModelDir();
-        Asset->TrainedModelDir.Path = Asset->GetTrainedModelDir();
         Asset->CapturedAt = FDateTime::Now();
         Asset->MarkPackageDirty();
         FAssetRegistryModule::AssetCreated(Asset);
@@ -334,14 +334,19 @@ public:
 	UOpenSplat4DStepBase* Step = nullptr;
 	FString ExecutePath;
 	FString Command;
-	TFunction<void()> FinishedCallback;
+	TFunction<void(bool bSuccess, int32 ReturnCode)> FinishedCallback;
 	FProcHandle ProcessHandle;
+	/** 任务退出原因：0=未结束 1=正常完成 2=取消 3=启动失败 4=超时 */
+	std::atomic<int32> ExitReason{0};
+	/** 超时秒数（<=0 表示不超时） */
+	float TimeoutSeconds = 0.0f;
 
-	FCommandExecuteRunnable(UOpenSplat4DStepBase* InStep, FString InExecutePath, FString InCommand, TFunction<void()> InFinishedCallback)
+	FCommandExecuteRunnable(UOpenSplat4DStepBase* InStep, FString InExecutePath, FString InCommand, TFunction<void(bool, int32)> InFinishedCallback, float InTimeoutSeconds = 0.0f)
 		: Step(InStep)
 		, ExecutePath(MoveTemp(InExecutePath))
 		, Command(MoveTemp(InCommand))
 		, FinishedCallback(MoveTemp(InFinishedCallback))
+		, TimeoutSeconds(InTimeoutSeconds)
 	{
 	}
 
@@ -351,7 +356,14 @@ public:
 		Step->bRequestCancelTask = false;
 		int32 ReturnCode = -1;
 		void* PipeStdOutRead = nullptr, *PipeStdOutWrite = nullptr;
-		verify(FPlatformProcess::CreatePipe(PipeStdOutRead, PipeStdOutWrite));
+		// Critical: 不使用 verify，管道创建失败时优雅返回而非崩溃
+		if (!FPlatformProcess::CreatePipe(PipeStdOutRead, PipeStdOutWrite))
+		{
+			UE_LOG(LogOpenSplat4DStep, Error, TEXT("CreatePipe failed - cannot launch subprocess"));
+			Step->ReceiveMessage(TEXT("[ERROR] 管道创建失败，无法启动子进程"));
+			ExitReason.store(3);
+			return 0;
+		}
 
 		// Base64-encode workDir on the command line to avoid encoding issues.
 		// On Chinese Windows, Python decodes sys.argv using the system code page
@@ -385,59 +397,96 @@ public:
 			}
 		}
 
-		// Redirect both stdout and stderr to the same pipe so we capture
-		// everything in one stream. The child does not need stdin, so pass
-		// nullptr there: previously the stdout *read* handle was passed as the
-		// stdin argument, which triggered the Windows
-		// "PipeReadChild passed to CreateProc is not inheritable" warning.
 		// Defensive: ensure the executable path is not wrapped in quotes, which
 		// would trip WindowsPlatformProcess's `URL[0] != '"'` assertion.
 		const FString ResolvedExecutePath = OpenSplat4DUnquoteArg(ExecutePath);
 		UE_LOG(LogOpenSplat4DStep, Log, TEXT("Final Command (after b64): %s"), *Command);
 		ProcessHandle = FPlatformProcess::CreateProc(*ResolvedExecutePath, *Command, true, true, true, nullptr, 0, nullptr, PipeStdOutWrite, nullptr, PipeStdOutWrite);
-		if (ProcessHandle.IsValid())
+		if (!ProcessHandle.IsValid())
 		{
-			FPlatformProcess::Sleep(0.01f);
-			while (FPlatformProcess::IsProcRunning(ProcessHandle))
+			UE_LOG(LogOpenSplat4DStep, Error, TEXT("CreateProc failed for: %s"), *ResolvedExecutePath);
+			Step->ReceiveMessage(TEXT("[ERROR] 子进程启动失败，请检查可执行文件路径"));
+			FPlatformProcess::ClosePipe(PipeStdOutRead, PipeStdOutWrite);
+			ExitReason.store(3);
+			return 0;
+		}
+
+		// 主循环：带超时与取消检测
+		const double StartTime = FPlatformTime::Seconds();
+		constexpr float PollInterval = 0.05f;  // 50ms 轮询
+		bool bTimedOut = false;
+
+		while (FPlatformProcess::IsProcRunning(ProcessHandle))
+		{
+			TArray<uint8> BinaryData;
+			FPlatformProcess::ReadPipeToArray(PipeStdOutRead, BinaryData);
+			if (!BinaryData.IsEmpty())
 			{
-				TArray<uint8> BinaryData;
-				FPlatformProcess::ReadPipeToArray(PipeStdOutRead, BinaryData);
-				if (!BinaryData.IsEmpty())
+				// 修复编码：用 UTF-8→TCHAR 转换，避免 \0 截断和中文乱码
+				Step->ReceiveMessageFromBinary(BinaryData);
+			}
+			if (Step->bRequestCancelTask)
+			{
+				FPlatformProcess::TerminateProc(ProcessHandle, true);
+				ExitReason.store(2);
+				Step->ReceiveMessage(TEXT("[CANCELLED] 用户已取消任务"));
+				break;
+			}
+			if (TimeoutSeconds > 0.0f)
+			{
+				const double Elapsed = float(FPlatformTime::Seconds() - StartTime);
+				if (Elapsed > TimeoutSeconds)
 				{
-					Step->ReceiveMessage(FString(std::string(reinterpret_cast<const char*>(BinaryData.GetData()), BinaryData.Num()).c_str()));
-				}
-				if (Step->bRequestCancelTask)
-				{
-					FPlatformProcess::CloseProc(ProcessHandle);
-					FPlatformProcess::ClosePipe(PipeStdOutRead, PipeStdOutWrite);
-					return 0;
+					bTimedOut = true;
+					ExitReason.store(4);
+					FPlatformProcess::TerminateProc(ProcessHandle, true);
+					Step->ReceiveMessage(FString::Printf(TEXT("[TIMEOUT] 任务超过 %.0f 秒被终止"), TimeoutSeconds));
+					break;
 				}
 			}
+			FPlatformProcess::Sleep(PollInterval);
+		}
+
+		// 读取剩余管道数据
+		if (ExitReason.load() == 0 || ExitReason.load() == 1)
+		{
 			FPlatformProcess::GetProcReturnCode(ProcessHandle, &ReturnCode);
 			TArray<uint8> BinaryData;
 			FPlatformProcess::ReadPipeToArray(PipeStdOutRead, BinaryData);
 			if (!BinaryData.IsEmpty())
 			{
-				Step->ReceiveMessage(FString(std::string(reinterpret_cast<const char*>(BinaryData.GetData()), BinaryData.Num()).c_str()));
+				Step->ReceiveMessageFromBinary(BinaryData);
 			}
-			FPlatformProcess::CloseProc(ProcessHandle);
+			if (ExitReason.load() == 0)
+			{
+				ExitReason.store(ReturnCode == 0 ? 1 : 3);
+			}
 		}
 		else
 		{
-			Step->ReceiveMessage(TEXT("Failed to launch command"));
+			ReturnCode = -1;
 		}
+
+		FPlatformProcess::CloseProc(ProcessHandle);
 		FPlatformProcess::ClosePipe(PipeStdOutRead, PipeStdOutWrite);
 		ProcessHandle.Reset();
 		return 0;
 	}
 
-	virtual void Stop() override { Step->WorkThread.Reset(); }
+	virtual void Stop() override
+	{
+		// 设置取消标志，Run() 循环会检测并终止子进程
+		Step->bRequestCancelTask = true;
+	}
 
 	virtual void Exit() override
 	{
-		AsyncTask(ENamedThreads::GameThread, [this]()
+		const int32 Reason = ExitReason.load();
+		const bool bSuccess = (Reason == 1);
+		const int32 RetCode = (Reason == 1) ? 0 : -1;
+		AsyncTask(ENamedThreads::GameThread, [this, bSuccess, RetCode]()
 		{
-			if (FinishedCallback) FinishedCallback();
+			if (FinishedCallback) FinishedCallback(bSuccess, RetCode);
 		});
 	}
 };
@@ -450,7 +499,51 @@ void UOpenSplat4DStepBase::ExecuteCommand(FString ExecutePath, FString Command, 
 	// (only the command-line parameter string is space-delimited). Strip any
 	// surrounding quotes the caller may have added via OpenSplat4DQuoteArg.
 	ExecutePath = OpenSplat4DUnquoteArg(ExecutePath);
-	Worker = MakeShared<FCommandExecuteRunnable>(this, ExecutePath, Command, FinishedCallback);
+
+	// EARLY FALLBACK: If the executable path resolves to empty / whitespace,
+	// the caller forgot to check it (or the bundled python/colmap is missing
+	// and the user has not configured a path). Fail gracefully with a clear
+	// log + UI notification instead of letting FPlatformProcess::CreateProc
+	// return an invalid handle that the runnable would then spin on.
+	if (ExecutePath.TrimStartAndEnd().IsEmpty())
+	{
+		UE_LOG(LogOpenSplat4DStep, Error,
+			TEXT("ExecuteCommand 收到空的可执行路径，已跳过。命令字符串为: %s\n")
+			TEXT("这通常意味着插件自带的 Python / COLMAP 未安装，且用户未在【设置】→ OpenSplat4D 中配置路径。"),
+			*Command);
+
+		// Surface the failure in the editor UI (not just the log) so users
+		// who don't have the output log open still see what went wrong.
+		if (FSlateApplication::IsInitialized())
+		{
+			FNotificationInfo NotifyInfo(FText::FromString(TEXT("可执行文件路径为空：请在【设置】→ OpenSplat4D 中配置 Python / COLMAP 路径")));
+			NotifyInfo.ExpireDuration = 6.0f;
+			NotifyInfo.bUseSuccessFailIcons = true;
+			if (TSharedPtr<SNotificationItem> Notification = FSlateNotificationManager::Get().AddNotification(NotifyInfo))
+			{
+				Notification->SetCompletionState(SNotificationItem::CS_Fail);
+			}
+		}
+
+		// Fire the callback so any UI waiting on completion still proceeds
+		// (e.g. progress bars are hidden, buttons re-enabled).
+		if (FinishedCallback)
+		{
+			AsyncTask(ENamedThreads::GameThread, [FinishedCallback]() { FinishedCallback(); });
+		}
+		return;
+	}
+
+	// Wrap the user-facing no-arg callback into the (bool, int32) signature
+	// expected by FCommandExecuteRunnable. The bool/int32 (success, exit code)
+	// are dropped here because all current callers of ExecuteCommand use the
+	// no-arg form. If a caller ever needs the exit code, add an overload.
+	TFunction<void(bool, int32)> WrappedCallback = [FinishedCallback](bool /*bSuccess*/, int32 /*ReturnCode*/)
+	{
+		if (FinishedCallback) FinishedCallback();
+	};
+
+	Worker = MakeShared<FCommandExecuteRunnable>(this, ExecutePath, Command, MoveTemp(WrappedCallback));
 	if (bAsync)
 	{
 		WorkThread = TSharedPtr<FRunnableThread>(FRunnableThread::Create(Worker.Get(), TEXT("OpenSplat4D")));
@@ -470,5 +563,60 @@ void UOpenSplat4DStepBase::ReceiveMessage(const FString& Message)
 		TArray<FString> Lines;
 		Message.ParseIntoArray(Lines, TEXT("\n"));
 		LastTaskStatusText = FText::FromString(Lines.Last());
+	}
+}
+
+void UOpenSplat4DStepBase::ReceiveMessageFromBinary(const TArray<uint8>& BinaryData)
+{
+	// Append new bytes to the leftover buffer from last call.
+	PendingPipeBuffer.Append(BinaryData);
+
+	// Walk the buffer and split on '\n'. Each complete line is decoded as
+	// UTF-8 and forwarded to ReceiveMessage. The trailing partial line (if
+	// any) stays in PendingPipeBuffer for the next call.
+	int32 LineStart = 0;
+	for (int32 i = 0; i < PendingPipeBuffer.Num(); ++i)
+	{
+		if (PendingPipeBuffer[i] == '\n')
+		{
+			// Skip trailing '\r' (CRLF line endings from Windows subprocesses).
+			int32 LineEnd = i;
+			if (LineEnd > LineStart && PendingPipeBuffer[LineEnd - 1] == '\r')
+			{
+				--LineEnd;
+			}
+
+			// Decode this line as UTF-8. UTF8_TO_TCHAR macro handles the
+			// conversion correctly on all platforms; we just need a null-
+			// terminated buffer. UTF8CHAR is ANSICHAR-sized on Windows.
+			const int32 LineLen = LineEnd - LineStart;
+			if (LineLen > 0)
+			{
+				UTF8CHAR LineBuf[4096];
+				const int32 CopyLen = FMath::Min(LineLen, (int32)UE_ARRAY_COUNT(LineBuf) - 1);
+				FMemory::Memcpy(LineBuf, PendingPipeBuffer.GetData() + LineStart, CopyLen * sizeof(UTF8CHAR));
+				LineBuf[CopyLen] = 0;
+				ReceiveMessage(FString(UTF8_TO_TCHAR(reinterpret_cast<const ANSICHAR*>(LineBuf))));
+			}
+			LineStart = i + 1;
+		}
+	}
+
+	// Keep the tail (incomplete line) for next time. If we consumed everything
+	// (LineStart == Num), Reset() the buffer to avoid unbounded growth from
+	// repeated small allocations.
+	if (LineStart > 0)
+	{
+		if (LineStart < PendingPipeBuffer.Num())
+		{
+			// Shift remaining bytes to the front of the array.
+			const int32 Remaining = PendingPipeBuffer.Num() - LineStart;
+			FMemory::Memmove(PendingPipeBuffer.GetData(), PendingPipeBuffer.GetData() + LineStart, Remaining * sizeof(uint8));
+			PendingPipeBuffer.SetNum(Remaining, EAllowShrinking::No);
+		}
+		else
+		{
+			PendingPipeBuffer.Reset();
+		}
 	}
 }
