@@ -15,6 +15,10 @@
 #include "Editor.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Misc/PackagePath.h"
+#include "GaussianSplatAsset.h"
+#include "GaussianSplatActor.h"
+#include "GaussianSplatComponent.h"
+#include "PLYFileReader.h"
 
 // ----------------------------------------------------------------------------
 // Sparse reconstruction (colmap)
@@ -108,7 +112,16 @@ void UOpenSplat4DStep_GaussianSplatting::Train()
 {
 	if (OnRequestTaskStart.IsBound() && !OnRequestTaskStart.Execute()) return;
 	TaskProgressPercent = 0.3f;
-	Train(true, [this]() { TaskProgressPercent = 0.7f; Reload(); if (bAutoImportToContent) SaveToContent(); TaskProgressPercent = 1.f; OnTaskFinished.Broadcast(); });
+		Train(true, [this]()
+		{
+			TaskProgressPercent = 0.7f;
+			Reload();
+			UGaussianSplatAsset* Saved = nullptr;
+			if (bAutoImportToContent) Saved = SaveToContent();
+			if (Saved && bPlaceInLevel) PlaceInLevel(Saved);
+			TaskProgressPercent = 1.f;
+			OnTaskFinished.Broadcast();
+		});
 }
 
 void UOpenSplat4DStep_GaussianSplatting::Train(bool bAsync, TFunction<void()> FinishedCallback)
@@ -161,21 +174,21 @@ void UOpenSplat4DStep_GaussianSplatting::Reload()
 	OnPlyLoadFinished.ExecuteIfBound();
 }
 
-void UOpenSplat4DStep_GaussianSplatting::SaveToContent()
+UGaussianSplatAsset* UOpenSplat4DStep_GaussianSplatting::SaveToContent()
 {
 	// Make sure we have the freshly trained cloud in memory.
 	if (!Result) { Reload(); }
 	if (!Result)
 	{
 		UE_LOG(LogOpenSplat4DStep, Error, TEXT("OpenSplat4D: 自动导入失败，训练结果未加载。"));
-		return;
+		return nullptr;
 	}
 
 	// Name the asset by timestamp so repeated runs never collide.
-	if (Result->GetPointCount() == 0)
+	if (Result->GetSplatCount() == 0)
 	{
 		UE_LOG(LogOpenSplat4DStep, Error, TEXT("OpenSplat4D: 自动导入跳过——训练结果点云为空（0 个点）。WorkDir：%s Iter：%d"), *WorkDir, Iterations);
-		return;
+		return nullptr;
 	}
 	const FString TimeStr = FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));
 	const FString AssetName = FString::Printf(TEXT("Gaussian_%s"), *TimeStr);
@@ -183,11 +196,11 @@ void UOpenSplat4DStep_GaussianSplatting::SaveToContent()
 
 	UPackage* NewPackage = CreatePackage(*PackagePath);
 	NewPackage->MarkPackageDirty();
-	UOpenSplat4DPointCloud* NewAsset = DuplicateObject<UOpenSplat4DPointCloud>(Result, NewPackage, *AssetName);
+	UGaussianSplatAsset* NewAsset = DuplicateObject<UGaussianSplatAsset>(Result, NewPackage, *AssetName);
 	if (!NewAsset)
 	{
 		UE_LOG(LogOpenSplat4DStep, Error, TEXT("OpenSplat4D: 自动导入失败，无法创建资产 %s。"), *PackagePath);
-		return;
+		return nullptr;
 	}
 	NewAsset->SetFlags(RF_Public | RF_Standalone);
 
@@ -195,7 +208,7 @@ void UOpenSplat4DStep_GaussianSplatting::SaveToContent()
 	NewAsset->SourceFilePath = FPaths::Combine(
 		WorkDir, TEXT("output"), TEXT("point_cloud"),
 		FString::Printf(TEXT("iteration_%d"), Iterations), TEXT("point_cloud.ply"));
-	FillAssetPaths(NewAsset);
+	FillAssetPaths();
 
 	FAssetRegistryModule::AssetCreated(NewAsset);
 
@@ -208,7 +221,7 @@ void UOpenSplat4DStep_GaussianSplatting::SaveToContent()
 	if (!UPackage::SavePackage(NewPackage, NewAsset, *LocalPath, SaveArgs))
 	{
 		UE_LOG(LogOpenSplat4DStep, Error, TEXT("OpenSplat4D: 自动导入失败，无法保存 %s。"), *LocalPath);
-		return;
+		return nullptr;
 	}
 	Result = NewAsset;
 
@@ -229,13 +242,35 @@ void UOpenSplat4DStep_GaussianSplatting::SaveToContent()
 		ObjectsToSync.Add(NewAsset);
 		GEditor->SyncBrowserToObjects(ObjectsToSync);
 	}
+	return NewAsset;
 }
 
-void UOpenSplat4DStep_GaussianSplatting::FillAssetPaths(UOpenSplat4DPointCloud* Asset)
+	void UOpenSplat4DStep_GaussianSplatting::PlaceInLevel(UGaussianSplatAsset* SplatAsset)
+	{
+		if (!SplatAsset || !GEditor)
+		{
+			return;
+		}
+		UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+		if (!EditorWorld)
+		{
+			return;
+		}
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.bNoFail = true;
+		AGaussianSplatActor* Actor = EditorWorld->SpawnActor<AGaussianSplatActor>(
+			AGaussianSplatActor::StaticClass(), SpawnParams);
+		if (Actor)
+		{
+			Actor->GaussianSplatComponent->SetSplatAsset(SplatAsset);
+			GEditor->SelectActor(Actor, true, true);
+			UE_LOG(LogOpenSplat4DStep, Log, TEXT("OpenSplat4D: 已将训练结果放入场景 — %s"), *Actor->GetName());
+		}
+	}
+
+void UOpenSplat4DStep_GaussianSplatting::FillAssetPaths()
 {
 	if (!Asset) return;
-
-	// 模式：3DGS / 4DGS 留在点云资产上（它只负责预览 / 解释点）。
 	Asset->Mode = bTrain4D ? EOpenSplat4DMode::Dynamic4D : EOpenSplat4DMode::Static3D;
 
 	// 数据集位置属于“数据资产”（UOpenSplat4DCaptureSet），不污染点云资产。
@@ -245,17 +280,10 @@ void UOpenSplat4DStep_GaussianSplatting::FillAssetPaths(UOpenSplat4DPointCloud* 
 	}
 
 	// (a) 拍摄的图片集位置
-	if (TargetCaptureSet->Images.Num() > 0)
-	{
-		TargetCaptureSet->ImagesDir.Path = FPaths::GetPath(TargetCaptureSet->Images[0]);
-	}
-	else
-	{
-		TargetCaptureSet->ImagesDir.Path = FPaths::Combine(WorkDir, TEXT("images"));
-	}
+	TargetCaptureSet->ImagesDir.Path = TargetCaptureSet->GetImagesDir();
 
 	// (b) 初次生成模型的位置（稀疏重建输出）
-	TargetCaptureSet->InitialModelDir.Path = FPaths::Combine(WorkDir, TEXT("sparse"));
+	TargetCaptureSet->InitialModelDir.Path = TargetCaptureSet->GetInitialModelDir();
 
 	// (c) 训练模型生成后的位置
 	TargetCaptureSet->TrainedModelDir.Path = FPaths::Combine(
@@ -268,7 +296,7 @@ void UOpenSplat4DStep_GaussianSplatting::Export()
 	FSaveAssetDialogConfig Cfg;
 	Cfg.DefaultPath = LastSavePath;
 	Cfg.DefaultAssetName = "PointCloud";
-	Cfg.AssetClassNames.Add(UOpenSplat4DPointCloud::StaticClass()->GetClassPathName());
+	Cfg.AssetClassNames.Add(UGaussianSplatAsset::StaticClass()->GetClassPathName());
 	Cfg.ExistingAssetPolicy = ESaveAssetDialogExistingAssetPolicy::AllowButWarn;
 	Cfg.DialogTitleOverride = OS4D_TEXT("Save As");
 
@@ -280,7 +308,7 @@ void UOpenSplat4DStep_GaussianSplatting::Export()
 	LastSavePath = PackagePath;
 	if (AssetName.IsEmpty()) return;
 	UPackage* NewPackage = CreatePackage(*PackagePath);
-	UOpenSplat4DPointCloud* NewAsset = DuplicateObject<UOpenSplat4DPointCloud>(Result, NewPackage, *AssetName);
+	UGaussianSplatAsset* NewAsset = DuplicateObject<UGaussianSplatAsset>(Result, NewPackage, *AssetName);
 	NewAsset->SetFlags(RF_Public | RF_Standalone);
 	FAssetRegistryModule::AssetCreated(NewAsset);
 	FPackagePath NewPackagePath = FPackagePath::FromPackageNameChecked(NewPackage->GetName());
@@ -293,14 +321,39 @@ void UOpenSplat4DStep_GaussianSplatting::Export()
 	Result = NewAsset;
 }
 
-UOpenSplat4DPointCloud* UOpenSplat4DStep_GaussianSplatting::LoadPly(UObject* Outer, FName AssetName)
+UGaussianSplatAsset* UOpenSplat4DStep_GaussianSplatting::LoadPly(UObject* Outer, FName AssetName)
 {
-	UOpenSplat4DPointCloud* Output = nullptr;
 	FString PlyPath = FString::Printf(TEXT("%s/output/point_cloud/iteration_%d/point_cloud.ply"), *WorkDir, Iterations);
 	if (bClippingByMask) PlyPath = Clip(PlyPath);
-	Output = UOpenSplat4DEditorLibrary::LoadSplatFile(PlyPath, Outer, AssetName);
-	if (Output) Output->SetCompressionMethod(CompressionMethod);
-	return Output;
+
+	if (!FPaths::FileExists(PlyPath))
+	{
+		UE_LOG(LogOpenSplat4DStep, Error, TEXT("PLY file not found: %s"), *PlyPath);
+		return nullptr;
+	}
+
+	TArray<FGaussianSplatData> SplatData;
+	FString ErrorMessage;
+	int32 DetectedSHBands = 0;
+
+	if (!FPLYFileReader::ReadPLYFile(PlyPath, SplatData, ErrorMessage, &DetectedSHBands))
+	{
+		UE_LOG(LogOpenSplat4DStep, Error, TEXT("Failed to read PLY: %s"), *ErrorMessage);
+		return nullptr;
+	}
+
+	UGaussianSplatAsset* Asset = NewObject<UGaussianSplatAsset>(Outer, UGaussianSplatAsset::StaticClass(), AssetName, RF_Transient);
+	if (!Asset)
+	{
+		return nullptr;
+	}
+
+	Asset->SourceFilePath = PlyPath;
+	Asset->SHBands = DetectedSHBands;
+	Asset->InitializeFromSplatData(SplatData, ImportQuality);
+	UE_LOG(LogOpenSplat4DStep, Log, TEXT("Loaded %d splats (SH bands: %d) from %s"), SplatData.Num(), DetectedSHBands, *PlyPath);
+
+	return Asset;
 }
 
 void UOpenSplat4DStep_GaussianSplatting::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)

@@ -267,10 +267,11 @@ bool FPLYFileReader::ParseHeader(IFileHandle* FileHandle, FPLYHeader& OutHeader,
 
 	OutHeader.VertexStride = CurrentOffset;
 
-	// Verify we have required properties
-	TArray<FString> RequiredProps = { TEXT("x"), TEXT("y"), TEXT("z"), TEXT("opacity"),
-		TEXT("scale_0"), TEXT("scale_1"), TEXT("scale_2"),
-		TEXT("rot_0"), TEXT("rot_1"), TEXT("rot_2"), TEXT("rot_3") };
+	// Verify we have the minimum required properties for a point cloud.
+	// x, y, z are mandatory; gaussian properties (opacity, scale, rotation,
+	// SH) are optional — standard COLMAP point clouds will get sensible
+	// defaults injected in ReadVertexData.
+	TArray<FString> RequiredProps = { TEXT("x"), TEXT("y"), TEXT("z") };
 
 	for (const FString& Prop : RequiredProps)
 	{
@@ -280,6 +281,9 @@ bool FPLYFileReader::ParseHeader(IFileHandle* FileHandle, FPLYHeader& OutHeader,
 			return false;
 		}
 	}
+
+	// Detect whether this is a full gaussian PLY or a bare point cloud
+	const bool bHasGaussianProps = OutHeader.PropertyOffsets.Contains(TEXT("opacity"));
 
 	// Seek file handle to start of vertex data
 	FileHandle->Seek(OutHeader.DataOffset);
@@ -354,10 +358,10 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 			// PLY uses (w, x, y, z) format with Y-down (COLMAP convention)
 			// Pattern: when position axis is NOT negated, quaternion component IS negated (and vice versa)
 			// Position: PLY.X -> UE.Y (not negated), PLY.Y -> UE.-Z (negated), PLY.Z -> UE.X (not negated)
-			float QW = GetPropertyFloat(VertexData, Header, TEXT("rot_0"));
-			float QX = GetPropertyFloat(VertexData, Header, TEXT("rot_1"));
-			float QY = GetPropertyFloat(VertexData, Header, TEXT("rot_2"));
-			float QZ = GetPropertyFloat(VertexData, Header, TEXT("rot_3"));
+			float QW = GetPropertyFloat(VertexData, Header, TEXT("rot_0"), 1.0f)  // identity w;
+			float QX = GetPropertyFloat(VertexData, Header, TEXT("rot_1"), 0.0f);
+			float QY = GetPropertyFloat(VertexData, Header, TEXT("rot_2"), 0.0f);
+			float QZ = GetPropertyFloat(VertexData, Header, TEXT("rot_3"), 0.0f);
 			Splat.Rotation.W = QW;
 			Splat.Rotation.X = -QZ;   // PLY Z -> UE X (negated: position not negated)
 			Splat.Rotation.Y = -QX;   // PLY X -> UE Y (negated: position not negated)
@@ -365,20 +369,44 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 
 			// Scale - Reorder to match coordinate system conversion
 			// Scale is always positive magnitude, no negation needed
-			float ScaleX = GetPropertyFloat(VertexData, Header, TEXT("scale_0"));
-			float ScaleY = GetPropertyFloat(VertexData, Header, TEXT("scale_1"));
-			float ScaleZ = GetPropertyFloat(VertexData, Header, TEXT("scale_2"));
+			float ScaleX = GetPropertyFloat(VertexData, Header, TEXT("scale_0"), -4.5f)  // ~1cm default;
+			float ScaleY = GetPropertyFloat(VertexData, Header, TEXT("scale_1"), -4.5f);
+			float ScaleZ = GetPropertyFloat(VertexData, Header, TEXT("scale_2"), -4.5f);
 			Splat.Scale.X = ScaleZ;  // PLY Z -> UE X
 			Splat.Scale.Y = ScaleX;  // PLY X -> UE Y
 			Splat.Scale.Z = ScaleY;  // PLY Y -> UE Z
 
 			// Opacity
-			Splat.Opacity = GetPropertyFloat(VertexData, Header, TEXT("opacity"));
+			Splat.Opacity = GetPropertyFloat(VertexData, Header, TEXT("opacity"), 10.0f)  // ≈1.0 after sigmoid;
 
-			// SH DC (base color)
-			Splat.SH_DC.X = GetPropertyFloat(VertexData, Header, TEXT("f_dc_0"));
-			Splat.SH_DC.Y = GetPropertyFloat(VertexData, Header, TEXT("f_dc_1"));
-			Splat.SH_DC.Z = GetPropertyFloat(VertexData, Header, TEXT("f_dc_2"));
+			// SH DC (base color) — fall back to red/green/blue if f_dc_*
+			// isn't present (standard COLMAP point cloud PLY), then to white.
+			if (Header.PropertyOffsets.Contains(TEXT("f_dc_0")))
+			{
+				Splat.SH_DC.X = GetPropertyFloat(VertexData, Header, TEXT("f_dc_0"));
+				Splat.SH_DC.Y = GetPropertyFloat(VertexData, Header, TEXT("f_dc_1"));
+				Splat.SH_DC.Z = GetPropertyFloat(VertexData, Header, TEXT("f_dc_2"));
+			}
+			else if (Header.PropertyOffsets.Contains(TEXT("red")))
+			{
+				// Normalize from [0,255] to [0,1]
+				Splat.SH_DC.X = GetPropertyFloat(VertexData, Header, TEXT("red")) / 255.0f;
+				Splat.SH_DC.Y = GetPropertyFloat(VertexData, Header, TEXT("green")) / 255.0f;
+				Splat.SH_DC.Z = GetPropertyFloat(VertexData, Header, TEXT("blue")) / 255.0f;
+			}
+			else if (Header.PropertyOffsets.Contains(TEXT("r")))
+			{
+				Splat.SH_DC.X = GetPropertyFloat(VertexData, Header, TEXT("r")) / 255.0f;
+				Splat.SH_DC.Y = GetPropertyFloat(VertexData, Header, TEXT("g")) / 255.0f;
+				Splat.SH_DC.Z = GetPropertyFloat(VertexData, Header, TEXT("b")) / 255.0f;
+			}
+			else
+			{
+				// White default
+				Splat.SH_DC.X = 1.0f;
+				Splat.SH_DC.Y = 1.0f;
+				Splat.SH_DC.Z = 1.0f;
+			}
 
 			// SH rest coefficients (bands 1-3)
 			// Uses CoeffsPerChannel detected earlier (outside the loop)

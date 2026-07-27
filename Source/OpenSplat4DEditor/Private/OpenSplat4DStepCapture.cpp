@@ -144,6 +144,19 @@ void UOpenSplat4DStep_Capture::Capture()
 	SCC->bAlwaysPersistRenderingState = true;
 
 	const double HalfFOV = FMath::DegreesToRadians(SCC->FOVAngle / 2.0);
+
+	// Resolve the final workDir BEFORE capturing any images.  If no capture-set
+	// asset exists yet, generate a timestamped name now so the images land in
+	// the same directory that the asset's WorkDirectory will point to.
+	// (Previously this happened AFTER the capture loop, so the asset pointed
+	// to an empty directory while the images sat in the old default WorkDir.)
+	if (!CaptureSetAsset)
+	{
+		const FString SetName = OpenSplat4DBuildCaptureSetName();
+		const FString SetWorkDir = GetDefault<UOpenSplat4DSettings>()->GetWorkDir(SetName);
+		WorkDir = SetWorkDir;
+	}
+
 	const FString ImgDir = WorkDir / "images";
 	const FString MaskDir = WorkDir / "masks";
 	const FString DepthDir = WorkDir / "depths";
@@ -156,8 +169,7 @@ void UOpenSplat4DStep_Capture::Capture()
 	TaskProgressPercent = 0.f;
 
 	FString CamContent;
-	TArray<FString> ImageFiles;
-	ImageFiles.Reserve(CameraActors.Num());
+	int32 CapturedCount = 0;
 	for (int i = 0; i < CameraActors.Num(); i++)
 	{
 		const FString ImgName = FString::Printf(TEXT("image%04d.png"), i + 1);
@@ -212,7 +224,7 @@ void UOpenSplat4DStep_Capture::Capture()
 		FImageUtils::SaveImageByExtension(*(ImgDir / ImgName), IV);
 		FImageView MV(Mask.GetData(), RenderTarget->SizeX, RenderTarget->SizeY);
 		FImageUtils::SaveImageByExtension(*(MaskDir / ImgName), MV);
-		ImageFiles.Add(ImgDir / ImgName);
+		++CapturedCount;
 
 		const FVector CP = (CameraActors[i]->GetActorLocation() - CurrentBounds.Origin) / 100.0;
 		CamContent += FString::Printf(TEXT("%s %lf %lf %lf\n"), *ImgName, CP.X, -CP.Z, -CP.Y);
@@ -229,17 +241,17 @@ void UOpenSplat4DStep_Capture::Capture()
 	// create a new one keyed by the working-directory leaf.
 	if (CaptureSetAsset)
 	{
-		OpenSplat4DUpdateCaptureSet(CaptureSetAsset, WorkDir, ImageFiles, MaskDir, DepthDir, CamFile);
+		OpenSplat4DUpdateCaptureSet(CaptureSetAsset, WorkDir, CapturedCount);
 	}
 	else
 	{
-		const FString SetName = OpenSplat4DBuildCaptureSetName();
-        const FString SetWorkDir = GetDefault<UOpenSplat4DSettings>()->GetWorkDir(SetName);
-        WorkDir = SetWorkDir;
-        CaptureSetAsset = OpenSplat4DCreateCaptureSet(SetName, SetWorkDir);
+		// SetName & SetWorkDir were already resolved before the capture
+		// loop (WorkDir == SetWorkDir at this point).
+		const FString SetName = FPaths::GetCleanFilename(WorkDir);
+		CaptureSetAsset = OpenSplat4DCreateCaptureSet(SetName, WorkDir);
 		if (CaptureSetAsset)
 		{
-			OpenSplat4DUpdateCaptureSet(CaptureSetAsset, SetWorkDir, ImageFiles, MaskDir, DepthDir, CamFile);
+			OpenSplat4DUpdateCaptureSet(CaptureSetAsset, WorkDir, CapturedCount);
 		}
 	}
 
@@ -348,7 +360,20 @@ void UOpenSplat4DStep_Capture::SCC_ApplyCamera()
 {
 	if (SceneCapture && CameraActors.IsValidIndex(CurrentCameraIndex))
 	{
-		SceneCapture->GetCaptureComponent2D()->SetWorldTransform(CameraActors[CurrentCameraIndex]->GetActorTransform());
+		USceneCaptureComponent2D* SCC = SceneCapture->GetCaptureComponent2D();
+		SCC->SetWorldTransform(CameraActors[CurrentCameraIndex]->GetActorTransform());
+
+		// Force an immediate preview capture so the user sees what this camera
+		// sees without having to run the full capture pipeline first.
+		// bCaptureEveryFrame is normally off to avoid wasting GPU during idle.
+		if (!SCC->bCaptureEveryFrame)
+		{
+			SCC->CaptureScene();
+		}
+
+		UE_LOG(LogOpenSplat4DStep, Log, TEXT("Preview camera %d/%d: %s"),
+			CurrentCameraIndex + 1, CameraActors.Num(),
+			*CameraActors[CurrentCameraIndex]->GetActorLabel());
 	}
 }
 

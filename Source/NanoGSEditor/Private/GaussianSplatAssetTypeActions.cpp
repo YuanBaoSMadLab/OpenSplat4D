@@ -78,7 +78,7 @@ void FAssetTypeActions_GaussianSplatAsset::GetActions(const TArray<UObject*>& In
 
 			// Nanite checkbox - checked if enabled
 			SubMenuBuilder.AddMenuEntry(
-				LOCTEXT("NaniteEnabledLabel", "Nanite"),
+				LOCTEXT("NaniteEnabledLabel", "启用 Nanite"),
 				LOCTEXT("NaniteEnabledTooltip", "在选中的 OpenSplat 资产上切换 Nanite 支持"),
 				FSlateIcon(),
 				FUIAction(
@@ -164,18 +164,18 @@ void FAssetTypeActions_GaussianSplatAsset::ExecuteShowInfo(TArray<TWeakObjectPtr
 		if (UGaussianSplatAsset* Asset = AssetPtr.Get())
 		{
 			FString NaniteStatus = Asset->IsNaniteEnabled() ?
-				FString::Printf(TEXT("Enabled (%d clusters, %d LOD levels)"), Asset->GetClusterCount(), Asset->GetNumLODLevels()) :
-				TEXT("Disabled");
+				FString::Printf(TEXT("已启用 (%d 个聚类, %d 个 LOD 层级)"), Asset->GetClusterCount(), Asset->GetNumLODLevels()) :
+				TEXT("已禁用");
 
 			FString InfoMessage = FString::Printf(
-				TEXT("Gaussian Splat Asset Info:\n\n")
-				TEXT("Name: %s\n")
-				TEXT("Splat Count: %d\n")
-				TEXT("Original Splat Count: %d\n")
-				TEXT("Memory Usage: %.2f MB\n")
-				TEXT("Bounds: %s\n")
-				TEXT("Source File: %s\n")
-				TEXT("Quality: %s\n")
+				TEXT("OpenSplat 资产信息:\n\n")
+				TEXT("名称: %s\n")
+				TEXT("Splat 数量: %d\n")
+				TEXT("原始 Splat 数量: %d\n")
+				TEXT("内存占用: %.2f MB\n")
+				TEXT("包围盒: %s\n")
+				TEXT("源文件: %s\n")
+				TEXT("质量: %s\n")
 				TEXT("Nanite: %s"),
 				*Asset->GetName(),
 				Asset->GetSplatCount(),
@@ -207,7 +207,7 @@ void FAssetTypeActions_GaussianSplatAsset::ExecuteEnableNanite(TArray<TWeakObjec
 				if (Asset->SourceFilePath.IsEmpty() || !FPaths::FileExists(Asset->SourceFilePath))
 				{
 					FMessageDialog::Open(EAppMsgType::Ok, FText::Format(
-						LOCTEXT("SourceFileNotFound", "Cannot enable Nanite for {0}:\nSource PLY file not found: {1}\n\nPlease reimport the asset first."),
+						LOCTEXT("SourceFileNotFound", "无法为 {0} 启用 Nanite:\n找不到源 PLY 文件: {1}\n\n请先重新导入该资产。"),
 						FText::FromString(Asset->GetName()),
 						FText::FromString(Asset->SourceFilePath)
 					));
@@ -224,7 +224,7 @@ void FAssetTypeActions_GaussianSplatAsset::ExecuteEnableNanite(TArray<TWeakObjec
 				else
 				{
 					FMessageDialog::Open(EAppMsgType::Ok, FText::Format(
-						LOCTEXT("NaniteBuildFailed", "Failed to enable Nanite for {0}.\nSee Output Log for details."),
+						LOCTEXT("NaniteBuildFailed", "无法为 {0} 启用 Nanite。\n请查看输出日志获取详情。"),
 						FText::FromString(Asset->GetName())
 					));
 				}

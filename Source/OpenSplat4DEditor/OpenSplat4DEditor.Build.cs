@@ -26,6 +26,7 @@ public class OpenSplat4DEditor : ModuleRules
 				"EditorFramework",
 				"ImageCore",
 				"Niagara",
+				"NanoGS",
 				"OpenSplat4DRuntime",
 			}
 			);

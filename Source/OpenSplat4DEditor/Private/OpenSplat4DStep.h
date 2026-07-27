@@ -10,9 +10,12 @@
 #include "Engine/TriggerSphere.h"
 #include "Engine/SkyLight.h"
 #include "Engine/Scene.h"
-#include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DCaptureSet.h"
 #include "OpenSplat4DEditorLibrary.h"
+#include "GaussianSplatAsset.h"
+#include "GaussianSplatActor.h"
+#include "GaussianSplatComponent.h"
+#include "PLYFileReader.h"
 #include "OpenSplat4DStep.generated.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogOpenSplat4DStep, Log, All);
@@ -60,12 +63,10 @@ class UOpenSplat4DCaptureSet;
  *  and save it to disk. Returns the asset (nullptr on failure). */
 UOpenSplat4DCaptureSet* OpenSplat4DCreateCaptureSet(const FString& SetName, const FString& WorkDir);
 
-/** Update an existing capture-set asset with the captured image paths and
- *  folders, then save it. The asset must already exist (use
- *  OpenSplat4DCreateCaptureSet first). */
-void OpenSplat4DUpdateCaptureSet(UOpenSplat4DCaptureSet* Asset, const FString& WorkDir,
-	const TArray<FString>& Images, const FString& MasksDir,
-	const FString& DepthsDir, const FString& CamerasFile);
+/** Update an existing capture-set asset with the captured results, then save it.
+ *  All sub-paths (images/, masks/, depths/, cameras.txt) are derived from
+ *  WorkDirectory — the asset no longer stores individual image paths. */
+void OpenSplat4DUpdateCaptureSet(UOpenSplat4DCaptureSet* Asset, const FString& WorkDir, int32 ImageCount);
 
 /** Enumerate every existing capture-set asset under /Game/OpenSplat4D/Captures. */
 void OpenSplat4DEnumerateCaptureSets(TArray<UOpenSplat4DCaptureSet*>& OutSets);
@@ -198,8 +199,9 @@ public:
 	UPROPERTY(VisibleAnywhere, Transient, Category = "OpenSplat4D", DisplayName = "渲染目标")
 	TObjectPtr<UTextureRenderTarget2D> RenderTarget;
 
-	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", DisplayName = "渲染目标分辨率")
-	int RenderTargetResolution = 1024;
+	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", DisplayName = "渲染目标分辨率",
+		meta = (Tooltip = "捕获时每张照片的分辨率（宽=高）。2K(2048)是质量和速度的平衡点。增大分辨率能让 COLMAP 提取更多特征点，从而改善稀疏重建质量，但会显著增加捕获和训练时间。推荐：快速预览=1024，正式重建=2048，高质量=4096。"))
+	int RenderTargetResolution = 2048;
 
 	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", DisplayName = "捕获最终颜色")
 	bool bCaptureFinalColor = false;
@@ -306,16 +308,20 @@ public:
 	UFUNCTION(CallInEditor, meta = (DisplayPriority = 3, DisplayName = "导出资产", Tooltip = "把训练好的高斯模型导出为可分发的资产文件，便于保存到磁盘或分享给其他人。"))
 	void Export();
 
-	UOpenSplat4DPointCloud* LoadPly(UObject* Outer, FName AssetName);
+	UGaussianSplatAsset* LoadPly(UObject* Outer, FName AssetName);
 
 	/** Automatically save the trained result as a native UE asset under
-	 *  /Game/OpenSplat4D/Models/<timestamp> (filling its data paths), so it shows
-	 *  up in the Content Browser as a first-class, re-usable asset. */
-	void SaveToContent();
+	 *  /Game/OpenSplat4D/Models/<timestamp> so it shows up in the Content
+	 *  Browser as a first-class, re-usable asset.
+	 *  Returns the created asset (nullptr on failure). */
+	UGaussianSplatAsset* SaveToContent();
 
-	/** Fill a point-cloud asset's 3 data paths (images / sparse / trained) and
-	 *  mode from the current capture set + work directory. Used by SaveToContent. */
-	void FillAssetPaths(UOpenSplat4DPointCloud* Asset);
+	/** Drop an AGaussianSplatActor carrying the given gaussian splat into
+	 *  the current editor world (for quick preview after training). */
+	void PlaceInLevel(UGaussianSplatAsset* SplatAsset);
+
+	/** Fill capture-set data paths (images / sparse / trained). */
+	void FillAssetPaths();
 
 	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	void UpdateParams();
@@ -332,8 +338,13 @@ public:
 	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", DisplayName = "训练后自动导入到 Content")
 	bool bAutoImportToContent = true;
 
+	/** After training and import, automatically drop a SplatActor carrying the
+	 *  trained point cloud into the current level (default off — safety first). */
+	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", DisplayName = "训练后放入场景")
+	bool bPlaceInLevel = false;
+
 	UPROPERTY(VisibleAnywhere, Transient, Category = "输出", DisplayName = "训练结果")
-	TObjectPtr<UOpenSplat4DPointCloud> Result;
+	TObjectPtr<UGaussianSplatAsset> Result;
 
 	UPROPERTY(DisplayName = "本地包")
 	TObjectPtr<UPackage> LocalPackage;
@@ -349,6 +360,10 @@ public:
 
 	UPROPERTY(EditAnywhere, Config, Category = "训练", meta = (Tooltip = "训练的总迭代次数。"), DisplayName = "迭代次数")
 	int Iterations = 7000;
+
+	/** Quality level for PLY import (compression precision). */
+	UPROPERTY(EditAnywhere, Config, Category = "训练", DisplayName = "导入质量")
+	EGaussianQualityLevel ImportQuality = EGaussianQualityLevel::Medium;
 
 	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = "训练", meta = (Tooltip = "球谐特征的学习率。"), DisplayName = "特征学习率")
 	float Feature_LR = 0.0025f;

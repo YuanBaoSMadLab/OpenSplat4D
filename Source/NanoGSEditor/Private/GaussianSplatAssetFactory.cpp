@@ -15,7 +15,7 @@ UGaussianSplatAssetFactory::UGaussianSplatAssetFactory()
 
 	SupportedClass = UGaussianSplatAsset::StaticClass();
 
-	Formats.Add(TEXT("ply;PLY Gaussian Splatting File"));
+	Formats.Add(TEXT("ply;PLY 高斯泼溅文件"));
 }
 
 bool UGaussianSplatAssetFactory::FactoryCanImport(const FString& Filename)

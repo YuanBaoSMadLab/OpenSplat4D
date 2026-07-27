@@ -10,6 +10,7 @@
 // and blends the result onto SceneColor.
 
 #include "/Engine/Public/Platform.ush"
+#include "/Plugin/NanoGS/Private/GaussianDataTypes.ush"
 
 Texture2D IntermediateTexture;
 SamplerState IntermediateSampler;

@@ -694,7 +694,7 @@ FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent
 	, ShadowProxyDetail(InComponent->ShadowProxyDetail)
 	, ShadowIntensity(InComponent->ShadowIntensity)
 {
-	bWillEverBeLit = false;
+	bWillEverBeLit = false;  // Pure emissive rendering - splats are not affected by scene lighting
 }
 
 FGaussianSplatSceneProxy::~FGaussianSplatSceneProxy()
@@ -716,8 +716,10 @@ FPrimitiveViewRelevance FGaussianSplatSceneProxy::GetViewRelevance(const FSceneV
 {
 	FPrimitiveViewRelevance Result;
 	Result.bDrawRelevance = IsShown(View);
-	// Enable shadow rendering when bCastShadow is true
-	Result.bShadowRelevance = bCastShadow && IsShown(View);
+	// Shadow casting disabled: previous implementation used a bounding-box proxy that
+	// wrapped the entire model producing a cube-shaped shadow. Removed until a proper
+	// shape-based shadow mesh can be generated.
+	Result.bShadowRelevance = false;
 	Result.bDynamicRelevance = true;
 	Result.bStaticRelevance = false;
 	Result.bRenderInMainPass = true;
@@ -819,59 +821,6 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 					SelectionHitProxy);
 			}
 #endif // WITH_EDITOR
-
-			// Shadow proxy: render a simplified mesh for shadow depth pass
-			// This allows Gaussian splats to cast shadows onto surrounding geometry
-			if (bCastShadow && !ViewFamily.EngineShowFlags.HitProxies)
-			{
-				const FBox LocalBox = GetLocalBounds().GetBox();
-				const FVector3f Min(LocalBox.Min);
-				const FVector3f Max(LocalBox.Max);
-
-				FDynamicMeshBuilder MeshBuilder(Views[ViewIndex]->GetFeatureLevel());
-
-				const FVector2f UV(0.f, 0.f);
-				const FVector3f TX(1.f, 0.f, 0.f);
-				const FVector3f TY(0.f, 1.f, 0.f);
-				const FVector3f TZ(0.f, 0.f, 1.f);
-				const FColor White = FColor::White;
-
-				// 8 corners of bounding box
-				const int32 V000 = MeshBuilder.AddVertex(FVector3f(Min.X, Min.Y, Min.Z), UV, TX, TY, TZ, White);
-				const int32 V100 = MeshBuilder.AddVertex(FVector3f(Max.X, Min.Y, Min.Z), UV, TX, TY, TZ, White);
-				const int32 V010 = MeshBuilder.AddVertex(FVector3f(Min.X, Max.Y, Min.Z), UV, TX, TY, TZ, White);
-				const int32 V110 = MeshBuilder.AddVertex(FVector3f(Max.X, Max.Y, Min.Z), UV, TX, TY, TZ, White);
-				const int32 V001 = MeshBuilder.AddVertex(FVector3f(Min.X, Min.Y, Max.Z), UV, TX, TY, TZ, White);
-				const int32 V101 = MeshBuilder.AddVertex(FVector3f(Max.X, Min.Y, Max.Z), UV, TX, TY, TZ, White);
-				const int32 V011 = MeshBuilder.AddVertex(FVector3f(Min.X, Max.Y, Max.Z), UV, TX, TY, TZ, White);
-				const int32 V111 = MeshBuilder.AddVertex(FVector3f(Max.X, Max.Y, Max.Z), UV, TX, TY, TZ, White);
-
-				// All 6 faces (12 triangles)
-				MeshBuilder.AddTriangle(V000, V010, V100);
-				MeshBuilder.AddTriangle(V010, V110, V100);
-				MeshBuilder.AddTriangle(V001, V101, V011);
-				MeshBuilder.AddTriangle(V101, V111, V011);
-				MeshBuilder.AddTriangle(V000, V100, V001);
-				MeshBuilder.AddTriangle(V100, V101, V001);
-				MeshBuilder.AddTriangle(V010, V011, V110);
-				MeshBuilder.AddTriangle(V011, V111, V110);
-				MeshBuilder.AddTriangle(V000, V001, V010);
-				MeshBuilder.AddTriangle(V001, V011, V010);
-				MeshBuilder.AddTriangle(V100, V110, V101);
-				MeshBuilder.AddTriangle(V110, V111, V101);
-
-				// Use default opaque material for shadow depth rendering
-			UMaterialInterface* ShadowMaterial = UMaterial::GetDefaultMaterial(EMaterialDomain::MD_Surface);
-				MeshBuilder.GetMesh(
-					GetLocalToWorld(),
-					ShadowMaterial->GetRenderProxy(),
-					SDPG_World,
-					/*bDisableBackfaceCulling=*/true,
-					/*bReceivesDecals=*/false,
-					/*bUseSelectionOutline=*/false,
-					ViewIndex,
-					Collector);
-			}
 		}
 	}
 }

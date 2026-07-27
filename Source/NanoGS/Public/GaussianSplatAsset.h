@@ -42,27 +42,27 @@ public:
 	//~ End UObject Interface
 
 	/** Get the number of splats in this asset */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅")
 	int32 GetSplatCount() const { return SplatCount; }
 
 	/** Get the bounding box of all splats */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅")
 	FBox GetBounds() const { return BoundingBox; }
 
 	/** Get estimated memory usage in bytes */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅")
 	int64 GetMemoryUsage() const;
 
 	/** Check if asset has valid data */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅")
 	bool IsValid() const { return SplatCount > 0 && PositionBulkData.GetBulkDataSize() > 0; }
 
 	/** Check if cluster hierarchy is available */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Clustering")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|聚类")
 	bool HasClusterHierarchy() const { return ClusterHierarchy.IsValid(); }
 
 	/** Check if Nanite is enabled for this asset */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Nanite")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|Nanite")
 	bool IsNaniteEnabled() const { return bEnableNanite; }
 
 #if WITH_EDITOR
@@ -77,14 +77,14 @@ public:
 	 * This re-reads the source file and builds cluster data
 	 * @return True if successful, false if source file not found or build failed
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Nanite")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|Nanite")
 	bool BuildNaniteClusterHierarchy();
 
 	/**
 	 * Clear Nanite cluster hierarchy to reduce asset size
 	 * Removes cluster data and LOD splats
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Nanite")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|Nanite")
 	void ClearNaniteClusterHierarchy();
 
 	/**
@@ -94,15 +94,15 @@ public:
 #endif
 
 	/** Get number of clusters in hierarchy */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Clustering")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|聚类")
 	int32 GetClusterCount() const { return ClusterHierarchy.Clusters.Num(); }
 
 	/** Get number of LOD levels */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Clustering")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|聚类")
 	int32 GetNumLODLevels() const { return ClusterHierarchy.NumLODLevels; }
 
 	/** Get original splat count (excluding LOD splats) */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Nanite")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|Nanite")
 	int32 GetOriginalSplatCount() const { return OriginalSplatCount > 0 ? OriginalSplatCount : SplatCount; }
 
 	/** Get the cluster hierarchy (const reference) */
@@ -119,27 +119,27 @@ public:
 
 public:
 	/** Total number of splats */
-	UPROPERTY(VisibleAnywhere, Category = "Info")
+	UPROPERTY(VisibleAnywhere, Category = "信息", meta = (DisplayName = "Splat 数量"))
 	int32 SplatCount = 0;
 
 	/** World-space bounding box of all splats */
-	UPROPERTY(VisibleAnywhere, Category = "Info")
+	UPROPERTY(VisibleAnywhere, Category = "信息", meta = (DisplayName = "包围盒"))
 	FBox BoundingBox;
 
 	/** Position compression format */
-	UPROPERTY(VisibleAnywhere, Category = "Format")
+	UPROPERTY(VisibleAnywhere, Category = "格式", meta = (DisplayName = "位置格式"))
 	EGaussianPositionFormat PositionFormat = EGaussianPositionFormat::Float32;
 
 	/** Color compression format */
-	UPROPERTY(VisibleAnywhere, Category = "Format")
+	UPROPERTY(VisibleAnywhere, Category = "格式", meta = (DisplayName = "颜色格式"))
 	EGaussianColorFormat ColorFormat = EGaussianColorFormat::Float16x4;
 
 	/** Spherical harmonics compression format */
-	UPROPERTY(VisibleAnywhere, Category = "Format")
+	UPROPERTY(VisibleAnywhere, Category = "格式", meta = (DisplayName = "SH 格式"))
 	EGaussianSHFormat SHFormat = EGaussianSHFormat::Float16;
 
 	/** Number of SH bands stored (0-3) */
-	UPROPERTY(VisibleAnywhere, Category = "Format")
+	UPROPERTY(VisibleAnywhere, Category = "格式", meta = (DisplayName = "SH 波段数"))
 	int32 SHBands = 3;
 
 	/** Compressed position data (stored as bulk data for fast loading) */
@@ -171,18 +171,18 @@ public:
 	int32 ColorTextureHeight = 0;
 
 	/** Source file path (for reimport) */
-	UPROPERTY(VisibleAnywhere, Category = "Import")
+	UPROPERTY(VisibleAnywhere, Category = "导入", meta = (DisplayName = "源文件路径"))
 	FString SourceFilePath;
 
 	/** Quality level used during import */
-	UPROPERTY(VisibleAnywhere, Category = "Import")
+	UPROPERTY(VisibleAnywhere, Category = "导入", meta = (DisplayName = "导入质量"))
 	EGaussianQualityLevel ImportQuality = EGaussianQualityLevel::Medium;
 
 	/**
 	 * Whether Nanite-style LOD and culling is enabled for this asset
 	 * Enable via Asset Actions > Nanite in Content Browser
 	 */
-	UPROPERTY(VisibleAnywhere, Category = "Nanite")
+	UPROPERTY(VisibleAnywhere, Category = "Nanite", meta = (DisplayName = "启用 Nanite"))
 	bool bEnableNanite = false;
 
 	/**
@@ -236,7 +236,7 @@ public:
 	 * Decompress and return all splat positions (for debugging)
 	 * @return Array of world-space positions
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Debug")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|调试")
 	TArray<FVector> GetDecompressedPositions() const;
 
 	/** Get bytes per splat for position data based on format */

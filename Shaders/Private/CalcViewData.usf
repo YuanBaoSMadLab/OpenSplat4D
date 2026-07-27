@@ -4,6 +4,30 @@
 
 #include "/Plugin/NanoGS/Private/GaussianSplatting.ush"
 
+// Encode unit vector to octahedral (2 x half float = 32 bits)
+uint PackNormalOctahedral(float3 N)
+{
+	N = normalize(N);
+	float2 oct = N.xy / (abs(N.x) + abs(N.y) + abs(N.z));
+	if (N.z < 0.0)
+	{
+		oct = (float2(1.0, 1.0) - abs(oct.yx)) * sign(oct.xy);
+	}
+	oct = oct * 0.5 + 0.5;
+	return PackHalf2x16(oct);
+}
+
+float3 UnpackNormalOctahedral(uint packed)
+{
+	float2 oct = UnpackHalf2x16(packed);
+	oct = oct * 2.0 - 1.0;
+	float3 N = float3(oct.x, oct.y, 1.0 - abs(oct.x) - abs(oct.y));
+	float2 lowerMask = float2(N.x >= 0.0 ? 1.0 : -1.0, N.y >= 0.0 ? 1.0 : -1.0);
+	float t = saturate(-N.z);
+	N.xy += lowerMask * t;
+	return normalize(N);
+}
+
 // Shader parameters
 ByteAddressBuffer PackedSplatBuffer;  // 16 bytes/splat packed data
 ByteAddressBuffer SHBuffer;           // SH data (currently unused)
@@ -77,7 +101,9 @@ void WriteInvalidSplat(uint outputIndex, uint clusterID, uint lodLevel)
 	viewData.Axis1 = float2(0, 0);
 	viewData.Axis2 = float2(0, 0);
 	viewData.ClusterID = clusterID;
-	viewData.Padding = lodLevel;
+	viewData.PackedNormal = PackNormalOctahedral(float3(0, 0, 1));
+	viewData.WorldCenter = float3(0, 0, 0);
+	viewData.Padding2 = 0;
 	ViewDataBuffer[outputIndex] = viewData;
 }
 
@@ -207,6 +233,23 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		finalColor = colorOpacity.rgb;
 	}
 
+	// Calculate world-space normal from 3D Gaussian covariance
+	// The shortest axis of the ellipsoid is the normal direction.
+	// Since cov3D = R * diag(scale²) * R^T, the eigenvectors are columns of R,
+	// eigenvalues are scale². Find the column of R with smallest scale.
+	float3x3 rotMatrix = QuatToMatrix(rotation);
+	float3 worldNormal;
+	float minScale = min(min(scale.x, scale.y), scale.z);
+	if (scale.x == minScale)
+		worldNormal = normalize(rotMatrix[0]); // First column (X axis)
+	else if (scale.y == minScale)
+		worldNormal = normalize(rotMatrix[1]); // Second column (Y axis)
+	else
+		worldNormal = normalize(rotMatrix[2]); // Third column (Z axis)
+
+	// Transform local normal to world space using the rotation part of LocalToWorld
+	worldNormal = normalize(mul(worldNormal, transpose((float3x3)LocalToWorld)));
+
 	// Store view data
 	FGaussianSplatViewData viewData;
 	viewData.ClipPosition = clipPos;
@@ -217,7 +260,9 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	viewData.Axis1 = axis1;
 	viewData.Axis2 = axis2;
 	viewData.ClusterID = selectedClusterID;
-	viewData.Padding = selectedLODLevel;
+	viewData.PackedNormal = PackNormalOctahedral(worldNormal);
+	viewData.WorldCenter = worldPos.xyz;
+	viewData.Padding2 = 0.0;
 	ViewDataBuffer[outputIndex] = viewData;
 }
 

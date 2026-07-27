@@ -18,7 +18,7 @@
 
 #define LOCTEXT_NAMESPACE "FNanoGSModule"
 
-// Pass 2 parameter struct: declares IntermediateTexture as an RDG-tracked shader resource
+// Pass 2 parameter struct: declares IntermediateTexture as RDG-tracked shader resource
 // so that RDG inserts the proper RTV→SRV barrier between Pass 1 (write) and Pass 2 (read).
 BEGIN_SHADER_PARAMETER_STRUCT(FGaussianCompositePassParameters, )
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, IntermediateTexture)
@@ -623,25 +623,25 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 		// (which reads it as a shader resource). Without this, the GPU may read stale/partial
 		// data from IntermediateTexture, producing rectangular block artifacts.
 		ERenderTargetLoadAction CompositeColorLoadAction = (DebugMode > 0) ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ELoad;
-		FGaussianCompositePassParameters* Pass2Parameters = GraphBuilder.AllocParameters<FGaussianCompositePassParameters>();
-		Pass2Parameters->IntermediateTexture = IntermediateTexture;
-		Pass2Parameters->RenderTargets[0] = FRenderTargetBinding(ColorTexture, CompositeColorLoadAction);
+	FGaussianCompositePassParameters* Pass2Parameters = GraphBuilder.AllocParameters<FGaussianCompositePassParameters>();
+	Pass2Parameters->IntermediateTexture = IntermediateTexture;
+	Pass2Parameters->RenderTargets[0] = FRenderTargetBinding(ColorTexture, CompositeColorLoadAction);
 
-		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("GaussianSplat_CompositeToSceneColor"),
-			Pass2Parameters,
-			ERDGPassFlags::Raster,
-			[SceneView, IntermediateTexture](FRHICommandListImmediate& RHICmdList)
-			{
-				if (!SceneView) return;
+	GraphBuilder.AddPass(
+		RDG_EVENT_NAME("GaussianSplat_CompositeToSceneColor"),
+		Pass2Parameters,
+		ERDGPassFlags::Raster,
+		[SceneView, IntermediateTexture](FRHICommandListImmediate& RHICmdList)
+		{
+			if (!SceneView) return;
 
-				FRHITexture* IntermediateRHI = IntermediateTexture->GetRHI();
-				if (!IntermediateRHI) return;
+			FRHITexture* IntermediateRHI = IntermediateTexture->GetRHI();
+			if (!IntermediateRHI) return;
 
-				FGaussianSplatRenderer::CompositeToSceneColor(
-					RHICmdList, *SceneView, IntermediateRHI);
-			}
-		);
+			FGaussianSplatRenderer::CompositeToSceneColor(
+				RHICmdList, *SceneView, IntermediateRHI);
+		}
+	);
 }
 
 void FNanoGSModule::ShutdownModule()

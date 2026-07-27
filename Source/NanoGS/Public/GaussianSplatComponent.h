@@ -69,79 +69,95 @@ public:
 	//~ End UPrimitiveComponent Interface
 
 	/** Set the Gaussian Splat asset to render */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅")
 	void SetSplatAsset(UGaussianSplatAsset* NewAsset);
 
 	/** Get the currently assigned asset */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅")
 	UGaussianSplatAsset* GetSplatAsset() const { return SplatAsset; }
 
 	/** Get the number of splats being rendered */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅")
 	int32 GetSplatCount() const;
 
 	/** Rebuild collision based on current settings */
-	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Collision")
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|碰撞")
 	void RebuildCollision();
 
 public:
 	/** The Gaussian Splat asset to render */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅", meta = (DisplayName = "泼溅资产"))
 	TObjectPtr<UGaussianSplatAsset> SplatAsset;
 
-	/** Spherical Harmonic order to use for rendering (0-3). Higher = more color detail but slower. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Quality", meta = (ClampMin = "0", ClampMax = "3"))
+	/** Spherical Harmonic order to use for rendering (0-3). 0=DC only (flat color),
+	 *  1-3=progressively more view-dependent color detail.  Higher values produce
+	 *  more realistic highlights but increase GPU cost.  Match this to the SH band
+	 *  count in your source PLY file.  Tooltip: 调节球谐函数的计算阶数（0=仅基础色，3=完整视图相关颜色）。阶数越高颜色越真实，但 GPU 开销越大。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|质量", meta = (ClampMin = "0", ClampMax = "3", DisplayName = "SH 阶数"))
 	int32 SHOrder = 3;
 
-	/** Sort splats every N frames. 1 = every frame. Higher values reduce GPU cost but may cause artifacts during fast camera movement. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Performance", meta = (ClampMin = "1", ClampMax = "10"))
+	/** Sort splats every N frames. 1 = every frame (best quality, higher GPU cost).
+	 *  Higher values reduce GPU cost but may cause popping during fast camera
+	 *  movement.  Increasing this is the #1 performance optimization for large
+	 *  splat counts.  Tooltip: 每 N 帧排序一次。1=每帧排序（最佳质量），增大可降低 GPU 开销但可能在快速移动时出现闪烁。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|性能", meta = (ClampMin = "1", ClampMax = "10", DisplayName = "排序间隔（帧）"))
 	int32 SortEveryNthFrame = 1;
 
-	/** Global opacity multiplier */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Rendering", meta = (ClampMin = "0.0", ClampMax = "2.0"))
+	/** Global opacity multiplier. 1.0 = as-trained.  Values > 1.0 make all splats
+	 *  more opaque (can reduce floaters but may oversaturate).  0.0 = fully transparent.
+	 *  Tooltip: 全局不透明度缩放。1.0=训练原始值，>1.0 更不透明可减少浮游物，<1.0 更透明。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|渲染", meta = (ClampMin = "0.0", ClampMax = "2.0", DisplayName = "不透明度缩放"))
 	float OpacityScale = 1.0f;
 
-	/** Scale multiplier for splat sizes */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Rendering", meta = (ClampMin = "0.1", ClampMax = "10.0"))
+	/** Scale multiplier for splat sizes in world-space.  1.0 = as-trained.
+	 *  Higher values make splats larger (softer look), lower values make them
+	 *  smaller (sharper but may show gaps).  Tooltip: Splat 尺寸缩放倍数。1.0=训练原始大小，>1.0 更大更模糊，<1.0 更小更锐利但可能出现空隙。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|渲染", meta = (ClampMin = "0.1", ClampMax = "10.0", DisplayName = "Splat 尺寸缩放"))
 	float SplatScale = 1.0f;
 
+	/** Gaussian falloff sharpness exponent.  Higher values create tighter, sharper
+	 *  splats (less blending between neighbors).  Lower values create softer,
+	 *  more blended splats.  Standard 3DGS uses 4.0.  Tooltip: 高斯衰减锐度指数。值越大 splat 边缘越锐利（减少模糊拖影），越小越柔和。标准值为 4.0。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|渲染", meta = (ClampMin = "1.0", ClampMax = "10.0", DisplayName = "高斯锐度"))
+	float GaussianSharpness = 4.0f;
+
 	/** Enable frustum culling for better performance */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Performance")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|性能", DisplayName = "视锥剔除")
 	bool bEnableFrustumCulling = true;
 
 	/** Projected error threshold for LOD selection (resolution-independent, like Nanite).
 	 *  Lower values = more conservative (keep detail longer, less LOD savings)
 	 *  Higher values = more aggressive (switch to LOD sooner, better performance)
 	 *  Uses projection-space units. ~0.03 ≈ 32 pixels at 1080p with 90° FOV. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Performance", meta = (ClampMin = "0.001", ClampMax = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|性能", meta = (ClampMin = "0.001", ClampMax = "1.0"))
 	float LODErrorThreshold = 0.03f;
 
 	/** 阴影投射 - 是否投射阴影到周围场景 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|阴影", meta = (DisplayName = "投射阴影"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (DisplayName = "投射阴影"))
 	bool bCastShadow = false;
 
 	/** 阴影代理类型 - 控制阴影的精度和性能 (0=包围盒, 1=凸包, 2=完整) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|阴影", meta = (ClampMin = "0", ClampMax = "2", EditCondition = "bCastShadow"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (ClampMin = "0", ClampMax = "2", EditCondition = "bCastShadow"))
 	uint8 ShadowProxyDetail = 1;
 
 	/** 阴影强度缩放 - 控制阴影的深浅 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|阴影", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bCastShadow"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bCastShadow"))
 	float ShadowIntensity = 1.0f;
 
 	/** 碰撞生成方法 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|碰撞", meta = (DisplayName = "碰撞方法"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "碰撞方法"))
 	EGaussianCollisionMethod CollisionMethod = EGaussianCollisionMethod::None;
 
 	/** 碰撞体面数 - 用于简化凸包的面数限制 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|碰撞", meta = (ClampMin = "4", ClampMax = "255", EditCondition = "CollisionMethod != EGaussianCollisionMethod::None"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (ClampMin = "4", ClampMax = "255", EditCondition = "CollisionMethod != EGaussianCollisionMethod::None"))
 	int32 CollisionMaxFaces = 32;
 
 	/** 忽略系数 - 稀疏区域的点被忽略的概率 (0=保留所有点, 1=忽略大部分点) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|碰撞", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "CollisionMethod != EGaussianCollisionMethod::None"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "CollisionMethod != EGaussianCollisionMethod::None"))
 	float IgnoreFactor = 0.5f;
 
 	/** 体素大小 - 用于体素碰撞方法 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|碰撞", meta = (ClampMin = "1.0", ClampMax = "100.0", EditCondition = "CollisionMethod == EGaussianCollisionMethod::Voxel"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (ClampMin = "1.0", ClampMax = "100.0", EditCondition = "CollisionMethod == EGaussianCollisionMethod::Voxel"))
 	float VoxelSize = 10.0f;
 
 protected:

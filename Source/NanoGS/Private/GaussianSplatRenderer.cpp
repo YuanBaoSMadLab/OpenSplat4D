@@ -572,7 +572,7 @@ void FGaussianSplatRenderer::DrawSplats(
 	// Stencil: write STENCIL_TEMPORAL_RESPONSIVE_AA_MASK (bit 3 = 0x08) so TSR/TAA
 	// reduces temporal history weight for splat pixels, preventing ghost trails
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<
-		true, CF_DepthNearOrEqual,                       // Depth: write + near/equal test
+		false, CF_DepthNearOrEqual,                      // Depth: NO write (transparent splats), near/equal test
 		true, CF_Always, SO_Keep, SO_Keep, SO_Replace,   // Front stencil: replace on pass
 		false, CF_Always, SO_Keep, SO_Keep, SO_Keep,     // Back stencil: no-op
 		0x08, 0x08                                       // Read mask, Write mask = bit 3 only
@@ -1198,7 +1198,7 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 	// Stencil: write STENCIL_TEMPORAL_RESPONSIVE_AA_MASK (bit 3 = 0x08) so TSR/TAA
 	// reduces temporal history weight for splat pixels, preventing ghost trails
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<
-		true, CF_DepthNearOrEqual,                       // Depth: write + near/equal test
+		false, CF_DepthNearOrEqual,                      // Depth: NO write (transparent splats), near/equal test
 		true, CF_Always, SO_Keep, SO_Keep, SO_Replace,   // Front stencil: replace on pass
 		false, CF_Always, SO_Keep, SO_Keep, SO_Keep,     // Back stencil: no-op
 		0x08, 0x08                                       // Read mask, Write mask = bit 3 only
@@ -1209,6 +1209,8 @@ void FGaussianSplatRenderer::DrawSplatsGlobal(
 		// RT0: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
 		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
 		// RT1: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
+		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero,
+		// RT2: Normal (R32_UINT) - write replacement, no blending
 		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero
 	>::GetRHI();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
@@ -1632,7 +1634,7 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 	// Stencil: write STENCIL_TEMPORAL_RESPONSIVE_AA_MASK (bit 3 = 0x08) so TSR/TAA
 	// reduces temporal history weight for splat pixels, preventing ghost trails
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<
-		true, CF_DepthNearOrEqual,                       // Depth: write + near/equal test
+		false, CF_DepthNearOrEqual,                      // Depth: NO write (transparent splats), near/equal test
 		true, CF_Always, SO_Keep, SO_Keep, SO_Replace,   // Front stencil: replace on pass
 		false, CF_Always, SO_Keep, SO_Keep, SO_Keep,     // Back stencil: no-op
 		0x08, 0x08                                       // Read mask, Write mask = bit 3 only
@@ -1643,6 +1645,8 @@ void FGaussianSplatRenderer::DrawSplatsGlobalIndirect(
 		// RT0: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
 		CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha,
 		// RT1: ColorWriteMask, ColorBlendOp, ColorSrcBlend, ColorDestBlend, AlphaBlendOp, AlphaSrcBlend, AlphaDestBlend
+		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero,
+		// RT2: Normal (R32_UINT) - write replacement, no blending
 		CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero
 	>::GetRHI();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;

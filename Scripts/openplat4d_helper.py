@@ -44,6 +44,65 @@
 #       reduced); the python interpreter is resolved the same conda-free way.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# ENCODING FIX: Python on Chinese Windows decodes sys.argv with GBK, garbling
+# Chinese paths. We fix this with two complementary mechanisms:
+# 1. CommandLineToArgvW: replaces sys.argv with correctly-decoded UTF-16
+#    arguments from the raw Windows command line.
+# 2. If C++ has base64-encoded workDir (b64:...), decode it. Tries UTF-8
+#    first (new DLL), falls back to UTF-16-LE (old DLL).
+# ---------------------------------------------------------------------------
+import sys as _sf
+if hasattr(_sf, 'getwindowsversion'):
+    import ctypes as _ct
+    _g = _ct.windll.kernel32.GetCommandLineW; _g.restype = _ct.c_wchar_p
+    _c = _ct.windll.shell32.CommandLineToArgvW
+    _c.argtypes = [_ct.c_wchar_p, _ct.POINTER(_ct.c_int)]
+    _c.restype = _ct.POINTER(_ct.c_wchar_p)
+    _n = _ct.c_int(); _a = _c(_g(), _ct.byref(_n))
+    _sf.argv = [_a[i] for i in range(_n.value)]
+    _ct.windll.kernel32.LocalFree(_a)
+    # CommandLineToArgvW includes the interpreter exe as argv[0], which
+    # shifts every real argument right by one slot vs. Python's normal
+    # argv layout.  Pop it so argv[1] is the first argument again.
+    if _sf.argv and _sf.argv[0].lower().endswith(('.exe', '.com')):
+        _sf.argv.pop(0)
+    del _n, _a, _g, _c, _ct
+del _sf
+
+import base64 as _b64
+# When C++ calls CreateProc(python.exe, "<script> <workDir> ..."), the raw
+# command-line becomes "python.exe" "<script>" "<workDir>" ..., so
+# sys.argv[0] is the interpreter and argv[1] is the script path.  The
+# base64-encoded workDir can land at argv[2] (or later).  Scan ALL entries.
+for _bi in range(1, len(__import__('sys').argv)):
+    _bw = __import__('sys').argv[_bi]
+    if _bw.startswith('b64:'):
+        try:
+            _bb = _bw[4:]
+            # FBase64::Encode (UE) omits '=' padding.  Compute the correct
+            # number of padding chars Python's b64decode expects.
+            _pad = 4 - len(_bb) % 4
+            if _pad != 4:
+                _bb += '=' * _pad
+            _decoded_bytes = _b64.b64decode(_bb)
+            # FTCHARToUTF8 in C++ converts TCHAR (UTF-16LE) → UTF-8.
+            # Try UTF-8 first, fall back to UTF-16LE if it fails.
+            try:
+                _decoded = _decoded_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                _decoded = _decoded_bytes.decode('utf-16-le')
+            __import__('sys').argv[_bi] = _decoded
+        except Exception as _e:
+            import builtins as _bi2
+            _bi2.print('[B64ERR]', repr(_e), '| falling back to raw argv', flush=True)
+            del _bi2
+        break
+try:
+    del _b64, _bi, _bw, _bb, _pad
+except NameError:
+    pass
+
 import subprocess
 import os
 import sys
@@ -148,7 +207,10 @@ class OpenSplat4DHelper:
             self.executeHLODBatchClip()
 
     # [E3] Propagate failures so the UE orchestrator gets a non-zero exit code.
-    def runCommand(self, command, env_ext={}):
+    # COLMAP is known to exit non-zero on recoverable warnings (discarded
+    # reconstructions, CHOLMOD issues).  Pass bStrict=False for commands where
+    # the output files are the real signal of success.
+    def runCommand(self, command, env_ext={}, bStrict=True):
         env = os.environ.copy()
         env.update(env_ext)
         printImmediately("run command:", command)
@@ -163,8 +225,12 @@ class OpenSplat4DHelper:
         process.stdout.close()
         process.wait()
         if process.returncode != 0:
-            printImmediately(f"Command failed (exit {process.returncode}): {command}", file=sys.stderr)
-            sys.exit(process.returncode)
+            msg = f"Command exited {process.returncode}: {command}"
+            if bStrict:
+                printImmediately(f"FATAL: {msg}", file=sys.stderr)
+                sys.exit(process.returncode)
+            else:
+                printImmediately(f"Warning (non-fatal): {msg}")
 
     def executeSparseReconstruction(self):
         colmap = _quote_path(self.args.colmap)
@@ -190,15 +256,34 @@ class OpenSplat4DHelper:
         # option (it now models "frames"/"rigs"); since the plugin always runs
         # the mapper from scratch (database.db + sparse/ are wiped above), the
         # option is unnecessary and only causes "unrecognised option" errors.
+        #
+        # COLMAP mapper / aligner can exit non-zero on recoverable warnings
+        # (CHOLMOD, discarded small reconstructions) while still producing
+        # valid output.  Run them non-strict and verify the result files below.
         command = f"{colmap} mapper --database_path ./database.db --image_path ./images --output_path ./sparse "
         if self.args.mapper:
             command += str(self.args.mapper)
-        self.runCommand(command)
+        self.runCommand(command, bStrict=False)
 
         command = f"{colmap} model_aligner --input_path ./sparse/0 --output_path ./sparse/0 --ref_images_path ./cameras.txt --ref_is_gps 0 --alignment_type custom --alignment_max_error 3 "
         if self.args.aligner:
             command += str(self.args.aligner)
-        self.runCommand(command)
+        self.runCommand(command, bStrict=False)
+
+        # COLMAP can exit non-zero on warnings yet still write valid output.
+        # Trust the files, not the exit code.
+        model_type = self.args.model_type if hasattr(self.args, 'model_type') else 'bin'
+        ext = 'bin' if model_type == 'bin' else 'txt'
+        cameras_file = os.path.join('./sparse/0', f'cameras.{ext}')
+        images_file  = os.path.join('./sparse/0', f'images.{ext}')
+        points_file  = os.path.join('./sparse/0', f'points3D.{ext}')
+        if not (os.path.isfile(cameras_file) and os.path.isfile(images_file) and os.path.isfile(points_file)):
+            _fail(
+                f"Sparse reconstruction output incomplete.\n"
+                f"  Expected: {cameras_file}, {images_file}, {points_file}\n"
+                f"  At least one of these files is missing. Check the COLMAP log above for details."
+            )
+        printImmediately("Sparse reconstruction verified: cameras, images, points3D all present.")
 
     def executeColmapView(self):
         colmap_executable_path = _quote_path(self.args.colmap)

@@ -11,10 +11,10 @@
 UENUM(BlueprintType)
 enum class EGaussianPositionFormat : uint8
 {
-	Float32		UMETA(DisplayName = "Float32 (12 bytes)"),
-	Norm16		UMETA(DisplayName = "Norm16 (6 bytes)"),
-	Norm11		UMETA(DisplayName = "Norm11 (4 bytes)"),
-	Norm6		UMETA(DisplayName = "Norm6 (2 bytes)")
+	Float32		UMETA(DisplayName = "Float32 (每 splat 12 字节)"),
+	Norm16		UMETA(DisplayName = "Norm16 (每 splat 6 字节)"),
+	Norm11		UMETA(DisplayName = "Norm11 (每 splat 4 字节)"),
+	Norm6		UMETA(DisplayName = "Norm6 (每 splat 2 字节)")
 };
 
 /**
@@ -23,10 +23,10 @@ enum class EGaussianPositionFormat : uint8
 UENUM(BlueprintType)
 enum class EGaussianColorFormat : uint8
 {
-	Float32x4	UMETA(DisplayName = "Float32x4 (16 bytes)"),
-	Float16x4	UMETA(DisplayName = "Float16x4 (8 bytes)"),
-	Norm8x4		UMETA(DisplayName = "Norm8x4 (4 bytes)"),
-	BC7			UMETA(DisplayName = "BC7 (~1 byte)")
+	Float32x4	UMETA(DisplayName = "Float32x4 (每 splat 16 字节)"),
+	Float16x4	UMETA(DisplayName = "Float16x4 (每 splat 8 字节)"),
+	Norm8x4		UMETA(DisplayName = "Norm8x4 (每 splat 4 字节)"),
+	BC7			UMETA(DisplayName = "BC7 (每 splat ~1 字节)")
 };
 
 /**
@@ -39,11 +39,11 @@ enum class EGaussianSHFormat : uint8
 	Float16		UMETA(DisplayName = "Float16"),
 	Norm11		UMETA(DisplayName = "Norm11"),
 	Norm6		UMETA(DisplayName = "Norm6"),
-	Cluster4k	UMETA(DisplayName = "Cluster 4k"),
-	Cluster8k	UMETA(DisplayName = "Cluster 8k"),
-	Cluster16k	UMETA(DisplayName = "Cluster 16k"),
-	Cluster32k	UMETA(DisplayName = "Cluster 32k"),
-	Cluster64k	UMETA(DisplayName = "Cluster 64k")
+	Cluster4k	UMETA(DisplayName = "聚类 4k"),
+	Cluster8k	UMETA(DisplayName = "聚类 8k"),
+	Cluster16k	UMETA(DisplayName = "聚类 16k"),
+	Cluster32k	UMETA(DisplayName = "聚类 32k"),
+	Cluster64k	UMETA(DisplayName = "聚类 64k")
 };
 
 /**
@@ -52,11 +52,11 @@ enum class EGaussianSHFormat : uint8
 UENUM(BlueprintType)
 enum class EGaussianQualityLevel : uint8
 {
-	VeryHigh	UMETA(DisplayName = "Very High (~48 bytes/splat)"),
-	High		UMETA(DisplayName = "High (~24 bytes/splat)"),
-	Medium		UMETA(DisplayName = "Medium (~12 bytes/splat)"),
-	Low			UMETA(DisplayName = "Low (~8 bytes/splat)"),
-	VeryLow		UMETA(DisplayName = "Very Low (~4 bytes/splat)")
+	VeryHigh	UMETA(DisplayName = "极高 (~48 字节/splat)"),
+	High		UMETA(DisplayName = "高 (~24 字节/splat)"),
+	Medium		UMETA(DisplayName = "中 (~12 字节/splat)"),
+	Low			UMETA(DisplayName = "低 (~8 字节/splat)"),
+	VeryLow		UMETA(DisplayName = "极低 (~4 字节/splat)")
 };
 
 /**
@@ -144,8 +144,14 @@ struct FGaussianSplatViewData
 	/** Cluster ID for debug visualization (Nanite-style) */
 	uint32 ClusterID = 0;
 
+	/** World-space normal (octahedral packed, 2 x half float) */
+	uint32 PackedNormal = 0;
+
+	/** World-space splat center (for lighting calculations) */
+	FVector3f WorldCenter = FVector3f::ZeroVector;
+
 	/** Padding for 16-byte alignment */
-	uint32 Padding = 0;
+	float Padding2 = 0.0f;
 };
 
 /**

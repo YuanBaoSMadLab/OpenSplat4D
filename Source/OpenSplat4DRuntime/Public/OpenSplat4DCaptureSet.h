@@ -17,6 +17,12 @@
  * it is a real .uasset. The downstream sparse-reconstruction / training steps
  * read WorkDirectory + Images straight off the asset.
  *
+ * ALL file paths beneath the working directory (images/, masks/, depths/,
+ * cameras.txt, sparse/, output/) are DERIVED from WorkDirectory via the
+ * accessor functions below.  The asset no longer stores individual image
+ * paths or per-subfolder strings — that was redundant and caused the index
+ * to become stale the moment any intermediate directory was cleaned.
+ *
  * The final trained gaussian result is a *separate* asset (UOpenSplat4DPointCloud)
  * that can itself be dropped into the level (UActorFactory_OpenSplat4DPointCloud).
  * This data asset is where dataset / on-disk locations are recorded -- the point
@@ -32,41 +38,53 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenSplat4D")
 	FString SetName;
 
-	/** Absolute working directory holding images/ masks/ depths/ cameras.txt. */
+	/** Absolute working directory — the single source of truth.  Every
+	 *  sub-path (images, masks, depths, cameras.txt, sparse, output) is
+	 *  derived from this root, so moving / renaming the folder keeps the
+	 *  asset valid as long as the internal layout stays the same. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenSplat4D")
 	FString WorkDirectory;
 
-	/** How many color images this set captured. */
+	/** How many colour images this set captured. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenSplat4D")
 	int32 ImageCount = 0;
 
-	/** Absolute file paths of every captured color image. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenSplat4D")
-	TArray<FString> Images;
+	// ---- Derived paths (read-only, computed from WorkDirectory) ----------
+	/** Colour-image capture directory: <WorkDirectory>/images/ */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "OpenSplat4D|Derived")
+	FString GetImagesDir() const { return WorkDirectory / TEXT("images"); }
 
-	/** Absolute path of the masks directory. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenSplat4D")
-	FString MasksDir;
+	/** Mask directory: <WorkDirectory>/masks/ */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "OpenSplat4D|Derived")
+	FString GetMasksDir()  const { return WorkDirectory / TEXT("masks"); }
 
-	/** Absolute path of the depths directory. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenSplat4D")
-	FString DepthsDir;
+	/** Depth directory: <WorkDirectory>/depths/ */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "OpenSplat4D|Derived")
+	FString GetDepthsDir() const { return WorkDirectory / TEXT("depths"); }
 
-	/** Absolute path of the cameras.txt file. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenSplat4D")
-	FString CamerasFile;
+	/** Camera file: <WorkDirectory>/cameras.txt */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "OpenSplat4D|Derived")
+	FString GetCamerasFile() const { return WorkDirectory / TEXT("cameras.txt"); }
 
-	// ---- dataset locations (this is the data asset's job, not the point cloud's) --
-	/** Source colour-image set directory (used by sparse reconstruction / training). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D|数据集位置", DisplayName = "图片集目录")
+	/** Sparse-reconstruction output: <WorkDirectory>/sparse/ */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "OpenSplat4D|Derived")
+	FString GetInitialModelDir() const { return WorkDirectory / TEXT("sparse"); }
+
+	/** Training output root: <WorkDirectory>/output/ */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "OpenSplat4D|Derived")
+	FString GetTrainedModelDir() const { return WorkDirectory / TEXT("output"); }
+
+	// ---- dataset locations (for editor UI, auto-populated) ---------------
+	/** Source colour-image set directory.  Mirrors GetImagesDir(). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "OpenSplat4D|数据集位置", DisplayName = "图片集目录")
 	FDirectoryPath ImagesDir;
 
-	/** Sparse-reconstruction (initial model) output directory. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D|数据集位置", DisplayName = "初次模型目录（稀疏重建）")
+	/** Sparse-reconstruction output directory.  Mirrors GetInitialModelDir(). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "OpenSplat4D|数据集位置", DisplayName = "初次模型目录（稀疏重建）")
 	FDirectoryPath InitialModelDir;
 
-	/** Trained gaussian-model output directory. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D|数据集位置", DisplayName = "训练结果目录")
+	/** Trained gaussian-model output directory.  Mirrors GetTrainedModelDir(). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "OpenSplat4D|数据集位置", DisplayName = "训练结果目录")
 	FDirectoryPath TrainedModelDir;
 
 	/** Optional preview thumbnail shown in the Content Browser. */

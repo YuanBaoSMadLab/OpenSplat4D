@@ -7,7 +7,7 @@
 
 UActorFactoryGaussianSplat::UActorFactoryGaussianSplat()
 {
-	DisplayName = NSLOCTEXT("GaussianSplatting", "GaussianSplatActorDisplayName", "Gaussian Splat Actor");
+	DisplayName = NSLOCTEXT("GaussianSplatting", "GaussianSplatActorDisplayName", "高斯泼溅 Actor");
 	NewActorClass = AGaussianSplatActor::StaticClass();
 	bUseSurfaceOrientation = true;
 }
@@ -16,7 +16,7 @@ bool UActorFactoryGaussianSplat::CanCreateActorFrom(const FAssetData& AssetData,
 {
 	if (!AssetData.IsValid() || !AssetData.GetClass()->IsChildOf(UGaussianSplatAsset::StaticClass()))
 	{
-		OutErrorMsg = NSLOCTEXT("GaussianSplatting", "CannotCreateActorFrom", "No valid Gaussian Splat asset specified.");
+		OutErrorMsg = NSLOCTEXT("GaussianSplatting", "CannotCreateActorFrom", "未指定有效的高斯泼溅资产。");
 		return false;
 	}
 

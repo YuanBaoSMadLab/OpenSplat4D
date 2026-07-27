@@ -4,6 +4,7 @@
 #include <string>
 
 #include "Misc/FileHelper.h"
+#include "Misc/Base64.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "UObject/SavePackage.h"
@@ -126,25 +127,22 @@ DEFINE_LOG_CATEGORY(LogOpenSplat4DStep);
         return Asset;
     }
 
-	void OpenSplat4DUpdateCaptureSet(UOpenSplat4DCaptureSet* Asset, const FString& WorkDir,
-		const TArray<FString>& Images, const FString& MasksDir,
-		const FString& DepthsDir, const FString& CamerasFile)
+	void OpenSplat4DUpdateCaptureSet(UOpenSplat4DCaptureSet* Asset, const FString& WorkDir, int32 ImageCount)
     {
         if (!Asset)
         {
             return;
         }
         Asset->WorkDirectory = WorkDir;
-        Asset->Images = Images;
-        Asset->ImageCount = Images.Num();
-        Asset->MasksDir = MasksDir;
-        Asset->DepthsDir = DepthsDir;
-        Asset->CamerasFile = CamerasFile;
+        Asset->ImageCount = ImageCount;
+        Asset->ImagesDir.Path = Asset->GetImagesDir();
+        Asset->InitialModelDir.Path = Asset->GetInitialModelDir();
+        Asset->TrainedModelDir.Path = Asset->GetTrainedModelDir();
         Asset->CapturedAt = FDateTime::Now();
         Asset->MarkPackageDirty();
         FAssetRegistryModule::AssetCreated(Asset);
         SaveCaptureSetPackage(Asset->GetOutermost(), Asset);
-        UE_LOG(LogOpenSplat4DStep, Log, TEXT("Capture set asset updated: %s (%d images)"), *Asset->GetPathName(), Images.Num());
+        UE_LOG(LogOpenSplat4DStep, Log, TEXT("Capture set asset updated: %s (%d images)"), *Asset->GetPathName(), ImageCount);
     }
 
     void OpenSplat4DEnumerateCaptureSets(TArray<UOpenSplat4DCaptureSet*>& OutSets)
@@ -355,6 +353,38 @@ public:
 		void* PipeStdOutRead = nullptr, *PipeStdOutWrite = nullptr;
 		verify(FPlatformProcess::CreatePipe(PipeStdOutRead, PipeStdOutWrite));
 
+		// Base64-encode workDir on the command line to avoid encoding issues.
+		// On Chinese Windows, Python decodes sys.argv using the system code page
+		// (GBK), which garbles Chinese characters. Base64 is pure ASCII and
+		// survives any locale/codepage. Python decodes it back to UTF-8.
+		// The modified command line uses "b64:<base64>" instead of the raw path.
+		{
+			int32 QuoteCount = 0, WorkDirStart = -1;
+			for (int32 i = 0; i < Command.Len(); ++i)
+			{
+				if (Command[i] == TEXT('"'))
+				{
+					++QuoteCount;
+					if (QuoteCount == 3)
+					{
+						WorkDirStart = i + 1;
+					}
+					else if (QuoteCount == 4 && WorkDirStart >= 0)
+					{
+						FString Path = Command.Mid(WorkDirStart, i - WorkDirStart);
+						// FBase64::Encode(FString) encodes raw TCHAR bytes (UTF-16LE),
+						// but Python expects UTF-8. Convert to UTF-8 first.
+						FTCHARToUTF8 Utf8(*Path);
+						FString B64 = FBase64::Encode((const uint8*)Utf8.Get(), Utf8.Length());
+						FString Encoded = TEXT("b64:") + B64;
+						UE_LOG(LogOpenSplat4DStep, Log, TEXT("Base64 workDir: %s"), *B64.Left(40));
+						Command = Command.Left(WorkDirStart) + Encoded + Command.Mid(i);
+						break;
+					}
+				}
+			}
+		}
+
 		// Redirect both stdout and stderr to the same pipe so we capture
 		// everything in one stream. The child does not need stdin, so pass
 		// nullptr there: previously the stdout *read* handle was passed as the
@@ -363,6 +393,7 @@ public:
 		// Defensive: ensure the executable path is not wrapped in quotes, which
 		// would trip WindowsPlatformProcess's `URL[0] != '"'` assertion.
 		const FString ResolvedExecutePath = OpenSplat4DUnquoteArg(ExecutePath);
+		UE_LOG(LogOpenSplat4DStep, Log, TEXT("Final Command (after b64): %s"), *Command);
 		ProcessHandle = FPlatformProcess::CreateProc(*ResolvedExecutePath, *Command, true, true, true, nullptr, 0, nullptr, PipeStdOutWrite, nullptr, PipeStdOutWrite);
 		if (ProcessHandle.IsValid())
 		{
