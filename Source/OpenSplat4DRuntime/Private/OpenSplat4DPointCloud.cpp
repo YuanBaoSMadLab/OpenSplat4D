@@ -32,11 +32,6 @@ UOpenSplat4DPointCloud::UOpenSplat4DPointCloud(const FObjectInitializer& ObjectI
 
 const float GOPEN_SPLAT_SH_0 = 0.28209479177387814f;
 
-UOpenSplat4DPointCloud::UOpenSplat4DPointCloud(FObjectInitializer const& ObjectInitializer)
-	: Super(ObjectInitializer)
-{
-}
-
 // ----------------------------------------------------------------------------
 // Time axis helpers
 // ----------------------------------------------------------------------------

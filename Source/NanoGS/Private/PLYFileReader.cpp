@@ -377,7 +377,7 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 			Splat.Scale.Z = ScaleY;  // PLY Y -> UE Z
 
 			// Opacity
-			Splat.Opacity = GetPropertyFloat(VertexData, Header, TEXT("opacity"), 10.0f)  // ≈1.0 after sigmoid;
+			Splat.Opacity = GetPropertyFloat(VertexData, Header, TEXT("opacity"), 10.0f); // ≈1.0 after sigmoid
 
 			// SH DC (base color) — fall back to red/green/blue if f_dc_*
 			// isn't present (standard COLMAP point cloud PLY), then to white.

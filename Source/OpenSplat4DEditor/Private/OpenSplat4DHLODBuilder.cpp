@@ -2,6 +2,7 @@
 #include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DPointCloudActor.h"
 #include "OpenSplat4DEditorLibrary.h"
+#include "NiagaraComponent.h"
 
 #include "Interfaces/IPluginManager.h"
 #include "Misc/CommandLine.h"
@@ -191,7 +192,7 @@ TArray<UActorComponent*> UOpenSplat4DHLODBuilder::Build(const FHLODBuildContext&
 		Actor->SetPointCloud(PointCloud);
 		Actor->bAutoPlay = false;
 		TArray<UActorComponent*> Components;
-		if (UActorComponent* NiagaraComp = Actor->GetNiagaraComponent())
+		if (UActorComponent* NiagaraComp = Actor->FindComponentByClass<UNiagaraComponent>())
 		{
 			Components.Add(NiagaraComp);
 		}
