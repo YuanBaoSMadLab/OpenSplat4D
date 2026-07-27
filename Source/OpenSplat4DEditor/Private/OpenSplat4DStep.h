@@ -12,6 +12,7 @@
 #include "Engine/Scene.h"
 #include "OpenSplat4DCaptureSet.h"
 #include "OpenSplat4DEditorLibrary.h"
+#include "OpenSplat4DTypes.h"
 #include "GaussianSplatAsset.h"
 #include "GaussianSplatActor.h"
 #include "GaussianSplatComponent.h"

@@ -19,6 +19,7 @@ public class OpenSplat4DRuntime : ModuleRules
 				"RHI",
 				"Renderer",
 				"InputCore",
+				"NanoGS",
 			}
 			);
 

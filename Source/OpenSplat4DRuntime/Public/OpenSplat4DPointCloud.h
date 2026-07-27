@@ -1,33 +1,34 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/NoExportTypes.h"
 #include "Curves/RichCurve.h"
+#include "GaussianSplatAsset.h"
 #include "OpenSplat4DPoint.h"
+#include "OpenSplat4DTypes.h"
 #include "OpenSplat4DRuntimeModule.h"
 #include "OpenSplat4DPointCloud.generated.h"
-
-class UOpenSplat4DPointCloud;
 
 /**
  * A 3DGS / 4DGS point cloud asset.
  *
+ * Inherits NanoGS UGaussianSplatAsset for GPU rendering compatibility,
+ * adding 4D temporal fields, LOD controls, and the Points array for
+ * CPU-side access / editing.
+ *
  * Holds the raw gaussian primitives and interprets them either as a static
  * 3DGS cloud (Static3D) or as a time-varying 4DGS cloud (Dynamic4D). In 4DGS
  * mode the temporal fields of each FOpenSplat4DPoint drive the rendering over
- * the [TimeStart, TimeEnd] axis (see UNiagaraDataInterfaceOpenSplat4D).
+ * the [TimeStart, TimeEnd] axis.
  */
 UCLASS(Blueprintable, BlueprintType, EditInlineNew, CollapseCategories)
-class OPENSPLAT4DRUNTIME_API UOpenSplat4DPointCloud : public UObject
+class OPENSPLAT4DRUNTIME_API UOpenSplat4DPointCloud : public UGaussianSplatAsset
 {
 	GENERATED_UCLASS_BODY()
 public:
 	/** Broadcast whenever the point set (or its interpretation) changes. */
 	FSimpleMulticastDelegate OnPointsChanged;
 
-	/** Absolute path of the source file this asset was imported from. Drives reimport. */
-	UPROPERTY()
-	FString SourceFilePath;
+	/** SourceFilePath inherited from UGaussianSplatAsset — no duplicate needed. */
 
 	/** Rendering mode: static 3DGS vs dynamic 4DGS. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D")

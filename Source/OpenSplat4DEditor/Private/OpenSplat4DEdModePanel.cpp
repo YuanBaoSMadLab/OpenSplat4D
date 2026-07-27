@@ -1,6 +1,6 @@
 #include "OpenSplat4DEdModePanel.h"
 #include "OpenSplat4DPointCloud.h"
-#include "GaussianSplatActor.h"
+#include "OpenSplat4DPointCloudActor.h"
 #include "GaussianSplatComponent.h"
 #include "OpenSplat4DEditorLibrary.h"
 #include "OpenSplat4DSettings.h"
@@ -898,7 +898,7 @@ FReply SOpenSplat4DEdModePanel::OnAddToSceneClicked()
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.bNoFail = true;
-	AGaussianSplatActor* Actor = World->SpawnActor<AGaussianSplatActor>(AGaussianSplatActor::StaticClass(), SpawnParams);
+	AOpenSplat4DPointCloudActor* Actor = World->SpawnActor<AOpenSplat4DPointCloudActor>(AOpenSplat4DPointCloudActor::StaticClass(), SpawnParams);
 	if (Actor)
 	{
 		Actor->GaussianSplatComponent->SetSplatAsset(Cloud);
@@ -926,7 +926,7 @@ FReply SOpenSplat4DEdModePanel::OnUseSelectedClicked()
         USelection* Selection = GEditor->GetSelectedActors();
         for (int32 SelIdx = 0; SelIdx < Selection->Num(); ++SelIdx)
         {
-            if (AGaussianSplatActor* Actor = Cast<AGaussianSplatActor>(Selection->GetSelectedObject(SelIdx)))
+            if (AOpenSplat4DPointCloudActor* Actor = Cast<AOpenSplat4DPointCloudActor>(Selection->GetSelectedObject(SelIdx)))
             {
                 CurrentActor = Actor;
                 break;
@@ -1015,8 +1015,8 @@ FReply SOpenSplat4DEdModePanel::OnScanClicked()
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.bNoFail = true;
-	if (AGaussianSplatActor* Actor = World->SpawnActor<AGaussianSplatActor>(
-		AGaussianSplatActor::StaticClass(), SpawnParams))
+	if (AOpenSplat4DPointCloudActor* Actor = World->SpawnActor<AOpenSplat4DPointCloudActor>(
+		AOpenSplat4DPointCloudActor::StaticClass(), SpawnParams))
 	{
 		Actor->GaussianSplatComponent->SetSplatAsset(Cloud);
 		CurrentActor = Actor;

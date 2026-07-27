@@ -4,7 +4,7 @@
 #include "OpenSplat4DActorFactory.h"
 #include "OpenSplat4DEdMode.h"
 #include "OpenSplat4DPointCloud.h"
-#include "GaussianSplatActor.h"
+#include "OpenSplat4DPointCloudActor.h"
 #include "GaussianSplatComponent.h"
 #include "OpenSplat4DSplatActor.h"
 #include "OpenSplat4DSettings.h"
@@ -223,7 +223,7 @@ void FOpenSplat4DEditorModule::RegisterMenus()
 										UWorld* World = GEditor->GetEditorWorldContext().World();
 										if (World)
 										{
-											AGaussianSplatActor* Actor = World->SpawnActor<AGaussianSplatActor>();
+											AOpenSplat4DPointCloudActor* Actor = World->SpawnActor<AOpenSplat4DPointCloudActor>();
 											if (Actor)
 											{
 												Actor->GaussianSplatComponent->SetSplatAsset(Cloud);

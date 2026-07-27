@@ -16,7 +16,7 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Misc/PackagePath.h"
 #include "GaussianSplatAsset.h"
-#include "GaussianSplatActor.h"
+#include "OpenSplat4DPointCloudActor.h"
 #include "GaussianSplatComponent.h"
 #include "PLYFileReader.h"
 
@@ -258,8 +258,8 @@ UGaussianSplatAsset* UOpenSplat4DStep_GaussianSplatting::SaveToContent()
 		}
 		FActorSpawnParameters SpawnParams;
 		SpawnParams.bNoFail = true;
-		AGaussianSplatActor* Actor = EditorWorld->SpawnActor<AGaussianSplatActor>(
-			AGaussianSplatActor::StaticClass(), SpawnParams);
+		AOpenSplat4DPointCloudActor* Actor = EditorWorld->SpawnActor<AOpenSplat4DPointCloudActor>(
+			AOpenSplat4DPointCloudActor::StaticClass(), SpawnParams);
 		if (Actor)
 		{
 			Actor->GaussianSplatComponent->SetSplatAsset(SplatAsset);
@@ -270,10 +270,9 @@ UGaussianSplatAsset* UOpenSplat4DStep_GaussianSplatting::SaveToContent()
 
 void UOpenSplat4DStep_GaussianSplatting::FillAssetPaths()
 {
-	if (!Asset) return;
-	Asset->Mode = bTrain4D ? EOpenSplat4DMode::Dynamic4D : EOpenSplat4DMode::Static3D;
+	// Mode is stored on the capture set / point cloud asset, set separately.
+	// Here we only fill the capture-set directory paths.
 
-	// 数据集位置属于“数据资产”（UOpenSplat4DCaptureSet），不污染点云资产。
 	if (!TargetCaptureSet)
 	{
 		return;

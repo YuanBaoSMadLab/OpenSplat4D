@@ -106,7 +106,7 @@ private:
 	void OnScanPointScaleChanged(float Value);
 
 	// ---- Usage tab: playback ------------------------------------------------
-	TWeakObjectPtr<AGaussianSplatActor> CurrentActor;
+	TWeakObjectPtr<AOpenSplat4DPointCloudActor> CurrentActor;
 	FReply OnUseSelectedClicked();
 	FReply OnPlayClicked();
 	FReply OnPauseClicked();

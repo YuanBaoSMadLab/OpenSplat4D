@@ -2,31 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "UObject/NoExportTypes.h"
+#include "OpenSplat4DTypes.h"
 #include "OpenSplat4DPoint.generated.h"
-
-/** How the point cloud is interpreted by the renderer. */
-UENUM(BlueprintType)
-enum class EOpenSplat4DMode : uint8
-{
-	/** Static 3D Gaussian Splatting (compatible with the base 3DGS pipeline). */
-	Static3D UMETA(DisplayName = "3DGS (Static)"),
-	/** Time-varying 4D Gaussian Splatting; points appear / move over a time axis. */
-	Dynamic4D UMETA(DisplayName = "4DGS (Dynamic)"),
-};
-
-/** Disk compression applied when the point cloud asset is serialized. */
-UENUM(BlueprintType)
-enum class EOpenSplat4DCompressionMethod : uint8
-{
-	None UMETA(DisplayName = "无"),
-	Zlib UMETA(DisplayName = "Zlib (raw blob)"),
-	// [ENHANCEMENT] Niantic "spz" format: 64-byte-per-gaussian fixed-point
-	// quantization + gzip. Far smaller than the raw Zlib blob and (uniquely for
-	// OpenSplat4D) carries the 4DGS temporal fields through an appended O4D4 block.
-	// This is the preferred method and is strictly richer than the reference
-	// GaussianSplattingRuntime (which only had this 3D-only SPZ path).
-	Spz UMETA(DisplayName = "SPZ (Niantic, 4D-aware)"),
-};
 
 /**
  * A single Gaussian primitive.
