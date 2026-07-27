@@ -1,4 +1,9 @@
 #include "OpenSplat4DPointCloud.h"
+
+UOpenSplat4DPointCloud::UOpenSplat4DPointCloud(const FObjectInitializer& ObjectInitializer)
+{
+}
+
 #include "OpenSplat4DCompression.h"
 #include "Compression/Spz.h"   // [ENHANCEMENT] Niantic SPZ (4D-aware) compression
 

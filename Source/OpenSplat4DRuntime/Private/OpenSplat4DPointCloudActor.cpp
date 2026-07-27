@@ -3,7 +3,6 @@
 #include "GaussianSplatComponent.h"
 
 AOpenSplat4DPointCloudActor::AOpenSplat4DPointCloudActor(const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer)
 {
 	PrimaryActorTick.bCanEverTick = true;
 }
@@ -12,10 +11,9 @@ void AOpenSplat4DPointCloudActor::BeginPlay()
 {
 	Super::BeginPlay();
 
-	UOpenSplat4DPointCloud* Cloud = Cast<UOpenSplat4DPointCloud>(GaussianSplatComponent->GetSplatAsset());
-	if (Cloud)
+	if (PointCloud)
 	{
-		CurrentTime = Cloud->TimeStart;
+		CurrentTime = PointCloud->TimeStart;
 	}
 
 	if (bAutoPlay)
@@ -28,22 +26,21 @@ void AOpenSplat4DPointCloudActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	UOpenSplat4DPointCloud* Cloud = Cast<UOpenSplat4DPointCloud>(GaussianSplatComponent->GetSplatAsset());
-	if (bIsPlaying && Cloud)
+	if (bIsPlaying && PointCloud)
 	{
-		const float Span = Cloud->TimeEnd - Cloud->TimeStart;
+		const float Span = PointCloud->TimeEnd - PointCloud->TimeStart;
 		if (!FMath::IsNearlyZero(Span))
 		{
 			CurrentTime += (DeltaSeconds * PlayRate) * Span;
-			if (CurrentTime > Cloud->TimeEnd)
+			if (CurrentTime > PointCloud->TimeEnd)
 			{
 				if (bLooping)
 				{
-					CurrentTime = Cloud->TimeStart + FMath::Fmod(CurrentTime - Cloud->TimeStart, Span);
+					CurrentTime = PointCloud->TimeStart + FMath::Fmod(CurrentTime - PointCloud->TimeStart, Span);
 				}
 				else
 				{
-					CurrentTime = Cloud->TimeEnd;
+					CurrentTime = PointCloud->TimeEnd;
 					bIsPlaying = false;
 				}
 			}
@@ -63,22 +60,26 @@ void AOpenSplat4DPointCloudActor::Pause()
 
 void AOpenSplat4DPointCloudActor::Seek(float Time)
 {
-	UOpenSplat4DPointCloud* Cloud = Cast<UOpenSplat4DPointCloud>(GaussianSplatComponent->GetSplatAsset());
-	if (Cloud)
+	if (PointCloud)
 	{
-		CurrentTime = FMath::Clamp(Time, Cloud->TimeStart, Cloud->TimeEnd);
+		CurrentTime = FMath::Clamp(Time, PointCloud->TimeStart, PointCloud->TimeEnd);
 	}
 }
 
-void AOpenSplat4DPointCloudActor::SetPointCloud(UGaussianSplatAsset* InCloud)
+void AOpenSplat4DPointCloudActor::SetPointCloud(UOpenSplat4DPointCloud* InCloud)
 {
-	if (GaussianSplatComponent)
+	PointCloud = InCloud;
+	if (GaussianSplatComponent && InCloud)
 	{
 		GaussianSplatComponent->SetSplatAsset(InCloud);
 	}
-	UOpenSplat4DPointCloud* Cloud = Cast<UOpenSplat4DPointCloud>(InCloud);
-	if (Cloud)
+	if (PointCloud)
 	{
-		CurrentTime = Cloud->TimeStart;
+		CurrentTime = PointCloud->TimeStart;
 	}
+}
+
+UGaussianSplatAsset* AOpenSplat4DPointCloudActor::GetPointCloud() const
+{
+	return PointCloud;
 }

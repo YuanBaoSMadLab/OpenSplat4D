@@ -5,6 +5,7 @@
 #include "OpenSplat4DPointCloudActor.generated.h"
 
 class UGaussianSplatAsset;
+class UOpenSplat4DPointCloud;
 
 /**
  * OpenSplat4D 点云渲染 Actor。
@@ -23,13 +24,13 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 
-	/** Backward-compat: sets UOpenSplat4DPointCloud as the splat asset for rendering. */
+	/** Backward-compat: sets the point cloud asset for rendering. */
 	UFUNCTION(BlueprintCallable, Category = "OpenSplat4D")
-	void SetPointCloud(UGaussianSplatAsset* InCloud);
+	void SetPointCloud(UOpenSplat4DPointCloud* InCloud);
 
 	/** Get the currently assigned point cloud. */
 	UFUNCTION(BlueprintCallable, Category = "OpenSplat4D")
-	UGaussianSplatAsset* GetPointCloud() const { return GaussianSplatComponent ? GaussianSplatComponent->GetSplatAsset() : nullptr; }
+	UGaussianSplatAsset* GetPointCloud() const;
 
 	// ---- 4D 时间轴播放 ------------------------------------------------
 	UFUNCTION(BlueprintCallable, Category = "OpenSplat4D|Playback")
@@ -59,4 +60,8 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D", meta = (ClampMin = "0.01", ClampMax = "10.0"))
 	float SplatScale = 1.f;
+
+	/** The point cloud asset (backward compat). */
+	UPROPERTY()
+	TObjectPtr<UOpenSplat4DPointCloud> PointCloud;
 };

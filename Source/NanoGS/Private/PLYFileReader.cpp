@@ -369,7 +369,7 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 
 			// Scale - Reorder to match coordinate system conversion
 			// Scale is always positive magnitude, no negation needed
-			float ScaleX = GetPropertyFloat(VertexData, Header, TEXT("scale_0"), -4.5f)  // ~1cm default;
+			float ScaleX = GetPropertyFloat(VertexData, Header, TEXT("scale_0"), -4.5f); // ~1cm default
 			float ScaleY = GetPropertyFloat(VertexData, Header, TEXT("scale_1"), -4.5f);
 			float ScaleZ = GetPropertyFloat(VertexData, Header, TEXT("scale_2"), -4.5f);
 			Splat.Scale.X = ScaleZ;  // PLY Z -> UE X

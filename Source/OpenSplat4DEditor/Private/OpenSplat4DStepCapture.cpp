@@ -1,6 +1,7 @@
 #include "OpenSplat4DStep.h"
 #include "OpenSplat4DSettings.h"
 #include "OpenSplat4DEditorLibrary.h"
+#include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DPointCloudActor.h"
 
 #include "Kismet/GameplayStatics.h"
