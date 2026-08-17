@@ -249,6 +249,7 @@ class OpenSplat4DHelper:
                 sys.exit(process.returncode)
             else:
                 printImmediately(f"Warning (non-fatal): {msg}")
+        return process.returncode
 
     def executeSparseReconstruction(self):
         colmap = _quote_path(self.args.colmap)
@@ -283,10 +284,55 @@ class OpenSplat4DHelper:
             command += str(self.args.mapper)
         self.runCommand(command, bStrict=False)
 
-        command = f"{colmap} model_aligner --input_path ./sparse/0 --output_path ./sparse/0 --ref_images_path ./cameras.txt --ref_is_gps 0 --alignment_type custom --alignment_max_error 3 "
-        if self.args.aligner:
-            command += str(self.args.aligner)
-        self.runCommand(command, bStrict=False)
+        # --- Model alignment (into the UE capture frame) -------------------
+        # cameras.txt (written by the Capture step) lists every image's camera
+        # position in metres relative to the subject's bounds origin.
+        # `model_aligner --alignment_type custom` registers the COLMAP model
+        # into that frame so the trained splat lands correctly in Unreal.
+        #
+        # COMPATIBILITY FIX (2026-08, fan report "colmap alignment broken"):
+        # --robust_alignment / --robust_alignment_max_error only existed in
+        # COLMAP 3.8/3.9 and were REMOVED again in later releases (see
+        # colmap/colmap issues #2695 / #2645). Passing them on a current
+        # COLMAP makes model_aligner exit with an unrecognized-option error
+        # WITHOUT writing any output. Combined with bStrict=False that used
+        # to be swallowed silently -> the model was trained UNALIGNED and
+        # appeared at the wrong position/scale in UE.
+        # We now only pass flags that exist in every COLMAP version
+        # (--alignment_max_error), retry with a looser threshold, and fail
+        # LOUDLY (instead of silently) when alignment never succeeds.
+        if not os.path.isfile("./cameras.txt"):
+            printImmediately(
+                "WARNING: cameras.txt not found - skipping model alignment. "
+                "The trained model will stay in COLMAP's arbitrary coordinate "
+                "frame (expected when reconstructing a foreign colmap workspace).")
+        else:
+            aligner_base = (
+                f"{colmap} model_aligner"
+                f" --input_path ./sparse/0 --output_path ./sparse/0"
+                f" --ref_images_path ./cameras.txt"
+                f" --ref_is_gps 0 --alignment_type custom")
+            # Custom aligner params configured in the UE editor (if any).
+            custom = f" {self.args.aligner}" if self.args.aligner else ""
+            aligned_rc = None
+            for max_error in ("3", "10"):
+                cmd = f"{aligner_base} --alignment_max_error {max_error}{custom}"
+                aligned_rc = self.runCommand(cmd, bStrict=False)
+                if aligned_rc == 0:
+                    printImmediately(
+                        f"model_aligner succeeded (alignment_max_error={max_error}).")
+                    break
+                printImmediately(
+                    f"model_aligner failed (rc={aligned_rc}) with "
+                    f"alignment_max_error={max_error}; retrying with looser threshold ...")
+            if aligned_rc != 0:
+                _fail(
+                    "COLMAP model alignment failed. 稀疏重建完成，但模型对齐失败：\n"
+                    "  - 确认 COLMAP 版本（旧版参数差异见脚本内注释）\n"
+                    "  - 确认工作目录 cameras.txt 的文件名与 images/ 中一致\n"
+                    "  - 可在 UE【稀疏重建】步骤的『模型对齐参数（自定义）』中调整参数后重试\n"
+                    "Model was NOT aligned; aborting so training cannot silently\n"
+                    "produce a splat in the wrong coordinate frame.")
 
         # COLMAP can exit non-zero on warnings yet still write valid output.
         # Trust the files, not the exit code.

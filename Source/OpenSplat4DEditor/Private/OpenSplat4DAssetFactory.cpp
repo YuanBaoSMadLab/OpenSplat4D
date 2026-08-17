@@ -52,8 +52,14 @@ UObject* UOpenSplat4DPointCloudAssetFactory::FactoryCreateFile(
 {
 	bOutOperationCanceled = false;
 
-	// [DISABLED] 全面禁用 Niagara 路径：导入时不再自动创建 Niagara 资产。
-	// OpenSplat4DNiagaraSetup::EnsureAssetsExist();
+	// [DISABLED] PLY 导入由 NanoGS 模块的 UGaussianSplatAssetFactory 接管。
+	// 旧 UOpenSplat4DPointCloud 格式已废弃，仅保留 4dgs 格式。
+	const FString Ext = FPaths::GetExtension(Filename).ToLower();
+	if (Ext == TEXT("ply"))
+	{
+		UE_LOG(LogOpenSplat4DEditor, Error, TEXT("OpenSplat4D: PLY 导入已迁移到 NanoGS 管线。请通过内容浏览器拖入 .ply 文件（将由 UGaussianSplatAssetFactory 处理），或使用 OpenSplat4D 面板的「高斯训练→保存到内容」自动导入。"));
+		return nullptr;
+	}
 
 	UOpenSplat4DPointCloud* Asset = NewObject<UOpenSplat4DPointCloud>(InParent, InClass, InName, Flags);
 	if (!Asset)
@@ -61,15 +67,8 @@ UObject* UOpenSplat4DPointCloudAssetFactory::FactoryCreateFile(
 		return nullptr;
 	}
 
-	const FString Ext = FPaths::GetExtension(Filename).ToLower();
 	bool bOk = false;
-		if (Ext == TEXT("ply"))
-		{
-			Asset->LoadFromFile(Filename);
-			bOk = Asset->GetPointCount() > 0;
-			UE_LOG(LogOpenSplat4DEditor, Log, TEXT("OpenSplat4D: 瀵煎叆 '%s' -> 鐐规暟=%d"), *Filename, Asset->GetPointCount());
-		}
-	else if (Ext == TEXT("4dgs"))
+	if (Ext == TEXT("4dgs"))
 	{
 		bOk = Asset->LoadFrom4DGS(Filename);
 	}
@@ -87,7 +86,7 @@ UObject* UOpenSplat4DPointCloudAssetFactory::FactoryCreateFile(
 
 FText UAssetDefinition_OpenSplat4DPointCloud::GetAssetDisplayName() const
 {
-	return OS4D_TEXT("OpenSplat4D Point Cloud");
+	return OS4D_TEXT("OpenSplat4D 资产");
 }
 
 TSoftClassPtr<UObject> UAssetDefinition_OpenSplat4DPointCloud::GetAssetClass() const
@@ -97,7 +96,8 @@ TSoftClassPtr<UObject> UAssetDefinition_OpenSplat4DPointCloud::GetAssetClass() c
 
 FLinearColor UAssetDefinition_OpenSplat4DPointCloud::GetAssetColor() const
 {
-	return FLinearColor(0.0f, 0.5f, 1.0f);
+	// Teal color to match UGaussianSplatAsset
+	return FLinearColor(0.25f, 0.78f, 0.71f);
 }
 
 TConstArrayView<FAssetCategoryPath> UAssetDefinition_OpenSplat4DPointCloud::GetAssetCategories() const

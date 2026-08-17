@@ -1,4 +1,5 @@
 #include "OpenSplat4DNiagaraSetup.h"
+#include "Misc/EngineVersionComparison.h"
 #include "OpenSplat4DEditorModule.h"
 
 #include "UObject/SavePackage.h"
@@ -342,7 +343,11 @@ static UMaterial* CreateSplatMaterial()
 	// [FIX] Niagara Sprite Renderer requires this usage flag in UE 5.8.
 	// Without it, the material won't compile the correct shader permutation
 	// and sprites render invisible (log: "needed to set usage flag NiagaraSprites").
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+	{	bool bNeedsRecompile = false; Mat->SetMaterialUsage(bNeedsRecompile, EMaterialUsage::MATUSAGE_NiagaraSprites); }
+#else
 	Mat->SetMaterialUsage(EMaterialUsage::MATUSAGE_NiagaraSprites);
+#endif
 
 	UMaterialEditorOnlyData* Ed = Mat->GetEditorOnlyData();
 	auto& Expr = Ed->ExpressionCollection.Expressions;

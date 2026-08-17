@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "GaussianSplatActor.generated.h"
+#include "NanoGSGaussianSplatActor.generated.h"
 
 class UGaussianSplatComponent;
 

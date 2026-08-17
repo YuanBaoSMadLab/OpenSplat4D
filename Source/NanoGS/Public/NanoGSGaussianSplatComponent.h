@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "Components/PrimitiveComponent.h"
 #include "GaussianDataTypes.h"
-#include "GaussianSplatComponent.generated.h"
+#include "NanoGSGaussianSplatComponent.generated.h"
 
 class UGaussianSplatAsset;
 class FGaussianSplatSceneProxy;

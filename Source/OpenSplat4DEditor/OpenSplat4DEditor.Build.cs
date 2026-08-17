@@ -78,6 +78,12 @@ public class OpenSplat4DEditor : ModuleRules
 				"AssetDefinition",
 				"Landscape",
 			}
-			);
+		);
+
+		// UE 6.0+ splits FEditorViewportClientBase into a separate EditorViewport module
+		if (Target.Version.MajorVersion >= 6)
+		{
+			PrivateDependencyModuleNames.Add("EditorViewport");
+		}
 	}
 }

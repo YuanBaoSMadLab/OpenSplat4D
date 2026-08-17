@@ -24,9 +24,26 @@ The CUDA operators (`pointops2`, `simple-knn`, `diff-gaussian-rasterization`) li
 
 ---
 
+> # ⛔ CRITICAL — READ BEFORE FIRST RUN
+>
+> > **PLEASE KEEP YOUR PROJECT AND ALL REQUIRED FILE DIRECTORIES IN ENGLISH ONLY. DO NOT INCLUDE ANY CHINESE CHARACTERS OR CHARACTERS FROM OTHER LANGUAGES.**
+>
+> ⚠️ **CRITICAL: All paths and file names MUST be English-only (ASCII) !**
+>
+> **Your project path, plugin directory, work directory (WorkDir), COLMAP executable path, Python path, image directories, and every other path the plugin reads or writes MUST NOT contain Chinese characters, Japanese kana, special symbols, or any non-ASCII characters.** Otherwise you may hit: asset registry crashes (`String is too long`), COLMAP command-line garbling (GBK encoding), "file not found" errors, or broken argument parsing in the Python helper script — all hard to diagnose.
+>
+> ✅ Correct: `C:/Projects/MyProject/Plugins/OpenSplat4D`, `D:/Colmap/colmap.exe`
+> ❌ Wrong: `C:/项目/我的工程/插件/OpenSplat4D`, `D:/工具/colmap.exe`, `E:/OpenSplat4D_副本`
+
 ## Requirements
 
 - **Unreal Engine 5.5+** (tested on 5.8).
+- **DirectX 12 required (DX11/SM5 NOT supported)**: the NanoGS pipeline's cluster-culling
+  compute shader uses 9 UAVs, exceeding the SM5 (feature level 11.0) limit of 8. On DX11 the
+  editor crashes while compiling `ClusterCulling.usf`
+  (`Shader is using too many UAVs: 9 (only 8 supported)`).
+  Set *Project Settings → Platforms → Windows → Default RHI* to **DirectX 12** and make sure
+  your GPU / driver supports DirectX 12 (Shader Model 6).
 - The plugin uses the **Niagara** plugin (kept as a dependency) but does **not** require you
   to author a Niagara System — rendering is done by `UOpenSplat4DBillboardComponent`.
 

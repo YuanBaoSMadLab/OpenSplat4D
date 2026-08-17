@@ -1,1 +1,35 @@
-ThirdParty/**"OpenSplat4D/Docs/Emitter≈‰÷√÷∏ƒœ.md" 
+# Build artifacts
+Intermediate/
+Binaries/
+Saved/
+DerivedDataCache/
+Binaries/**/*.pdb
+
+# IDE / editor
+.vs/
+.idea/
+.vscode/
+*.suo
+*.user
+*.csproj.user
+.vsconfig
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Python cache
+__pycache__/
+Scripts/__pycache__/
+*.pyc
+*.pyo
+
+# Large bundled dependencies (do not commit ~6.9 GB)
+ThirdParty/
+Extensions/
+
+# Local config
+Config/DefaultEngine.ini
+Config/DefaultEditor.ini
+Config/DefaultGame.ini

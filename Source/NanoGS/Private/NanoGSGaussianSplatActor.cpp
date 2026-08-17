@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "GaussianSplatActor.h"
-#include "GaussianSplatComponent.h"
+#include "NanoGSGaussianSplatActor.h"
+#include "NanoGSGaussianSplatComponent.h"
 
 AGaussianSplatActor::AGaussianSplatActor()
 {

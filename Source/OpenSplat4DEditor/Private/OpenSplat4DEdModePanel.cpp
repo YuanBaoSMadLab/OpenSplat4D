@@ -1,7 +1,7 @@
 #include "OpenSplat4DEdModePanel.h"
 #include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DPointCloudActor.h"
-#include "GaussianSplatComponent.h"
+#include "NanoGSGaussianSplatComponent.h"
 #include "OpenSplat4DEditorLibrary.h"
 #include "OpenSplat4DSettings.h"
 #include "OpenSplat4DLocalization.h"

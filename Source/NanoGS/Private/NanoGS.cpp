@@ -2,7 +2,7 @@
 
 #include "NanoGS.h"
 #include "GaussianSplatViewExtension.h"
-#include "GaussianSplatRenderer.h"
+#include "NanoGSGaussianSplatRenderer.h"
 #include "GaussianSplatSceneProxy.h"
 #include "GaussianGlobalAccumulator.h"
 #include "Interfaces/IPluginManager.h"
@@ -15,6 +15,7 @@
 #include "RenderGraphUtils.h"
 #include "SceneView.h"
 #include "ScreenPass.h"
+#include "Misc/EngineVersionComparison.h"
 
 #define LOCTEXT_NAMESPACE "FNanoGSModule"
 
@@ -98,7 +99,11 @@ void FNanoGSModule::StartupModule()
 
 	// Defer view extension creation until GEngine is valid
 	// (StartupModule runs before GEngine is initialized, causing an ensure failure)
+	#if UE_VERSION_OLDER_THAN(5, 8, 0)
 	PostEngineInitDelegateHandle = FCoreDelegates::OnPostEngineInit.AddRaw(this, &FNanoGSModule::OnPostEngineInit);
+#else
+	PostEngineInitDelegateHandle = FCoreDelegates::GetOnPostEngineInit().AddRaw(this, &FNanoGSModule::OnPostEngineInit);
+#endif
 
 	UE_LOG(LogTemp, Log, TEXT("GaussianSplatting module started. Shader directory: %s"), *PluginShaderDir);
 }
@@ -274,7 +279,11 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 
 		// Check camera-static skip: if nothing has changed, skip Phase 1+2 and reuse cached sort
 		// Use ProjectionNoAAMatrix to ignore TSR/TAA per-frame jitter that changes every frame
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+		FMatrix CurrentVP = SceneView->ViewMatrices.GetViewMatrix() * SceneView->ViewMatrices.GetProjectionNoAAMatrix();
+#else
 		FMatrix CurrentVP = SceneView->ViewMatrices.GetWorldToView() * SceneView->ViewMatrices.GetProjectionNoAAMatrix();
+#endif
 		int32 CurrentDebugMode = DebugMode;
 		int32 CurrentDebugForceLODLevel = CVarDebugForceLODLevel.GetValueOnRenderThread();
 

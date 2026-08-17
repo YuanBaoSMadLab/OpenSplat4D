@@ -2,8 +2,8 @@
 
 #include "GaussianSplatAssetViewport.h"
 #include "GaussianSplatAsset.h"
-#include "GaussianSplatActor.h"
-#include "GaussianSplatComponent.h"
+#include "NanoGSGaussianSplatActor.h"
+#include "NanoGSGaussianSplatComponent.h"
 #include "AdvancedPreviewScene.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"

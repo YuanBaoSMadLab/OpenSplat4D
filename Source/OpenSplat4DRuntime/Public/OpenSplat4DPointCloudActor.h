@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GaussianSplatActor.h"
+#include "NanoGSGaussianSplatActor.h"
 #include "OpenSplat4DPointCloudActor.generated.h"
 
 class UGaussianSplatAsset;

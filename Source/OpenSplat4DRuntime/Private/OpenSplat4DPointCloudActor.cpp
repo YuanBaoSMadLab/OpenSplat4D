@@ -1,6 +1,6 @@
 #include "OpenSplat4DPointCloudActor.h"
 #include "OpenSplat4DPointCloud.h"
-#include "GaussianSplatComponent.h"
+#include "NanoGSGaussianSplatComponent.h"
 
 AOpenSplat4DPointCloudActor::AOpenSplat4DPointCloudActor(const FObjectInitializer& ObjectInitializer)
 {

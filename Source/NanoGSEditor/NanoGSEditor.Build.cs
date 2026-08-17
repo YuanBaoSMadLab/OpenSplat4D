@@ -24,7 +24,8 @@ public class NanoGSEditor : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
-				"NanoGS"
+				"NanoGS",
+				"OpenSplat4DRuntime"
 			}
 		);
 
@@ -45,6 +46,12 @@ public class NanoGSEditor : ModuleRules
 				"WorkspaceMenuStructure"
 			}
 		);
+
+		// UE 6.0+ splits FEditorViewportClientBase into a separate EditorViewport module
+		if (Target.Version.MajorVersion >= 6)
+		{
+			PrivateDependencyModuleNames.Add("EditorViewport");
+		}
 
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[]

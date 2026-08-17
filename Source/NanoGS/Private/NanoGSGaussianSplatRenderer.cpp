@@ -1,6 +1,6 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "GaussianSplatRenderer.h"
+#include "NanoGSGaussianSplatRenderer.h"
 #include "GaussianSplatShaders.h"
 #include "GaussianSplatSceneProxy.h"
 #include "GaussianGlobalAccumulator.h"
@@ -17,6 +17,13 @@
 #include "SceneRendering.h"  // For FViewInfo::ViewRect (screen percentage support)
 #include "RenderCore.h"
 #include "CommonRenderResources.h"
+#include "Misc/EngineVersionComparison.h"
+
+// UE 5.7 compatibility: FViewMatrices::GetWorldToView() was named GetViewMatrix().
+// UE 5.8+ has both names (old name is deprecated wrapper).
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+#define GetWorldToView GetViewMatrix
+#endif
 
 // Console variables (declared in GaussianSplatting.cpp)
 extern TAutoConsoleVariable<int32> CVarShowClusterBounds;

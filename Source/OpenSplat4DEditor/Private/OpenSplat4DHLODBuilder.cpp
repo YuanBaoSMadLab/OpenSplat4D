@@ -1,4 +1,5 @@
 #include "OpenSplat4DHLODBuilder.h"
+#include "Misc/EngineVersionComparison.h"
 #include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DPointCloudActor.h"
 #include "OpenSplat4DEditorLibrary.h"
@@ -53,7 +54,11 @@ TSubclassOf<UHLODBuilderSettings> UOpenSplat4DHLODBuilder::GetSettingsClass() co
 TArray<UActorComponent*> UOpenSplat4DHLODBuilder::Build(const FHLODBuildContext& InHLODBuildContext, const TArray<UActorComponent*>& InSourceComponents) const
 {
 	const UOpenSplat4DHLODBuilderSettings* Settings = Cast<UOpenSplat4DHLODBuilderSettings>(HLODBuilderSettings);
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+	UWorld* World = InHLODBuildContext.World;
+#else
 	UWorld* World = InHLODBuildContext.TargetWorld;
+#endif
 	if (!Settings || !World)
 	{
 		return {};

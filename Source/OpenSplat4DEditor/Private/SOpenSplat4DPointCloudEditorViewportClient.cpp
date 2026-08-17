@@ -9,6 +9,13 @@
 #include "EditorDragTools.h"
 #include "AdvancedPreviewScene.h"
 #include "SceneView.h"
+#include "Misc/EngineVersionComparison.h"
+
+// UE 5.7 compatibility: FViewMatrices::GetWorldToClip() was named GetViewProjectionMatrix().
+// UE 5.8+ has both names (old name is deprecated wrapper).
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+#define GetWorldToClip GetViewProjectionMatrix
+#endif
 
 /**
  * Frustum/box select drag tool: projects every point through the preview

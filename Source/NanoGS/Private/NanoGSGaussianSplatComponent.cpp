@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "GaussianSplatComponent.h"
+#include "NanoGSGaussianSplatComponent.h"
 #include "GaussianSplatAsset.h"
 #include "GaussianSplatSceneProxy.h"
 #include "GaussianSplatViewExtension.h"

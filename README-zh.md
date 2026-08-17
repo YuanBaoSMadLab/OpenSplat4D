@@ -21,9 +21,25 @@ CUDA 算子（`pointops2`、`simple-knn`、`diff-gaussian-rasterization`）属�
 
 ---
 
+> # ⛔ 关键警告 —— 使用前务必阅读
+>
+> > **请让对应的工程以及所需文件目录中全是英文，不包含任何中文或者其他语言。**
+>
+> ⚠️ **关键前提：路径与文件名必须全英文！**
+>
+> **工程路径、插件目录、工作目录（WorkDir）、COLMAP 可执行文件路径、Python 路径、图片目录等任何涉及插件读写的路径，都不得包含中文字符、日文假名、特殊符号或其他非 ASCII 字符。** 否则可能出现：资产注册表崩溃（`String is too long`）、COLMAP 命令行参数乱码（GBK 编码）、文件找不到、Python 脚本参数解析错误等一系列难以排查的问题。
+>
+> ✅ 正确：`C:/Projects/MyProject/Plugins/OpenSplat4D`、`D:/Colmap/colmap.exe`
+> ❌ 错误：`C:/项目/我的工程/插件/OpenSplat4D`、`D:/工具/colmap.exe`、`E:/OpenSplat4D_副本`
+
 ## 环境要求
 
 - **Unreal Engine 5.5+**（已在 5.8 验证）。
+- **必须启用 DirectX 12（DX11/SM5 不支持）**：NanoGS 渲染管线的簇剔除等 compute shader
+  使用的 UAV 数量（9 个）超过 SM5 特性级 11.0 的 8 个上限。若在 DX11 下启用插件，编辑器会在
+  编译 `ClusterCulling.usf` 时直接崩溃（`Shader is using too many UAVs: 9 (only 8 supported)`）。
+  请在 *Project Settings → Platforms → Windows → Default RHI* 中选择 **DirectX 12**，
+  并确保显卡 / 驱动支持 DirectX 12（Shader Model 6）。
 - 插件依赖 **Niagara** 插件，但**不需要**你手工制作 Niagara System——渲染由
   `UOpenSplat4DBillboardComponent` 完成。
 

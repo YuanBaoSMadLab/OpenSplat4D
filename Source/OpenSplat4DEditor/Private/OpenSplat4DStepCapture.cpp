@@ -99,6 +99,15 @@ void UOpenSplat4DStep_Capture::Activate()
 		}
 	}
 
+	// Apply unlit material-only mode: disable Lighting show flag directly on SCC.
+	// This overrides whatever ShowFlagSettings says, ensuring directional/sky lights
+	// have zero influence on the captured images.
+	if (SceneCapture && bUnlitMaterialOnly)
+	{
+		USceneCaptureComponent2D* SCC_Unlit = SceneCapture->GetCaptureComponent2D();
+		SCC_Unlit->ShowFlags.SetLighting(false);
+	}
+
 	if (World->WorldType == EWorldType::Editor && FSlateApplication::IsInitialized())
 	{
 		FLevelEditorModule& LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
@@ -170,23 +179,31 @@ void UOpenSplat4DStep_Capture::Capture()
 	TaskProgressPercent = 0.f;
 
 	// ============================================================================
-	// 深度归一化全局参考（跨帧一致）
+	// 深度归一化全局参考（自适应场景大小）
 	// ============================================================================
-	// 旧实现每帧独立做 min-max 归一化，朝阳光方向相机 Max≈天空距离，导致近处物体
-	// 深度被压缩到极小范围；下一帧背光相机 Max=物体距离，深度范围截然不同。
-	// 3DGS depth loss / COLMAP scale alignment 都假设 depth 跨帧尺度一致，
-	// 尺度漂移会把高斯点拉出真实表面形成 floaters。
-	//
-	// 修复：所有帧共享同一个全局最大距离参考（基于场景包围球），保证 device z →
-	// linear z 的反推公式在所有相机中得到一致的米制深度。
-	// 包围球直径 ×2 覆盖"相机在 bounds 外看对侧"的最远情况。
-	const float GlobalMaxDistCm = FMath::Max(CurrentBounds.SphereRadius * 2.0f, 100.0f);
-	// USceneCaptureComponent2D 没有公开的 NearClipPlane 成员（UE 用 PostProcessSettings
-	// 或相机默认近裁面）。这里用 UE 默认相机近裁面 10 cm 作为反推下限，足够稳定。
-	// 这个值只影响 device-z 反推的精度，不会显著影响最终 [0,1] 归一化结果。
-	constexpr float ZNear = 10.0f;                                 // cm
-	const float ZFar  = GlobalMaxDistCm;                           // 用全局参考距离作有效远裁
-	const float InvGlobalMax = 1.0f / GlobalMaxDistCm;
+	// 深度远裁面应根据实际场景尺寸自适应：
+	//   - 有包围盒：相机距离 + 物体半径 × 1.5（覆盖物体在相机对侧的最远点）
+	//   - 无包围盒：相机距离 × 3（保守估计，含足够的边界）
+	// 这样小物件（如头像）得到高精度深度，大场景得到足够覆盖范围。
+	const float CamDist = CameraActors.Num() > 0
+		? FVector::Dist(CurrentBounds.Origin, CameraActors[0]->GetActorLocation())
+		: 200.0f;
+	const float BoundRadius = CurrentBounds.SphereRadius;
+	float GlobalMaxDistCm;
+	if (BoundRadius > KINDA_SMALL_NUMBER)
+	{
+		GlobalMaxDistCm = FMath::Max(CamDist + BoundRadius * 1.5f, BoundRadius * 2.5f);
+	}
+	else
+	{
+		GlobalMaxDistCm = FMath::Max(CamDist * 3.0f, 100.0f);
+	}
+	UE_LOG(LogOpenSplat4DStep, Log, TEXT("Depth normalization: CamDist=%.1f BoundRadius=%.1f -> GlobalMaxDist=%.1f cm"),
+		CamDist, BoundRadius, GlobalMaxDistCm);
+
+	UE_LOG(LogOpenSplat4DStep, Log, TEXT("Depth mode: %s, denom=%.1f cm"),
+		bAutoDepthRange ? TEXT("auto") : TEXT("manual"),
+		bAutoDepthRange ? GlobalMaxDistCm : DepthMaxDistanceCm);
 
 	FString CamContent;
 	int32 CapturedCount = 0;
@@ -195,7 +212,7 @@ void UOpenSplat4DStep_Capture::Capture()
 		const FString ImgName = FString::Printf(TEXT("image%04d.png"), i + 1);
 		SCC->SetWorldTransform(CameraActors[i]->GetTransform());
 		FTextureRenderTargetResource* RTRes = RenderTarget->GameThread_GetRenderTargetResource();
-		FReadSurfaceDataFlags Flags(RCM_MinMax);
+		FReadSurfaceDataFlags ColorFlags(RCM_MinMax);
 		const FIntRect Region(0, 0, RenderTarget->SizeX, RenderTarget->SizeY);
 
 		if (bCaptureDepth)
@@ -204,45 +221,56 @@ void UOpenSplat4DStep_Capture::Capture()
 			SCC->CaptureSource = ESceneCaptureSource::SCS_SceneDepth;
 			SCC->CaptureScene();
 			TArray<FLinearColor> DepthColors;
-			RTRes->ReadLinearColorPixels(DepthColors, Flags, Region);
-			// device_z (C.R) ∈ (0, 1] 反推为 view-space linear depth (cm)，
-			// 再除以 GlobalMaxDistCm 归一化到 [0, 1] —— 跨帧一致。
-			// 反推公式：linear_z = (2*Zn*Zf) / (Zf+Zn - device_z*(Zf-Zn))
-			// 这是 OpenGL/D3D 通用透视投影反解（精度足够能用，UE 的 projection
-			// matrix 也是这个形式）。背景像素（C.R = MaxF16）置 0 表示"无效"。
-			const float Numer = 2.0f * ZNear * ZFar;
-			const float DenomBase = ZFar + ZNear;
-			const float DenomSlope = ZFar - ZNear;
+			// 与 teachers/GaussianSplattingForUnrealEngine 完全一致的深度管线：
+			// 使用 RCM_MinMax、FFloat16::MaxF16Float 阈值、SegmentationThreshold=0.5
+			RTRes->ReadLinearColorPixels(DepthColors, ColorFlags, Region);
+			float Min = FFloat16::MaxF16Float;
+			float Max = 0.f;
+			for (const FLinearColor& C : DepthColors)
+			{
+				Min = FMath::Min(Min, C.R);
+				if (C.R < FFloat16::MaxF16Float)
+				{
+					Max = FMath::Max(Max, C.R);
+				}
+			}
+			constexpr float SegmentationThreshold = 0.5f;
+			const float SegmentationRange = 1.0f - SegmentationThreshold;
+			int32 NumValid = 0, NumInvalid = 0;
 			for (FLinearColor& C : DepthColors)
 			{
-				if (C.R >= FFloat16::MaxF16Float || C.R <= 0.f)
+				if (C.R < FFloat16::MaxF16Float)
 				{
-					C.R = 0.f;  // 背景 / 天空 = 0（3DGS inverse depth 期望远=0）
+					C.R = 1.0f - SegmentationRange * (C.R - Min) / FMath::Max(Max - Min, 0.0001f);
+					NumValid++;
 				}
 				else
 				{
-					const float LinearZ = Numer / (DenomBase - C.R * DenomSlope);
-					C.R = FMath::Clamp(LinearZ * InvGlobalMax, 0.f, 1.f);
+					C.R = 0.f;
+					NumInvalid++;
 				}
 			}
-			FImageView DV(DepthColors.GetData(), RenderTarget->SizeX, RenderTarget->SizeY);
-			FImage DI; DI.Init(DV.SizeX, DV.SizeY, ERawImageFormat::G16, EGammaSpace::Linear);
-			FImageCore::CopyImage(DV, DI);
-			FImageUtils::SaveImageByExtension(*(DepthDir / ImgName), DI);
+			UE_LOG(LogOpenSplat4DStep, Log, TEXT("  depth %s: valid=%d invalid=%d, raw=[%.4f, %.4f]"),
+				*ImgName, NumValid, NumInvalid, Min, Max);
+			// FImageView 不指定格式（与 teachers 一致）
+			FImageView DepthView(DepthColors.GetData(), RenderTarget->SizeX, RenderTarget->SizeY);
+			FImage GrayDepth; GrayDepth.Init(DepthView.SizeX, DepthView.SizeY, ERawImageFormat::G16, EGammaSpace::Linear);
+			FImageCore::CopyImage(DepthView, GrayDepth);
+			FImageUtils::SaveImageByExtension(*(DepthDir / ImgName), GrayDepth);
 		}
 
 		TArray<FLinearColor> Raw, Final, Mask;
 		FakeEngineTick(World);
 		SCC->CaptureSource = ESceneCaptureSource::SCS_SceneColorHDR;
 		SCC->CaptureScene();
-		RTRes->ReadLinearColorPixels(Raw, Flags, Region);
+		RTRes->ReadLinearColorPixels(Raw, ColorFlags, Region);
 		Final = bCaptureFinalColor ? Raw : Raw;
 		if (bCaptureFinalColor)
 		{
 			FakeEngineTick(World);
 			SCC->CaptureSource = ESceneCaptureSource::SCS_FinalColorHDR;
 			SCC->CaptureScene();
-			RTRes->ReadLinearColorPixels(Final, Flags, Region);
+			RTRes->ReadLinearColorPixels(Final, ColorFlags, Region);
 		}
 		Mask.SetNum(Raw.Num());
 		// ============================================================================
@@ -434,6 +462,12 @@ void UOpenSplat4DStep_Capture::SCC_ApplyCamera()
 	{
 		USceneCaptureComponent2D* SCC = SceneCapture->GetCaptureComponent2D();
 		SCC->SetWorldTransform(CameraActors[CurrentCameraIndex]->GetActorTransform());
+
+		// Re-apply unlit material-only mode in case it was toggled after Activate().
+		if (bUnlitMaterialOnly)
+		{
+			SCC->ShowFlags.SetLighting(false);
+		}
 
 		// Force an immediate preview capture so the user sees what this camera
 		// sees without having to run the full capture pipeline first.
@@ -673,5 +707,22 @@ void UOpenSplat4DStep_Capture::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	else if (PN == GET_MEMBER_NAME_CHECKED(UOpenSplat4DStep_Capture, RenderTargetResolution) && RenderTarget)
 	{
 		RenderTarget->ResizeTarget(RenderTargetResolution, RenderTargetResolution);
+	}
+	else if (SceneCapture && PN == GET_MEMBER_NAME_CHECKED(UOpenSplat4DStep_Capture, bUnlitMaterialOnly))
+	{
+		// Toggle lighting show flag directly on the capture component.
+		// bUnlitMaterialOnly=true → Lighting off (pure material)
+		// bUnlitMaterialOnly=false → restore from ShowFlagSettings
+		USceneCaptureComponent2D* SCC = SceneCapture->GetCaptureComponent2D();
+		if (bUnlitMaterialOnly)
+		{
+			SCC->ShowFlags.SetLighting(false);
+		}
+		else
+		{
+			// Re-apply ShowFlagSettings to restore Lighting from config
+			SCC->SetShowFlagSettings(ShowFlagSettings);
+		}
+		SCC_ApplyCamera();
 	}
 }

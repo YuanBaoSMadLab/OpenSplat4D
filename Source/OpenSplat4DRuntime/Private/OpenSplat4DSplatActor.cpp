@@ -1,4 +1,5 @@
 #include "OpenSplat4DSplatActor.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Components/InstancedStaticMeshComponent.h"
@@ -71,7 +72,11 @@ static UMaterial* GetOrCreateSplatISCMaterial()
 	Mat->SetShadingModel(MSM_Unlit);
 	Mat->TwoSided = true;
 	Mat->bEnableResponsiveAA = false;
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+	{	bool bNeedsRecompile = false; Mat->SetMaterialUsage(bNeedsRecompile, MATUSAGE_InstancedStaticMeshes); }
+#else
 	Mat->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+#endif
 	Mat->bAutomaticallySetUsageInEditor = false;
 	Mat->bDisableDepthTest = false;
 	Mat->OpacityMaskClipValue = 0.5f;

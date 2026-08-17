@@ -14,8 +14,8 @@
 #include "OpenSplat4DEditorLibrary.h"
 #include "OpenSplat4DTypes.h"
 #include "GaussianSplatAsset.h"
-#include "GaussianSplatActor.h"
-#include "GaussianSplatComponent.h"
+#include "NanoGSGaussianSplatActor.h"
+#include "NanoGSGaussianSplatComponent.h"
 #include "PLYFileReader.h"
 #include "OpenSplat4DStep.generated.h"
 
@@ -230,6 +230,20 @@ public:
 	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", DisplayName = "捕获深度")
 	bool bCaptureDepth = true;
 
+	/** 仅输出材质（无光照）。开启后关闭所有灯光影响，只捕获 BaseColor / Emissive，
+	 *  排除平行光和天空光对捕捉对象的影响。适合需要纯材质纹理的训练场景。 */
+	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", DisplayName = "仅输出材质（无光照）")
+	bool bUnlitMaterialOnly = false;
+
+	/** 深度归一化模式：勾选=自动（根据相机距离和物体大小），不勾选=手动设置上限。 */
+	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", meta = (EditCondition = "bCaptureDepth", EditConditionHides), DisplayName = "自动深度范围")
+	bool bAutoDepthRange = true;
+
+	/** 手动深度上限（cm）。深度值超过此距离的像素为白色，越近越黑。
+	 *  仅在「自动深度范围」关闭时生效。默认 200 适合人体模型。 */
+	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", meta = (EditCondition = "bCaptureDepth && !bAutoDepthRange", EditConditionHides, ClampMin = "1", UIMin = "10", UIMax = "2000"), DisplayName = "深度上限 (cm)")
+	float DepthMaxDistanceCm = 200.0f;
+
 	UPROPERTY(EditAnywhere, Config, Category = "OpenSplat4D", DisplayName = "显示标志设置")
 	TArray<FEngineShowFlagsSetting> ShowFlagSettings;
 
@@ -430,11 +444,11 @@ public:
 	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = "训练", meta = (Tooltip = "重置不透明度的频率。"), DisplayName = "不透明度重置间隔")
 	int OpacityResetInterval = 3000;
 
-	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = "训练", meta = (UIMin = 0, ClampMin = 0, UIMax = 1), DisplayName = "深度 L1 权重初始值")
-	float Depth_L1_WeightInit = 1.0f;
+	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = "训练", meta = (UIMin = 0, ClampMin = 0, UIMax = 1, Tooltip = "深度监督损失的初始权重。设为 0 可完全禁用深度损失（默认关闭）。要使用深度损失，需在捕获步骤中勾选「捕获深度」以生成 depth 图像。"), DisplayName = "深度 L1 权重初始值")
+	float Depth_L1_WeightInit = 0.0f;
 
-	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = "训练", meta = (UIMin = 0, ClampMin = 0, UIMax = 1), DisplayName = "深度 L1 权重最终值")
-	float Depth_L1_WeightFinal = 0.01f;
+	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = "训练", meta = (UIMin = 0, ClampMin = 0, UIMax = 1, Tooltip = "深度监督损失的最终权重（从初始值退火到此值）。"), DisplayName = "深度 L1 权重最终值")
+	float Depth_L1_WeightFinal = 0.0f;
 
 	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = "训练", meta = (UIMin = 0, ClampMin = 0, UIMax = 1, Tooltip = "SSIM 对总损失的权重（0 到 1）。"), DisplayName = "SSIM 损失权重")
 	float LambdaDssim = 0.2f;

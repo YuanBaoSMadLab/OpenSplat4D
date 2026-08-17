@@ -2,6 +2,7 @@
 
 #include "NanoGSEditorModule.h"
 #include "GaussianSplatAssetTypeActions.h"
+#include "GaussianSplatTrainingDatasetTypeActions.h"
 #include "GaussianSplatThumbnailRenderer.h"
 #include "GaussianSplatAsset.h"
 #include "AssetToolsModule.h"
@@ -19,6 +20,11 @@ void FNanoGSEditorModule::StartupModule()
 	TSharedPtr<IAssetTypeActions> GaussianSplatAssetActions = MakeShareable(new FAssetTypeActions_GaussianSplatAsset());
 	AssetTools.RegisterAssetTypeActions(GaussianSplatAssetActions.ToSharedRef());
 	RegisteredAssetTypeActions.Add(GaussianSplatAssetActions);
+
+	// Register Training Dataset asset type
+	TSharedPtr<IAssetTypeActions> TrainingDatasetActions = MakeShareable(new FAssetTypeActions_GaussianSplatTrainingDataset());
+	AssetTools.RegisterAssetTypeActions(TrainingDatasetActions.ToSharedRef());
+	RegisteredAssetTypeActions.Add(TrainingDatasetActions);
 
 	// Register custom thumbnail renderer for Gaussian Splat assets
 	UThumbnailManager::Get().RegisterCustomRenderer(

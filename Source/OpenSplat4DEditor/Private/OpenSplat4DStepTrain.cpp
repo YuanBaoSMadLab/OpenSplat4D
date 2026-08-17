@@ -17,7 +17,7 @@
 #include "Misc/PackagePath.h"
 #include "GaussianSplatAsset.h"
 #include "OpenSplat4DPointCloudActor.h"
-#include "GaussianSplatComponent.h"
+#include "NanoGSGaussianSplatComponent.h"
 #include "PLYFileReader.h"
 
 // ----------------------------------------------------------------------------
