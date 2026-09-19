@@ -307,6 +307,9 @@ public:
 	/** Get number of SH bands stored in SHBuffer (0 = no SH data) */
 	int32 GetSHBands() const { return SHBands; }
 
+	/** Asset name of the underlying shared render data (for diagnostics) */
+	FString GetAssetName() const;
+
 private:
 	/** Create dummy white texture for fallback */
 	void CreateDummyWhiteTexture(FRHICommandListBase& RHICmdList);

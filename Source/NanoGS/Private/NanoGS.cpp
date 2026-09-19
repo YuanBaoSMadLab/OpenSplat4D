@@ -67,6 +67,17 @@ TAutoConsoleVariable<int32> CVarDebugForceLODLevel(
 	TEXT("Use with gs.ShowClusterBounds 2 to visualize which LOD level is being rendered."),
 	ECVF_RenderThreadSafe);
 
+/** Debug: log which render path is active (and per-proxy Nanite state) when it changes */
+TAutoConsoleVariable<int32> CVarDebugRenderPath(
+	TEXT("gs.DebugRenderPath"),
+	1,
+	TEXT("Log the active Gaussian splat render path (compaction/fallback/static-skip) and\n")
+	TEXT("per-proxy Nanite state to the output log whenever it changes. Use this to verify\n")
+	TEXT("whether Nanite LOD/compaction is actually being used.\n")
+	TEXT(" 0: Off\n")
+	TEXT(" 1: Log on state change (default)"),
+	ECVF_RenderThreadSafe);
+
 // Export for other modules
 int32 GGaussianSplatShowClusterBounds = 0;
 
@@ -330,6 +341,33 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 		if (CurrentDebugForceLODLevel >= 0)
 		{
 			MaxRenderBudget = 0;  // Unlimited — debug mode overrides budget
+		}
+
+		// DIAGNOSTIC (gs.DebugRenderPath): log the active render path + per-proxy
+		// Nanite state whenever it changes, so users can verify whether Nanite
+		// LOD/compaction is actually in effect.
+		if (CVarDebugRenderPath.GetValueOnRenderThread() != 0)
+		{
+			FString Diag = FString::Printf(TEXT("path=%s skip=%d budget=%u proxies=%d"),
+				bAllNanite ? TEXT("NaniteCompaction") : TEXT("Fallback"), bCanSkip ? 1 : 0,
+				MaxRenderBudget, VisibleProxies.Num());
+			for (const FProxyRenderInfo& Info : VisibleProxies)
+			{
+				FGaussianSplatGPUResources* GPUResources = Info.Proxy->GetGPUResources();
+				const FString AssetName = GPUResources ? GPUResources->GetAssetName() : FString();
+				Diag += FString::Printf(
+					TEXT(" | %s: splats=%d nanite=%d cluster=%d lodSplats=%d compaction=%d"),
+					*AssetName, Info.Proxy->GetSplatCount(),
+					GPUResources ? GPUResources->bEnableNanite : 0,
+					GPUResources ? GPUResources->bHasClusterData : 0,
+					GPUResources ? GPUResources->LODSplatCount : 0,
+					GPUResources ? GPUResources->bSupportsCompaction : 0);
+			}
+			if (Diag != LastRenderPathDiag)
+			{
+				LastRenderPathDiag = Diag;
+				UE_LOG(LogTemp, Log, TEXT("NanoGS render path: %s"), *Diag);
+			}
 		}
 
 		GraphBuilder.AddPass(

@@ -48,6 +48,9 @@ private:
 	/** Global GPU accumulator for one-draw-call path (render-thread owned) */
 	TUniquePtr<FGaussianGlobalAccumulator> GlobalAccumulator;
 
+	/** Render-thread only: last logged render-path diagnostic signature (gs.DebugRenderPath) */
+	FString LastRenderPathDiag;
+
 	/** Render callback */
 	void OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters& Parameters);
 };

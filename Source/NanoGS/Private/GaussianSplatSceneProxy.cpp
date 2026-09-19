@@ -28,6 +28,11 @@ FGaussianSplatGPUResources::~FGaussianSplatGPUResources()
 {
 }
 
+FString FGaussianSplatGPUResources::GetAssetName() const
+{
+	return SharedData.IsValid() ? SharedData->GetAssetName() : FString();
+}
+
 void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 {
 	if (!Asset || !Asset->IsValid())
