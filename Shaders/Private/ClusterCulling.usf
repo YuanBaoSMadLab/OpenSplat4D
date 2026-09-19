@@ -55,6 +55,7 @@ float3 CameraPosition;    // World space camera position
 float ScreenHeight;       // Projection scale factor: max(ProjMatrix[0][0], ProjMatrix[1][1]), FOV-based, resolution-independent
 float ErrorThreshold;     // Max acceptable projected error (resolution-independent)
 float LODBias;            // Bias to shift LOD selection (+/- to prefer coarser/finer)
+float MaxDrawDistance;    // Visibility range (world units). Clusters entirely beyond this are culled. 0 = unlimited.
 
 // Frustum planes in world space (extracted from ViewProjection matrix)
 // Each plane: float4(normal.xyz, distance)
@@ -193,6 +194,14 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	// Calculate distance from camera to cluster center
 	float distanceToCamera = length(worldCenter.xyz - CameraPosition);
+
+	// Distance culling: drop clusters entirely beyond the visibility range.
+	// Conservative: use the NEAREST sphere point so grazing clusters survive
+	// (per-splat fade still applies in CalcViewData).
+	if (MaxDrawDistance > 0.0 && (distanceToCamera - worldRadius) >= MaxDrawDistance)
+	{
+		return;
+	}
 
 	// Debug: Force specific LOD level
 	// DebugForceLODLevel: -1 = auto, 0 = leaf only, 1+ = force specific level

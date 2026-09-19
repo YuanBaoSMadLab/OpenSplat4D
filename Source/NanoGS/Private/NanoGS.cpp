@@ -486,7 +486,8 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 							// Cluster culling → fills ClusterVisibilityBitmap
 							FGaussianSplatRenderer::DispatchClusterCulling(
 								RHICmdList, *SceneView, GPUResources,
-								Info.LocalToWorld, Info.Proxy->GetLODErrorThreshold(), Info.bUseLODRendering);
+								Info.LocalToWorld, Info.Proxy->GetLODErrorThreshold(), Info.bUseLODRendering,
+								Info.Proxy->GetMaxDrawDistance());
 
 							// Compact → fills CompactedSplatIndices + VisibleSplatCountBuffer
 							FGaussianSplatRenderer::DispatchCompactSplats(
@@ -539,7 +540,9 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 								Info.Proxy->GetSplatScale(),
 								i,
 								RawAccumulator,
-								MaxRenderBudget);
+								MaxRenderBudget,
+								Info.Proxy->GetMaxDrawDistance(),
+								Info.Proxy->GetFadeOutStartDistance());
 						}
 
 						// --------------------------------------------------
@@ -622,7 +625,8 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 							{
 								FGaussianSplatRenderer::DispatchClusterCulling(
 									RHICmdList, *SceneView, GPUResources,
-									Info.LocalToWorld, Info.Proxy->GetLODErrorThreshold(), Info.bUseLODRendering);
+									Info.LocalToWorld, Info.Proxy->GetLODErrorThreshold(), Info.bUseLODRendering,
+									Info.Proxy->GetMaxDrawDistance());
 							}
 
 							// CalcViewData → writes to GlobalViewDataBuffer at GlobalBaseOffset
@@ -635,7 +639,9 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 								Info.Proxy->GetSplatScale(),
 								Info.bUseLODRendering,
 								Info.GlobalBaseOffset,
-								RawAccumulator);
+								RawAccumulator,
+								Info.Proxy->GetMaxDrawDistance(),
+								Info.Proxy->GetFadeOutStartDistance());
 						}
 
 						// --------------------------------------------------

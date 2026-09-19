@@ -149,7 +149,9 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	int32 SHOrder,
 	float OpacityScale,
 	float SplatScale,
-	bool bUseLODRendering)
+	bool bUseLODRendering,
+	float MaxDrawDistance,
+	float FadeOutStartDistance)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcViewData);
 
@@ -171,6 +173,9 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
+	// Distance-based visibility range (0 = unlimited)
+	Parameters.MaxDrawDistance = MaxDrawDistance;
+	Parameters.FadeOutStartDistance = FadeOutStartDistance;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
 	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
 
@@ -804,7 +809,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	int32 OriginalSplatCount,
 	int32 SHOrder,
 	float OpacityScale,
-	float SplatScale)
+	float SplatScale,
+	float MaxDrawDistance,
+	float FadeOutStartDistance)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcViewDataCompacted);
 
@@ -825,6 +832,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
+	// Distance-based visibility range (0 = unlimited)
+	Parameters.MaxDrawDistance = MaxDrawDistance;
+	Parameters.FadeOutStartDistance = FadeOutStartDistance;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
 	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
 
@@ -943,7 +953,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	float SplatScale,
 	bool bUseLODRendering,
 	uint32 GlobalBaseOffset,
-	FGaussianGlobalAccumulator* GlobalAccumulator)
+	FGaussianGlobalAccumulator* GlobalAccumulator,
+	float MaxDrawDistance,
+	float FadeOutStartDistance)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcViewDataGlobal);
 
@@ -964,6 +976,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
+	// Distance-based visibility range (0 = unlimited)
+	Parameters.MaxDrawDistance = MaxDrawDistance;
+	Parameters.FadeOutStartDistance = FadeOutStartDistance;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
 
 	// Write into the GLOBAL buffer at GlobalBaseOffset
@@ -1400,7 +1415,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	float SplatScale,
 	int32 ProxyIndex,
 	FGaussianGlobalAccumulator* GlobalAccumulator,
-	uint32 MaxRenderBudget)
+	uint32 MaxRenderBudget,
+	float MaxDrawDistance,
+	float FadeOutStartDistance)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcViewDataCompactedGlobal);
 
@@ -1421,6 +1438,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
+	// Distance-based visibility range (0 = unlimited)
+	Parameters.MaxDrawDistance = MaxDrawDistance;
+	Parameters.FadeOutStartDistance = FadeOutStartDistance;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
 
 	// Write into GLOBAL buffer
@@ -1815,7 +1835,8 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 	FGaussianSplatGPUResources* GPUResources,
 	const FMatrix& LocalToWorld,
 	float ErrorThreshold,
-	bool bUseLODRendering)
+	bool bUseLODRendering,
+	float MaxDrawDistance)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatClusterCulling);
 
@@ -1923,6 +1944,7 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		CullingParams.ScreenHeight = FMath::Max(ProjMatrix.M[0][0], ProjMatrix.M[1][1]);
 		CullingParams.ErrorThreshold = FMath::Max(GaussianSplatRenderConstants::MinCullingErrorThreshold, ErrorThreshold);
 		CullingParams.LODBias = 0.0f;         // No bias (can be made configurable)
+		CullingParams.MaxDrawDistance = MaxDrawDistance;
 		CullingParams.UseLODRendering = bUseLODRendering ? 1 : 0;
 		// Debug: Force specific LOD level (-1 = auto, 0 = leaf, 1+ = specific level)
 		CullingParams.DebugForceLODLevel = CVarDebugForceLODLevel.GetValueOnRenderThread();

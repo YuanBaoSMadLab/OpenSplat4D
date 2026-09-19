@@ -405,6 +405,8 @@ public:
 	float GetOpacityScale() const { return OpacityScale; }
 	float GetSplatScale() const { return SplatScale; }
 	float GetLODErrorThreshold() const { return LODErrorThreshold; }
+	float GetMaxDrawDistance() const { return MaxDrawDistance; }
+	float GetFadeOutStartDistance() const { return FadeOutStartDistance; }
 
 	/** Check if this proxy is safe to use for rendering.
 	 *  Returns false if proxy is being destroyed or has invalid resources.
@@ -449,6 +451,8 @@ private:
 	float OpacityScale = 1.0f;
 	float SplatScale = 1.0f;
 	float LODErrorThreshold = 0.03f;
+	float MaxDrawDistance = 0.0f;
+	float FadeOutStartDistance = 0.0f;
 	bool bEnableFrustumCulling = true;
 
 	/** Shadow parameters */

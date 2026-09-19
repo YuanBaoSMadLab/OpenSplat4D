@@ -699,6 +699,8 @@ FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent
 	, OpacityScale(InComponent->OpacityScale)
 	, SplatScale(InComponent->SplatScale)
 	, LODErrorThreshold(InComponent->LODErrorThreshold)
+	, MaxDrawDistance(InComponent->MaxDrawDistance)
+	, FadeOutStartDistance(InComponent->FadeOutStartDistance)
 	, bEnableFrustumCulling(InComponent->bEnableFrustumCulling)
 	, bCastShadow(InComponent->bCastShadow)
 	, ShadowProxyDetail(InComponent->ShadowProxyDetail)

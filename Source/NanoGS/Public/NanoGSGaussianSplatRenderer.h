@@ -34,7 +34,9 @@ public:
 		int32 SHOrder,
 		float OpacityScale,
 		float SplatScale,
-		bool bUseLODRendering = false
+		bool bUseLODRendering = false,
+		float MaxDrawDistance = 0.0f,
+		float FadeOutStartDistance = 0.0f
 	);
 
 	/**
@@ -89,7 +91,8 @@ public:
 		FGaussianSplatGPUResources* GPUResources,
 		const FMatrix& LocalToWorld,
 		float ErrorThreshold,
-		bool bUseLODRendering = false
+		bool bUseLODRendering = false,
+		float MaxDrawDistance = 0.0f
 	);
 
 	// NOTE: DispatchCalcLODViewDataGPUDriven and DispatchUpdateDrawArgs have been removed
@@ -133,7 +136,9 @@ public:
 		int32 OriginalSplatCount,
 		int32 SHOrder,
 		float OpacityScale,
-		float SplatScale
+		float SplatScale,
+		float MaxDrawDistance = 0.0f,
+		float FadeOutStartDistance = 0.0f
 	);
 
 	/**
@@ -164,7 +169,9 @@ public:
 		float SplatScale,
 		bool bUseLODRendering,
 		uint32 GlobalBaseOffset,
-		FGaussianGlobalAccumulator* GlobalAccumulator
+		FGaussianGlobalAccumulator* GlobalAccumulator,
+		float MaxDrawDistance = 0.0f,
+		float FadeOutStartDistance = 0.0f
 	);
 
 	/**
@@ -247,7 +254,9 @@ public:
 		float SplatScale,
 		int32 ProxyIndex,
 		FGaussianGlobalAccumulator* GlobalAccumulator,
-		uint32 MaxRenderBudget
+		uint32 MaxRenderBudget,
+		float MaxDrawDistance = 0.0f,
+		float FadeOutStartDistance = 0.0f
 	);
 
 	/**

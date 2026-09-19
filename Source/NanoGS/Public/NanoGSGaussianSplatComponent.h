@@ -141,8 +141,19 @@ public:
 	 *  Lower values = more conservative (keep detail longer, less LOD savings)
 	 *  Higher values = more aggressive (switch to LOD sooner, better performance)
 	 *  Uses projection-space units. ~0.03 ≈ 32 pixels at 1080p with 90° FOV. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|性能", meta = (ClampMin = "0.001", ClampMax = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|性能", meta = (ClampMin = "0.001", ClampMax = "1.0", DisplayName = "Nanite 精度（LOD 误差阈值）"))
 	float LODErrorThreshold = 0.03f;
+
+	/** 可视范围上限（厘米）。超过该距离的 splat 会被剔除（0 = 不限制）。
+	 *  大场景性能优化：配合 Nanite 精度使用，远处内容自动消失。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|性能", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "100000.0", DisplayName = "最大可视距离"))
+	float MaxDrawDistance = 0.0f;
+
+	/** 开始淡出的距离（厘米）。0 = 到达最大可视距离时直接硬切。
+	 *  设为小于最大可视距离的值可获得平滑的远处淡出效果（如 0.8 × 最大距离）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|性能",
+		meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "100000.0", DisplayName = "淡出起始距离", EditCondition = "MaxDrawDistance > 0"))
+	float FadeOutStartDistance = 0.0f;
 
 	/** 阴影投射 - 是否投射阴影到周围场景 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (DisplayName = "投射阴影"))

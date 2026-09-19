@@ -47,6 +47,12 @@ uint SHBufferCoeffs;   // Coefficients actually stored per splat in SHBuffer (ba
 uint UseSHRendering;   // 1 = use view-dependent SH evaluation, 0 = use pre-computed DC color
 float OpacityScale;
 float SplatScale;
+
+// Distance-based visibility range (user-configurable, world units / cm).
+// 0 = unlimited. Splats beyond MaxDrawDistance are culled; between
+// FadeOutStartDistance and MaxDrawDistance opacity fades out smoothly.
+float MaxDrawDistance;
+float FadeOutStartDistance;
 uint GlobalBaseOffset; // Offset into global ViewDataBuffer (for multi-proxy global accumulator, non-compaction path)
 
 // Global compaction path: read per-proxy base offset from GPU prefix-sum buffer
@@ -137,6 +143,22 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 
 	// Transform to view space
 	float4 viewPos = mul(worldPos, WorldToView);
+
+	// Distance culling / fade (visibility range). Computed before the x/y clamp
+	// below, which mutates viewPos.xy.
+	if (MaxDrawDistance > 0.0)
+	{
+		const float ViewDist = length(viewPos.xyz);
+		if (ViewDist >= MaxDrawDistance)
+		{
+			WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
+			return;
+		}
+		if (FadeOutStartDistance > 0.0 && ViewDist > FadeOutStartDistance)
+		{
+			opacity *= saturate((MaxDrawDistance - ViewDist) / max(MaxDrawDistance - FadeOutStartDistance, 1e-3));
+		}
+	}
 
 	// Clamp view position to prevent extreme projections at edge of view
 	float tanFovX = (ScreenSize.x * 0.5) / FocalLength.x;
