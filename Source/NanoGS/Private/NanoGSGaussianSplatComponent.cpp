@@ -11,10 +11,9 @@
 UGaussianSplatComponent::UGaussianSplatComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	// Gaussian splat rendering is fully GPU-driven via ViewExtension; the component
-	// itself has no per-frame CPU work. Disabling Tick saves a tick slot per proxy
-	// and avoids needless GameThread overhead for scenes with many splat actors.
-	PrimaryComponentTick.bCanEverTick = false;
+	// Tick is only enabled at runtime for 4D playback (Update4DTickEnabled);
+	// static 3D assets keep it disabled so there is no per-frame CPU cost.
+	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.bStartWithTickEnabled = false;
 
 	bUseAsOccluder = false;
@@ -62,6 +61,16 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 		bCollisionDirty = true;
 		RebuildCollision();
 	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, CurrentTime) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bPlaying) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bLooping) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, PlayRate) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bAutoPlay))
+	{
+		// 4D playback props: push time to the proxy live instead of rebuilding it
+		Update4DTickEnabled();
+		PushCurrentTimeToProxy();
+	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
@@ -76,12 +85,124 @@ void UGaussianSplatComponent::OnRegister()
 		bBoundsCached = false;
 		SubscribeToAssetChanges();
 	}
+
+	// 4D: start playback automatically if requested
+	if (Supports4DPlayback() && bAutoPlay && !bPlaying)
+	{
+		Play4D();
+	}
+	Update4DTickEnabled();
 }
 
 void UGaussianSplatComponent::OnUnregister()
 {
 	UnsubscribeFromAssetChanges();
 	Super::OnUnregister();
+}
+
+void UGaussianSplatComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	if (!bPlaying || !SplatAsset || !SplatAsset->Is4D())
+	{
+		return;
+	}
+
+	const float TimeStart = SplatAsset->TimeStart;
+	const float TimeEnd = SplatAsset->TimeEnd;
+	const float Duration = TimeEnd - TimeStart;
+	if (Duration <= 0.f)
+	{
+		return;
+	}
+
+	CurrentTime += DeltaTime * PlayRate;
+
+	if (bLooping)
+	{
+		// Wrap into [TimeStart, TimeEnd]
+		CurrentTime = TimeStart + FMath::Fmod(CurrentTime - TimeStart, Duration);
+		if (CurrentTime < TimeStart)
+		{
+			CurrentTime += Duration;
+		}
+	}
+	else
+	{
+		CurrentTime = FMath::Clamp(CurrentTime, TimeStart, TimeEnd);
+		if (CurrentTime >= TimeEnd)
+		{
+			bPlaying = false;
+			Update4DTickEnabled();
+		}
+	}
+
+	PushCurrentTimeToProxy();
+}
+
+// ---------------------------------------------------------------------------
+// 4D playback
+// ---------------------------------------------------------------------------
+
+bool UGaussianSplatComponent::Supports4DPlayback() const
+{
+	return SplatAsset && SplatAsset->Is4D() && (SplatAsset->TimeEnd > SplatAsset->TimeStart);
+}
+
+void UGaussianSplatComponent::Play4D()
+{
+	if (!Supports4DPlayback())
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplat: Play4D ignored -- asset has no 4D temporal data"));
+		return;
+	}
+	bPlaying = true;
+	Update4DTickEnabled();
+	PushCurrentTimeToProxy();
+}
+
+void UGaussianSplatComponent::Pause4D()
+{
+	bPlaying = false;
+	Update4DTickEnabled();
+}
+
+void UGaussianSplatComponent::Stop4D()
+{
+	bPlaying = false;
+	if (SplatAsset)
+	{
+		CurrentTime = SplatAsset->TimeStart;
+	}
+	Update4DTickEnabled();
+	PushCurrentTimeToProxy();
+}
+
+void UGaussianSplatComponent::SetPlaybackTime(float InTime)
+{
+	if (SplatAsset)
+	{
+		CurrentTime = FMath::Clamp(InTime, SplatAsset->TimeStart, SplatAsset->TimeEnd);
+	}
+	else
+	{
+		CurrentTime = InTime;
+	}
+	PushCurrentTimeToProxy();
+}
+
+void UGaussianSplatComponent::Update4DTickEnabled()
+{
+	SetComponentTickEnabled(bPlaying && Supports4DPlayback());
+}
+
+void UGaussianSplatComponent::PushCurrentTimeToProxy()
+{
+	if (FGaussianSplatSceneProxy* SplatProxy = static_cast<FGaussianSplatSceneProxy*>(SceneProxy))
+	{
+		SplatProxy->SetCurrentTime(CurrentTime);
+	}
 }
 
 FPrimitiveSceneProxy* UGaussianSplatComponent::CreateSceneProxy()

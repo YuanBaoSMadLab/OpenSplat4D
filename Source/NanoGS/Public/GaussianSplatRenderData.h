@@ -62,6 +62,13 @@ public:
 	FBufferRHIRef ClusterBuffer;
 	FShaderResourceViewRHIRef ClusterBufferSRV;
 
+	/** 4D temporal data buffer (16 bytes/splat; dummy 16B when asset is not 4D) */
+	FBufferRHIRef TemporalBuffer;
+	FShaderResourceViewRHIRef TemporalBufferSRV;
+
+	/** Whether the asset has 4D temporal data */
+	bool bIs4D = false;
+
 	/** Splat-to-cluster index buffer (static, loaded from asset) */
 	FBufferRHIRef SplatClusterIndexBuffer;
 	FShaderResourceViewRHIRef SplatClusterIndexBufferSRV;
@@ -83,6 +90,7 @@ private:
 
 	TArray<uint8> PackedSplatData;
 	TArray<uint8> SHData;
+	TArray<uint8> TemporalData;
 	TArray<FGaussianChunkInfo> CachedChunkData;
 	TArray<FGaussianGPUCluster> CachedClusterData;
 	TArray<uint32> CachedSplatClusterIndices;

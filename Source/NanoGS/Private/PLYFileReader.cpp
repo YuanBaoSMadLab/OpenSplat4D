@@ -4,9 +4,13 @@
 #include "Misc/FileHelper.h"
 #include "HAL/PlatformFileManager.h"
 
-bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatData>& OutSplats, FString& OutError, int32* OutSHBands)
+bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatData>& OutSplats, FString& OutError, int32* OutSHBands, bool* OutHasTemporal)
 {
 	OutSplats.Empty();
+	if (OutHasTemporal)
+	{
+		*OutHasTemporal = false;
+	}
 
 	// Open file with IFileHandle for streamed reading (supports files > 2 GB)
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
@@ -63,6 +67,21 @@ bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatD
 			*OutSHBands = 0;  // No f_rest data (DC only)
 		}
 		UE_LOG(LogTemp, Log, TEXT("PLYFileReader: Detected SH bands = %d"), *OutSHBands);
+	}
+
+	// Detect 4D temporal properties (spacetime gaussian format):
+	//   t       = anchor time of each gaussian
+	//   scale_t = log-encoded temporal sigma (sigma = exp(scale_t))
+	const bool bHasTemporalProps =
+		Header.PropertyOffsets.Contains(TEXT("t")) ||
+		Header.PropertyOffsets.Contains(TEXT("scale_t"));
+	if (OutHasTemporal)
+	{
+		*OutHasTemporal = bHasTemporalProps;
+	}
+	if (bHasTemporalProps)
+	{
+		UE_LOG(LogTemp, Log, TEXT("PLYFileReader: Detected 4D temporal properties (t/scale_t)"));
 	}
 
 	// Validate file size against expected data
@@ -445,6 +464,19 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 					// Zero out coefficients beyond what the file contains
 					Splat.SH[c] = FVector3f::ZeroVector;
 				}
+			}
+
+			// 4D temporal properties (optional; defaults keep splats static)
+			// NOTE: t stays in PLY time units (e.g. normalized [-1,1]); scale_t is
+			// log-encoded like spatial scales but is in TIME units (no meter conversion).
+			if (Header.PropertyOffsets.Contains(TEXT("t")))
+			{
+				Splat.AnchorTime = GetPropertyFloat(VertexData, Header, TEXT("t"), 0.0f);
+			}
+			if (Header.PropertyOffsets.Contains(TEXT("scale_t")))
+			{
+				const float ScaleT = GetPropertyFloat(VertexData, Header, TEXT("scale_t"), 23.0f);
+				Splat.TimeSigma = FMath::Exp(ScaleT); // ~1e10 default when absent
 			}
 
 			// Linearize the data

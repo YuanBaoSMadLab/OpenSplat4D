@@ -120,6 +120,12 @@ public:
 	FTextureRHIRef DummyWhiteTexture;
 	FShaderResourceViewRHIRef DummyWhiteTextureSRV;
 
+	/** Whether the asset has 4D temporal data */
+	bool bIs4D = false;
+
+	/** Current 4D playback time (asset time units). Written by render commands from the owning component. */
+	float CurrentTime = 0.f;
+
 	/** Get a valid ColorTexture SRV (returns dummy if real one not available) */
 	FShaderResourceViewRHIRef GetColorTextureSRVOrDummy() const
 	{
@@ -136,6 +142,10 @@ public:
 	/** Cluster data buffer (static, loaded from asset) */
 	FBufferRHIRef ClusterBuffer;
 	FShaderResourceViewRHIRef ClusterBufferSRV;
+
+	/** 4D temporal data buffer (static, from asset; dummy when not 4D) */
+	FBufferRHIRef TemporalBuffer;
+	FShaderResourceViewRHIRef TemporalBufferSRV;
 
 	/** Visible cluster indices buffer (written by culling shader) */
 	FBufferRHIRef VisibleClusterBuffer;
@@ -332,6 +342,7 @@ public:
 	float CachedOpacityScale = -1.0f;
 	float CachedSplatScale = -1.0f;
 	float CachedErrorThreshold = -1.0f;
+	float CachedCurrentTime = -1.0f;
 	int32 CachedDebugMode = -1;
 	int32 CachedDebugForceLODLevel = -1;
 	bool bHasCachedSortData = false;
@@ -366,6 +377,22 @@ public:
 
 	/** Get GPU resources (may return nullptr if pending destruction) */
 	FGaussianSplatGPUResources* GetGPUResources() const { return GPUResources; }
+
+	/** Update the 4D playback time. Game-thread safe (enqueues a render command).
+	 *  Render-thread FIFO ordering guarantees this runs before any subsequently
+	 *  enqueued proxy destruction command. */
+	void SetCurrentTime(float InTime)
+	{
+		FGaussianSplatGPUResources* Res = GPUResources;
+		ENQUEUE_RENDER_COMMAND(GaussianSplatSetCurrentTime)(
+			[Res, InTime](FRHICommandListImmediate&)
+			{
+				if (Res)
+				{
+					Res->CurrentTime = InTime;
+				}
+			});
+	}
 
 	/** Try to initialize color texture SRV if not already done */
 	void TryInitializeColorTexture(FRHICommandListBase& RHICmdList);

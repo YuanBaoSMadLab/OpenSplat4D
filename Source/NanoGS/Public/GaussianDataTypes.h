@@ -86,6 +86,16 @@ struct FGaussianSplatData
 	/** Spherical harmonic bands 1-3 (15 coefficients, each RGB) */
 	FVector3f SH[15];
 
+	// ---- 4D temporal fields (only meaningful when the source PLY has temporal
+	// properties). Not serialized in operator<< -- consumed at import time to
+	// build the asset's TemporalBulkData. ----
+
+	/** Anchor time t of this gaussian (PLY time units, e.g. normalized [-1,1]). */
+	float AnchorTime = 0.f;
+
+	/** Temporal standard deviation sigma = exp(scale_t). Huge value => always visible (static). */
+	float TimeSigma = 1e10f;
+
 	FGaussianSplatData()
 	{
 		for (int32 i = 0; i < 15; i++)

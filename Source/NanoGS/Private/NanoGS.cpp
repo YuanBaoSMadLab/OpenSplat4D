@@ -315,7 +315,8 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 					GPUResources->CachedSplatScale != Info.Proxy->GetSplatScale() ||
 					GPUResources->CachedErrorThreshold != ProxyErrorThreshold ||
 					GPUResources->CachedDebugMode != CurrentDebugMode ||
-					GPUResources->CachedDebugForceLODLevel != CurrentDebugForceLODLevel)
+					GPUResources->CachedDebugForceLODLevel != CurrentDebugForceLODLevel ||
+					(GPUResources->bIs4D && GPUResources->CachedCurrentTime != GPUResources->CurrentTime))
 				{
 					bCanSkip = false;
 					break;
@@ -568,6 +569,7 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 								GPUResources->CachedErrorThreshold = FMath::Max(0.1f, Info.Proxy->GetLODErrorThreshold());
 								GPUResources->CachedDebugMode = CurrentDebugMode;
 								GPUResources->CachedDebugForceLODLevel = CurrentDebugForceLODLevel;
+								GPUResources->CachedCurrentTime = GPUResources->CurrentTime;
 								GPUResources->bHasCachedSortData = true;
 							}
 							else
@@ -659,6 +661,7 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 							GPUResources->CachedErrorThreshold = FMath::Max(0.1f, Info.Proxy->GetLODErrorThreshold());
 							GPUResources->CachedDebugMode = CurrentDebugMode;
 							GPUResources->CachedDebugForceLODLevel = CurrentDebugForceLODLevel;
+							GPUResources->CachedCurrentTime = GPUResources->CurrentTime;
 							GPUResources->bHasCachedSortData = true;
 						}
 					}

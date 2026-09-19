@@ -518,6 +518,8 @@ FGaussianSplatData FGaussianClusterBuilder::MergeLODSplats(
 	FVector3f WeightedPosition = FVector3f::ZeroVector;
 	FVector3f WeightedSHDC = FVector3f::ZeroVector;
 	FVector3f AvgScale = FVector3f::ZeroVector;
+	float WeightedAnchorTime = 0.f;
+	float WeightedSigmaSq = 0.f; // variance-weighted temporal sigma (4D)
 
 	for (int32 i = 0; i < Count; i++)
 	{
@@ -527,10 +529,14 @@ FGaussianSplatData FGaussianClusterBuilder::MergeLODSplats(
 		WeightedPosition += Splat.Position * Weight;
 		WeightedSHDC += Splat.SH_DC * Weight;
 		AvgScale += Splat.Scale * Weight;
+		WeightedAnchorTime += Splat.AnchorTime * Weight;
+		WeightedSigmaSq += (Splat.TimeSigma * Splat.TimeSigma) * Weight;
 	}
 
 	Result.Position = WeightedPosition;
 	Result.SH_DC = WeightedSHDC;
+	Result.AnchorTime = WeightedAnchorTime;
+	Result.TimeSigma = FMath::Sqrt(FMath::Max(WeightedSigmaSq, 1e-12f));
 
 	Result.Scale = AvgScale;
 	Result.Rotation = FQuat4f::Identity;

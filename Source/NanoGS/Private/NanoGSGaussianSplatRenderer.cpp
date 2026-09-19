@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NanoGSGaussianSplatRenderer.h"
 #include "GaussianSplatShaders.h"
@@ -166,6 +166,11 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
 	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
+	// 4D temporal marginalization (no-op for static assets: UseTemporal=0)
+	Parameters.TemporalBuffer = GPUResources->TemporalBufferSRV;
+	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
+	Parameters.CurrentTime = GPUResources->CurrentTime;
+	Parameters.TimeWeightMinAlpha = 0.003f;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
 	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
 
@@ -815,6 +820,11 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
 	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
+	// 4D temporal marginalization (no-op for static assets: UseTemporal=0)
+	Parameters.TemporalBuffer = GPUResources->TemporalBufferSRV;
+	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
+	Parameters.CurrentTime = GPUResources->CurrentTime;
+	Parameters.TimeWeightMinAlpha = 0.003f;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
 	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
 
@@ -949,6 +959,11 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
 	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
+	// 4D temporal marginalization (no-op for static assets: UseTemporal=0)
+	Parameters.TemporalBuffer = GPUResources->TemporalBufferSRV;
+	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
+	Parameters.CurrentTime = GPUResources->CurrentTime;
+	Parameters.TimeWeightMinAlpha = 0.003f;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
 
 	// Write into the GLOBAL buffer at GlobalBaseOffset
@@ -1401,6 +1416,11 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
 	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
+	// 4D temporal marginalization (no-op for static assets: UseTemporal=0)
+	Parameters.TemporalBuffer = GPUResources->TemporalBufferSRV;
+	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
+	Parameters.CurrentTime = GPUResources->CurrentTime;
+	Parameters.TimeWeightMinAlpha = 0.003f;
 	Parameters.SHBuffer = GPUResources->SHBufferSRV;
 
 	// Write into GLOBAL buffer

@@ -22,6 +22,11 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_SRV(ByteAddressBuffer, PackedSplatBuffer)  // 16 bytes/splat packed data
 		SHADER_PARAMETER_SRV(ByteAddressBuffer, SHBuffer)           // SH data (currently unused)
+		SHADER_PARAMETER_SRV(ByteAddressBuffer, TemporalBuffer)     // 4D temporal data (16 bytes/splat)
+		// 4D temporal marginalization
+		SHADER_PARAMETER(uint32, UseTemporal)
+		SHADER_PARAMETER(float, CurrentTime)
+		SHADER_PARAMETER(float, TimeWeightMinAlpha)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<FGaussianSplatViewData>, ViewDataBuffer)
 		// Cluster visibility integration (UNIFIED APPROACH)
 		// SplatClusterIndexBuffer maps ALL splats to their cluster (original->leaf, LOD->parent)

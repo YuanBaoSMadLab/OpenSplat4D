@@ -40,7 +40,7 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 	Ar << Magic;
 	Ar << Version;
 
-	if (Ar.IsLoading() && (Magic != GAUSSIAN_SPLAT_ASSET_MAGIC || Version != GAUSSIAN_SPLAT_ASSET_VERSION))
+	if (Ar.IsLoading() && (Magic != GAUSSIAN_SPLAT_ASSET_MAGIC || Version > GAUSSIAN_SPLAT_ASSET_VERSION || Version < 5))
 	{
 		UE_LOG(LogTemp, Error, TEXT("GaussianSplatAsset: Incompatible asset format (Magic=0x%08X, Version=%d). Please reimport the asset."), Magic, Version);
 		// Explicitly reset state so the asset fails IsValid() cleanly instead of
@@ -74,6 +74,21 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 	Ar << bEnableNanite;
 	Ar << OriginalSplatCount;
 	Ar << ClusterHierarchy;
+
+	// 4D temporal fields (Version 6+; v5 assets keep defaults bIs4D=false)
+	if (Version >= 6)
+	{
+		Ar << bIs4D;
+		Ar << TimeStart;
+		Ar << TimeEnd;
+		TemporalBulkData.Serialize(Ar, this);
+	}
+	else if (Ar.IsLoading())
+	{
+		bIs4D = false;
+		TimeStart = 0.f;
+		TimeEnd = 0.f;
+	}
 }
 
 void UGaussianSplatAsset::PostLoad()
@@ -121,6 +136,7 @@ int64 UGaussianSplatAsset::GetMemoryUsage() const
 	TotalBytes += SHBulkData.GetBulkDataSize();
 	TotalBytes += ChunkData.Num() * sizeof(FGaussianChunkInfo);
 	TotalBytes += ColorTextureBulkData.GetBulkDataSize();
+	TotalBytes += TemporalBulkData.GetBulkDataSize();
 
 	if (ColorTexture)
 	{
@@ -166,6 +182,54 @@ void UGaussianSplatAsset::InitializeFromSplatData(const TArray<FGaussianSplatDat
 	CreateColorTextureData(InSplats);  // Store raw data for serialization
 	CreateColorTextureFromData();       // Create the runtime texture
 	CompressSH(InSplats);
+
+	// ---- 4D temporal data: build if any splat carries temporal info ----
+	{
+		bool bHasTemporal = false;
+		float MinT = FLT_MAX, MaxT = -FLT_MAX;
+		for (const FGaussianSplatData& Splat : InSplats)
+		{
+			// A gaussian is temporal if its sigma is finite (well below the
+			// "static" sentinel 1e10) -- i.e. the PLY had t/scale_t properties.
+			if (Splat.TimeSigma < 1e9f)
+			{
+				bHasTemporal = true;
+				MinT = FMath::Min(MinT, Splat.AnchorTime);
+				MaxT = FMath::Max(MaxT, Splat.AnchorTime);
+			}
+		}
+
+		if (bHasTemporal)
+		{
+			bIs4D = true;
+			TimeStart = MinT;
+			TimeEnd = MaxT;
+
+			TArray<uint8> Temporal;
+			Temporal.SetNumUninitialized(SplatCount * TemporalStride);
+			uint32* Ptr = reinterpret_cast<uint32*>(Temporal.GetData());
+			for (int32 i = 0; i < SplatCount; i++)
+			{
+				const FGaussianSplatData& Splat = InSplats[i];
+				Ptr[i * 4 + 0] = *reinterpret_cast<const uint32*>(&Splat.AnchorTime);
+				Ptr[i * 4 + 1] = *reinterpret_cast<const uint32*>(&Splat.TimeSigma);
+				Ptr[i * 4 + 2] = 0; // reserved (future: velocity XY, half2)
+				Ptr[i * 4 + 3] = 0; // reserved (future: velocity Z + flag, half2)
+			}
+
+			TemporalBulkData.Lock(LOCK_READ_WRITE);
+			void* Dest = TemporalBulkData.Realloc(Temporal.Num());
+			FMemory::Memcpy(Dest, Temporal.GetData(), Temporal.Num());
+			TemporalBulkData.Unlock();
+
+			UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset: 4D temporal data built (%d splats, time range [%.4f, %.4f])"),
+				SplatCount, TimeStart, TimeEnd);
+		}
+		else
+		{
+			bIs4D = false;
+		}
+	}
 
 #if WITH_EDITOR
 	GenerateThumbnail(InSplats);
@@ -654,6 +718,18 @@ const void* UGaussianSplatAsset::LockColorTextureDataReadOnly(int64* OutSize) co
 	const int64 DataSize = ColorTextureBulkData.GetBulkDataSize();
 	if (OutSize) *OutSize = DataSize;
 	return (DataSize > 0) ? ColorTextureBulkData.LockReadOnly() : nullptr;
+}
+
+const void* UGaussianSplatAsset::LockTemporalDataReadOnly(int64* OutSize) const
+{
+	const int64 DataSize = TemporalBulkData.GetBulkDataSize();
+	if (OutSize) *OutSize = DataSize;
+	return (DataSize > 0) ? TemporalBulkData.LockReadOnly() : nullptr;
+}
+
+void UGaussianSplatAsset::UnlockTemporalData() const
+{
+	if (TemporalBulkData.GetBulkDataSize() > 0) TemporalBulkData.Unlock();
 }
 
 void UGaussianSplatAsset::UnlockPositionData() const

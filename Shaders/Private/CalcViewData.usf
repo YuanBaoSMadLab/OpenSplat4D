@@ -7,6 +7,12 @@
 // Shader parameters
 ByteAddressBuffer PackedSplatBuffer;  // 16 bytes/splat packed data
 ByteAddressBuffer SHBuffer;           // SH data (currently unused)
+ByteAddressBuffer TemporalBuffer;     // 4D temporal data (16 bytes/splat: AnchorTime f32 | Sigma f32 | reserved 8B)
+
+// 4D temporal marginalization: opacity *= w(t) = exp(-0.5 * (T - t)^2 / sigma^2)
+uint UseTemporal;         // 1 = asset has temporal data
+float CurrentTime;        // Current playback time (asset time units)
+float TimeWeightMinAlpha; // Early-out threshold: splats with w below this are culled
 RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer; //pass calculated result to ViewDataBuffer
 
 // Cluster visibility integration (UNIFIED APPROACH)
@@ -92,6 +98,27 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	float3 scale = splat.Scale * SplatScale;
 	float4 colorOpacity = splat.ColorOpacity;
 	float opacity = colorOpacity.a * OpacityScale;
+
+	// 4D temporal marginalization (spacetime gaussians):
+	// opacity is weighted by w(t) = exp(-0.5 * (T - t)^2 / sigma^2), so a
+	// gaussian fades in/out around its anchor time. Static splats carry a huge
+	// sigma so w ~= 1 everywhere.
+	if (UseTemporal)
+	{
+		uint TBase = splatIndex * 16;
+		const float AnchorTime = asfloat(TemporalBuffer.Load(TBase));
+		const float TimeSigma  = max(asfloat(TemporalBuffer.Load(TBase + 4)), 1e-6);
+
+		const float Dt = CurrentTime - AnchorTime;
+		const float TimeWeight = exp(-0.5 * Dt * Dt / (TimeSigma * TimeSigma));
+
+		if (TimeWeight < TimeWeightMinAlpha)
+		{
+			WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
+			return;
+		}
+		opacity *= TimeWeight;
+	}
 
 	// Transform to world space
 	float4 worldPos = mul(float4(localPos, 1.0), LocalToWorld);

@@ -88,6 +88,9 @@ void FGaussianSplatGPUResources::InitRHI(FRHICommandListBase& RHICmdList)
 	ClusterBufferSRV = SharedData->ClusterBufferSRV;
 	SplatClusterIndexBuffer = SharedData->SplatClusterIndexBuffer;
 	SplatClusterIndexBufferSRV = SharedData->SplatClusterIndexBufferSRV;
+	TemporalBuffer = SharedData->TemporalBuffer;
+	TemporalBufferSRV = SharedData->TemporalBufferSRV;
+	bIs4D = SharedData->bIs4D;
 
 	// TotalSplatCount is needed by per-instance buffer sizing
 	TotalSplatCount = SplatCount;
@@ -120,6 +123,8 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	ClusterBufferSRV.SafeRelease();
 	SplatClusterIndexBuffer.SafeRelease();
 	SplatClusterIndexBufferSRV.SafeRelease();
+	TemporalBuffer.SafeRelease();
+	TemporalBufferSRV.SafeRelease();
 
 	// Release legacy buffers
 	PositionBuffer.SafeRelease();

@@ -31,6 +31,32 @@ void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset)
 	AssetName = Asset->GetName();
 	SplatCount = Asset->GetSplatCount();
 	PositionFormat = Asset->PositionFormat;
+	bIs4D = Asset->Is4D();
+
+	// --- Pack 4D temporal data (16 bytes/splat) ---
+	if (bIs4D)
+	{
+		int64 TemporalSize = 0;
+		const uint8* RawTemporalData = static_cast<const uint8*>(Asset->LockTemporalDataReadOnly(&TemporalSize));
+		ON_SCOPE_EXIT
+		{
+			Asset->UnlockTemporalData();
+		};
+
+		if (RawTemporalData && TemporalSize >= static_cast<int64>(SplatCount) * UGaussianSplatAsset::TemporalStride)
+		{
+			TemporalData.SetNumUninitialized(SplatCount * UGaussianSplatAsset::TemporalStride);
+			FMemory::Memcpy(TemporalData.GetData(), RawTemporalData, TemporalData.Num());
+		}
+		else
+		{
+			// Temporal data missing/short (shouldn't happen) -- fall back to static
+			UE_LOG(LogTemp, Warning, TEXT("GaussianSplatRenderData: asset '%s' marked 4D but temporal data missing; treating as static"),
+				*AssetName);
+			TemporalData.Reset();
+			bIs4D = false;
+		}
+	}
 
 	// --- Pack splat data (16 bytes/splat) ---
 	// PERF: read directly from asset bulk data (locked in place) instead of
@@ -236,6 +262,39 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 		SharedBufferCount++;
 	}
 
+	// --- 4D temporal buffer (always create at least a dummy for shader binding) ---
+	{
+		uint32 TemporalDataSize = TemporalData.Num();
+		if (TemporalDataSize == 0)
+		{
+			TemporalDataSize = 16; // dummy single record
+		}
+
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianTemporalBuffer"),
+			TemporalDataSize,
+			0,
+			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
+			.SetInitialState(ERHIAccess::SRVMask);
+		TemporalBuffer = RHICmdList.CreateBuffer(Desc);
+
+		void* Data = RHICmdList.LockBuffer(TemporalBuffer, 0, TemporalDataSize, RLM_WriteOnly);
+		if (TemporalData.Num() > 0)
+		{
+			FMemory::Memcpy(Data, TemporalData.GetData(), TemporalData.Num());
+		}
+		else
+		{
+			FMemory::Memzero(Data, TemporalDataSize);
+		}
+		RHICmdList.UnlockBuffer(TemporalBuffer);
+
+		TemporalBufferSRV = RHICmdList.CreateShaderResourceView(
+			TemporalBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Raw));
+		SharedBufferCount++;
+	}
+
 	// --- Chunk buffer (always create at least a dummy for shader binding) ---
 	{
 		uint32 ChunkCount = CachedChunkData.Num();
@@ -347,6 +406,7 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 	// Free CPU-side cached data after GPU upload
 	PackedSplatData.Empty();
 	SHData.Empty();
+	TemporalData.Empty();
 	CachedChunkData.Empty();
 	CachedClusterData.Empty();
 	CachedSplatClusterIndices.Empty();
@@ -368,6 +428,8 @@ void FGaussianSplatRenderData::ReleaseGPUBuffers()
 	IndexBuffer.SafeRelease();
 	ClusterBuffer.SafeRelease();
 	ClusterBufferSRV.SafeRelease();
+	TemporalBuffer.SafeRelease();
+	TemporalBufferSRV.SafeRelease();
 	SplatClusterIndexBuffer.SafeRelease();
 	SplatClusterIndexBufferSRV.SafeRelease();
 	bGPUBuffersCreated = false;

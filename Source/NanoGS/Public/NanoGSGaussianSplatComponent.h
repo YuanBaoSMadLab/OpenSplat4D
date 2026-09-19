@@ -62,9 +62,7 @@ public:
 	//~ Begin UActorComponent Interface
 	virtual void OnRegister() override;
 	virtual void OnUnregister() override;
-	// TickComponent intentionally not overridden: rendering is GPU-driven via
-	// ViewExtension, so the component has no per-frame CPU work. Tick is
-	// disabled in the constructor (PrimaryComponentTick.bCanEverTick = false).
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	//~ End UActorComponent Interface
 
 	//~ Begin UPrimitiveComponent Interface
@@ -174,6 +172,53 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (ClampMin = "1.0", ClampMax = "100.0", EditCondition = "CollisionMethod == EGaussianCollisionMethod::Voxel"))
 	float VoxelSize = 10.0f;
 
+	// ------------------------------------------------------------------
+	// 4D playback (only active when the asset has temporal data: Is4D()).
+	// Advances CurrentTime on Tick and pushes it to the render proxy,
+	// where CalcViewData applies temporal marginalization w(t).
+	// For static 3D assets all of this is inert (tick disabled).
+	// ------------------------------------------------------------------
+
+	/** Automatically start playback when a 4D asset is registered */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|4D 播放", meta = (DisplayName = "自动播放"))
+	bool bAutoPlay = true;
+
+	/** Loop playback between the asset's TimeStart and TimeEnd */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|4D 播放", meta = (DisplayName = "循环播放"))
+	bool bLooping = true;
+
+	/** Playback speed in asset time units per second (1.0 = real time of the trained time axis) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|4D 播放", meta = (ClampMin = "0.0", ClampMax = "10.0", DisplayName = "播放速度"))
+	float PlayRate = 1.0f;
+
+	/** Current playback time in asset time units (read-only; use SetPlaybackTime to scrub) */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "高斯泼溅|4D 播放", meta = (DisplayName = "当前时间"))
+	float CurrentTime = 0.f;
+
+	/** Whether playback is currently advancing */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "高斯泼溅|4D 播放", meta = (DisplayName = "播放中"))
+	bool bPlaying = false;
+
+	/** Start playback from the current time */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|4D 播放", meta = (DisplayName = "播放"))
+	void Play4D();
+
+	/** Pause playback (keeps the current time) */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|4D 播放", meta = (DisplayName = "暂停"))
+	void Pause4D();
+
+	/** Stop playback and reset the time to the asset's TimeStart */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|4D 播放", meta = (DisplayName = "停止"))
+	void Stop4D();
+
+	/** Scrub to a specific time (asset time units, clamped to the asset's time range) */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|4D 播放", meta = (DisplayName = "设置播放时间"))
+	void SetPlaybackTime(float InTime);
+
+	/** Whether this component's asset supports 4D playback */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|4D 播放", meta = (DisplayName = "支持 4D 播放"))
+	bool Supports4DPlayback() const;
+
 protected:
 	/** Called when the asset changes */
 	void OnAssetChanged();
@@ -203,6 +248,12 @@ protected:
 	bool GenerateVoxelCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
 
 private:
+	/** Enable/disable component tick based on 4D asset + playing state */
+	void Update4DTickEnabled();
+
+	/** Push CurrentTime to the scene proxy (no-op if no proxy) */
+	void PushCurrentTimeToProxy();
+
 	/** Cached bounds */
 	mutable FBoxSphereBounds CachedBounds;
 	mutable bool bBoundsCached = false;

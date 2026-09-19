@@ -43,9 +43,10 @@ public:
 	 * @param OutSplats Output array of splat data
 	 * @param OutError Error message if reading failed
 	 * @param OutSHBands Optional output for detected SH band count (0-3)
+	 * @param OutHasTemporal Optional output: true if the PLY has 4D temporal properties (t / scale_t)
 	 * @return True if successful
 	 */
-	static bool ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatData>& OutSplats, FString& OutError, int32* OutSHBands = nullptr);
+	static bool ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatData>& OutSplats, FString& OutError, int32* OutSHBands = nullptr, bool* OutHasTemporal = nullptr);
 
 	/**
 	 * Check if a file is a valid PLY file

@@ -34,13 +34,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D")
 	EOpenSplat4DMode Mode = EOpenSplat4DMode::Static3D;
 
-	/** 4DGS time axis start (matches the trained model's time_duration[0]). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D")
-	float TimeStart = -0.5f;
-
-	/** 4DGS time axis end (matches the trained model's time_duration[1]). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D")
-	float TimeEnd = 0.5f;
+	/** 4DGS time axis (TimeStart/TimeEnd) is inherited from UGaussianSplatAsset (v6 4D support). */
 
 	/** LOD feature granularity used by CalcFeatureCurve. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OpenSplat4D")

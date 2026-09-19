@@ -19,7 +19,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnGaussianSplatAssetChanged, UGaussianSplat
 
 // Serialization magic/version for format identification
 #define GAUSSIAN_SPLAT_ASSET_MAGIC   0x47535056  // "GSPV"
-#define GAUSSIAN_SPLAT_ASSET_VERSION 5  // SH buffer now includes DC coefficient for view-dependent rendering
+#define GAUSSIAN_SPLAT_ASSET_VERSION 6  // v6: optional 4D temporal data (bIs4D/TimeStart/TimeEnd/TemporalBulkData). v5 assets load unchanged.
 
 /**
  * Asset containing Gaussian Splatting data loaded from PLY files
@@ -161,6 +161,39 @@ public:
 
 	/** Raw color texture pixel data (stored as bulk data for fast loading) */
 	FByteBulkData ColorTextureBulkData;
+
+	// ------------------------------------------------------------------
+	// 4D temporal data (only populated when bIs4D is true)
+	// 16 bytes per splat: [AnchorTime f32 | TimeSigma f32 | reserved 8B]
+	// Covers ALL splats (original + LOD). LOD splats get default
+	// (AnchorTime=0, Sigma=1e10) => always visible.
+	// ------------------------------------------------------------------
+
+	/** Whether this asset has 4D (spacetime) temporal data */
+	UPROPERTY(VisibleAnywhere, Category = "4D", meta = (DisplayName = "4D 时序数据"))
+	bool bIs4D = false;
+
+	/** 4D time axis start (PLY time units, e.g. normalized [-1,1]) */
+	UPROPERTY(VisibleAnywhere, Category = "4D", meta = (DisplayName = "时间轴起点"))
+	float TimeStart = 0.f;
+
+	/** 4D time axis end (PLY time units) */
+	UPROPERTY(VisibleAnywhere, Category = "4D", meta = (DisplayName = "时间轴终点"))
+	float TimeEnd = 0.f;
+
+	/** Per-splat temporal data (16 bytes/splat, only when bIs4D) */
+	FByteBulkData TemporalBulkData;
+
+	/** Temporal record stride in bytes */
+	static constexpr int32 TemporalStride = 16;
+
+	/** Whether this asset has temporal data */
+	UFUNCTION(BlueprintCallable, Category = "4D")
+	bool Is4D() const { return bIs4D; }
+
+	/** Lock temporal bulk data in place. Returns nullptr if empty. */
+	const void* LockTemporalDataReadOnly(int64* OutSize = nullptr) const;
+	void UnlockTemporalData() const;
 
 	/** Color texture width */
 	UPROPERTY()

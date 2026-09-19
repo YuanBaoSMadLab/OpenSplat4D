@@ -294,12 +294,12 @@ void UOpenSplat4DPointCloud::SampleAtTime(float Time, TArray<FOpenSplat4DPoint>&
 	OutPoints.Reset();
 	OutPoints.Reserve(Points.Num());
 
-	const bool bIs4D = (Mode == EOpenSplat4DMode::Dynamic4D);
+	const bool bSample4D = (Mode == EOpenSplat4DMode::Dynamic4D);
 	for (const FOpenSplat4DPoint& Src : Points)
 	{
 		FOpenSplat4DPoint Dst = Src;
 
-		if (bIs4D)
+		if (bSample4D)
 		{
 			const float Weight = GetTimeWeight(Src.AnchorTime, Src.TimeVariance, Time);
 			if (Weight < InMinWeight)
