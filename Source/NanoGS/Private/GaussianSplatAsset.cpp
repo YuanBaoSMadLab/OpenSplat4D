@@ -124,6 +124,30 @@ void UGaussianSplatAsset::PostLoad()
 void UGaussianSplatAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// The Details-panel checkbox must be a REAL toggle: enabling builds the
+	// cluster hierarchy (same as the context-menu action); disabling clears it.
+	// On build failure the flag is reverted so the checkbox never lies.
+	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, bEnableNanite))
+	{
+		if (bEnableNanite)
+		{
+			if (!ClusterHierarchy.IsValid() && SplatCount > 0)
+			{
+				if (!BuildNaniteClusterHierarchy())
+				{
+					bEnableNanite = false;
+					UE_LOG(LogTemp, Warning,
+						TEXT("Enable Nanite failed for asset %s: cannot build cluster hierarchy (missing or invalid source PLY). Flag reverted."),
+						*GetName());
+				}
+			}
+		}
+		else if (ClusterHierarchy.IsValid())
+		{
+			ClearNaniteClusterHierarchy();
+		}
+	}
 }
 #endif
 

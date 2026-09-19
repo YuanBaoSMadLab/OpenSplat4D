@@ -74,24 +74,26 @@ void FAssetTypeActions_GaussianSplatAsset::GetActions(const TArray<UObject*>& In
 		{
 			// Determine current state
 			bool bAllEnabled = AreAllNaniteEnabled(GaussianSplatAssets);
-			bool bAllDisabled = AreAllNaniteDisabled(GaussianSplatAssets);
 
-			// Nanite checkbox - checked if enabled
+			// Nanite checkbox - checked if enabled. This is the ONLY Nanite
+			// entry: toggling it on builds the cluster hierarchy (via
+			// ExecuteEnableNanite), toggling it off clears it. Previously the
+			// checkbox only flipped the flag while a separate "(N assets)"
+			// entry did the real build -- two confusing items that users
+			// could mix up, now merged into one truthful toggle.
 			SubMenuBuilder.AddMenuEntry(
 				LOCTEXT("NaniteEnabledLabel", "启用 Nanite"),
-				LOCTEXT("NaniteEnabledTooltip", "在选中的 OpenSplat 资产上切换 Nanite 支持"),
+				LOCTEXT("NaniteEnabledTooltip", "启用：构建 Nanite 簇层次结构（LOD + 裁剪）；取消：清除层次结构并禁用"),
 				FSlateIcon(),
 				FUIAction(
 					FExecuteAction::CreateLambda([this, GaussianSplatAssets, bAllEnabled]()
 					{
 						if (bAllEnabled)
 						{
-							// All enabled -> disable all
 							ExecuteDisableNanite(GaussianSplatAssets);
 						}
 						else
 						{
-							// Mixed or all disabled -> enable all
 							ExecuteEnableNanite(GaussianSplatAssets);
 						}
 					}),
@@ -100,30 +102,6 @@ void FAssetTypeActions_GaussianSplatAsset::GetActions(const TArray<UObject*>& In
 				),
 				NAME_None,
 				EUserInterfaceActionType::ToggleButton
-			);
-
-			SubMenuBuilder.AddSeparator();
-
-			// Enable Nanite action
-			SubMenuBuilder.AddMenuEntry(
-				FText::Format(LOCTEXT("EnableNaniteLabel", "启用 Nanite ({0} 个资产)"), FText::AsNumber(GaussianSplatAssets.Num())),
-				LOCTEXT("EnableNaniteTooltip", "构建 Nanite 簇层次结构以优化 LOD 和裁剪"),
-				FSlateIcon(),
-				FUIAction(
-					FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteEnableNanite, GaussianSplatAssets),
-					FCanExecuteAction::CreateLambda([bAllEnabled]() { return !bAllEnabled; })
-				)
-			);
-
-			// Disable Nanite action
-			SubMenuBuilder.AddMenuEntry(
-				FText::Format(LOCTEXT("DisableNaniteLabel", "禁用 Nanite ({0} 个资产)"), FText::AsNumber(GaussianSplatAssets.Num())),
-				LOCTEXT("DisableNaniteTooltip", "移除 Nanite 簇层次结构以减小资产大小"),
-				FSlateIcon(),
-				FUIAction(
-					FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteDisableNanite, GaussianSplatAssets),
-					FCanExecuteAction::CreateLambda([bAllDisabled]() { return !bAllDisabled; })
-				)
 			);
 		}),
 		false,
