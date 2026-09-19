@@ -61,7 +61,7 @@ void FGaussianSplatAssetViewportClient::Tick(float DeltaSeconds)
 	}
 }
 
-void FGaussianSplatAssetViewportClient::SetSplatAsset(UGaussianSplatAsset* InAsset)
+void FGaussianSplatAssetViewportClient::SetSplatAsset(UGaussianSplatAsset* InAsset, bool bFrameAsset)
 {
 	CurrentAsset = InAsset;
 
@@ -104,18 +104,21 @@ void FGaussianSplatAssetViewportClient::SetSplatAsset(UGaussianSplatAsset* InAss
 		NewActor->GaussianSplatComponent->SetSplatAsset(InAsset);
 		PreviewActor = NewActor;
 
-		// Adjust camera to frame the asset
-		FBox Bounds = InAsset->GetBounds();
-		if (Bounds.IsValid)
+		// Adjust camera to frame the asset (skipped on refresh rebuilds to keep the user's view)
+		if (bFrameAsset)
 		{
-			FVector Center = Bounds.GetCenter();
-			float Extent = Bounds.GetExtent().Length();
-			if (Extent > 0.0f)
+			FBox Bounds = InAsset->GetBounds();
+			if (Bounds.IsValid)
 			{
-				// Position camera to view the asset
-				FVector CameraOffset(Extent * 1.5f, Extent * 1.5f, Extent * 0.8f);
-				SetViewLocation(Center + CameraOffset);
-				SetViewRotation((Center - (Center + CameraOffset)).Rotation());
+				FVector Center = Bounds.GetCenter();
+				float Extent = Bounds.GetExtent().Length();
+				if (Extent > 0.0f)
+				{
+					// Position camera to view the asset
+					FVector CameraOffset(Extent * 1.5f, Extent * 1.5f, Extent * 0.8f);
+					SetViewLocation(Center + CameraOffset);
+					SetViewRotation((Center - (Center + CameraOffset)).Rotation());
+				}
 			}
 		}
 
@@ -155,11 +158,11 @@ TSharedRef<FEditorViewportClient> SGaussianSplatAssetViewport::MakeEditorViewpor
 	return ViewportClient.ToSharedRef();
 }
 
-void SGaussianSplatAssetViewport::SetSplatAsset(UGaussianSplatAsset* InAsset)
+void SGaussianSplatAssetViewport::SetSplatAsset(UGaussianSplatAsset* InAsset, bool bFrameAsset)
 {
 	if (ViewportClient.IsValid())
 	{
-		ViewportClient->SetSplatAsset(InAsset);
+		ViewportClient->SetSplatAsset(InAsset, bFrameAsset);
 	}
 }
 

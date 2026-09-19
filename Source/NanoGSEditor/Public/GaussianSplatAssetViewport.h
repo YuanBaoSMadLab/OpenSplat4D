@@ -25,8 +25,8 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	//~ End FEditorViewportClient Interface
 
-	/** Set the asset to preview */
-	void SetSplatAsset(UGaussianSplatAsset* InAsset);
+	/** Set the asset to preview. bFrameAsset=false rebuilds the preview actor without moving the camera. */
+	void SetSplatAsset(UGaussianSplatAsset* InAsset, bool bFrameAsset = true);
 
 	/** Get the preview actor */
 	AGaussianSplatActor* GetPreviewActor() const { return PreviewActor.Get(); }
@@ -57,8 +57,8 @@ public:
 	virtual TSharedRef<FEditorViewportClient> MakeEditorViewportClient() override;
 	//~ End SEditorViewport Interface
 
-	/** Set the asset to preview */
-	void SetSplatAsset(UGaussianSplatAsset* InAsset);
+	/** Set the asset to preview. bFrameAsset=false rebuilds without moving the camera. */
+	void SetSplatAsset(UGaussianSplatAsset* InAsset, bool bFrameAsset = true);
 
 private:
 	/** The viewport client */

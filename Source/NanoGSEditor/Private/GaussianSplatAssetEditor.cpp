@@ -40,6 +40,16 @@ FGaussianSplatAssetEditor::~FGaussianSplatAssetEditor()
 void FGaussianSplatAssetEditor::NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged)
 {
 	FNotifyHook::NotifyPostChange(PropertyChangedEvent, PropertyThatChanged);
+
+	// Details-panel edits must stay in sync with the preview viewport. When the
+	// Nanite toggle changes, the cluster hierarchy is (re)built/cleared and the
+	// shared render data is invalidated -- re-create the preview actor so the
+	// viewport immediately reflects the new state instead of showing stale splats.
+	if (SplatAsset.IsValid() && ViewportWidget.IsValid() &&
+		PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, bEnableNanite))
+	{
+		ViewportWidget->SetSplatAsset(SplatAsset.Get(), /*bFrameAsset=*/false);
+	}
 }
 
 void FGaussianSplatAssetEditor::RegisterTabSpawners(const TSharedRef<FTabManager>& InTabManager)
