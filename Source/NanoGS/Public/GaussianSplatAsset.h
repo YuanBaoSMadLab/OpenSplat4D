@@ -315,6 +315,27 @@ public:
 	/** Get size of color texture bulk data in bytes */
 	int64 GetColorTextureDataSize() const { return ColorTextureBulkData.GetBulkDataSize(); }
 
+	// ---------------------------------------------------------------
+	// Zero-copy read-only accessors (performance: avoid full TArray
+	// copies of potentially hundreds of MB when packing render data).
+	// Caller MUST call the matching Unlock while holding the pointer,
+	// and must not dereference it afterwards.
+	// ---------------------------------------------------------------
+
+	/** Lock position bulk data in place. Returns nullptr if empty. */
+	const void* LockPositionDataReadOnly(int64* OutSize = nullptr) const;
+	/** Lock rotation/scale bulk data in place. Returns nullptr if empty. */
+	const void* LockOtherDataReadOnly(int64* OutSize = nullptr) const;
+	/** Lock SH bulk data in place. Returns nullptr if empty. */
+	const void* LockSHDataReadOnly(int64* OutSize = nullptr) const;
+	/** Lock color texture bulk data in place. Returns nullptr if empty. */
+	const void* LockColorTextureDataReadOnly(int64* OutSize = nullptr) const;
+
+	void UnlockPositionData() const;
+	void UnlockOtherData() const;
+	void UnlockSHData() const;
+	void UnlockColorTextureData() const;
+
 	/** Shared render data (lazy-initialized, shared across all proxies) */
 	TSharedPtr<FGaussianSplatRenderData> RenderData;
 

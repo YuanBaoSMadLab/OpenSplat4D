@@ -626,6 +626,56 @@ void UGaussianSplatAsset::GetColorTextureData(TArray<uint8>& OutData) const
 	}
 }
 
+// --- Zero-copy read-only accessors (see header for contract) ---
+
+const void* UGaussianSplatAsset::LockPositionDataReadOnly(int64* OutSize) const
+{
+	const int64 DataSize = PositionBulkData.GetBulkDataSize();
+	if (OutSize) *OutSize = DataSize;
+	return (DataSize > 0) ? PositionBulkData.LockReadOnly() : nullptr;
+}
+
+const void* UGaussianSplatAsset::LockOtherDataReadOnly(int64* OutSize) const
+{
+	const int64 DataSize = OtherBulkData.GetBulkDataSize();
+	if (OutSize) *OutSize = DataSize;
+	return (DataSize > 0) ? OtherBulkData.LockReadOnly() : nullptr;
+}
+
+const void* UGaussianSplatAsset::LockSHDataReadOnly(int64* OutSize) const
+{
+	const int64 DataSize = SHBulkData.GetBulkDataSize();
+	if (OutSize) *OutSize = DataSize;
+	return (DataSize > 0) ? SHBulkData.LockReadOnly() : nullptr;
+}
+
+const void* UGaussianSplatAsset::LockColorTextureDataReadOnly(int64* OutSize) const
+{
+	const int64 DataSize = ColorTextureBulkData.GetBulkDataSize();
+	if (OutSize) *OutSize = DataSize;
+	return (DataSize > 0) ? ColorTextureBulkData.LockReadOnly() : nullptr;
+}
+
+void UGaussianSplatAsset::UnlockPositionData() const
+{
+	if (PositionBulkData.GetBulkDataSize() > 0) PositionBulkData.Unlock();
+}
+
+void UGaussianSplatAsset::UnlockOtherData() const
+{
+	if (OtherBulkData.GetBulkDataSize() > 0) OtherBulkData.Unlock();
+}
+
+void UGaussianSplatAsset::UnlockSHData() const
+{
+	if (SHBulkData.GetBulkDataSize() > 0) SHBulkData.Unlock();
+}
+
+void UGaussianSplatAsset::UnlockColorTextureData() const
+{
+	if (ColorTextureBulkData.GetBulkDataSize() > 0) ColorTextureBulkData.Unlock();
+}
+
 #if WITH_EDITOR
 bool UGaussianSplatAsset::BuildNaniteClusterHierarchy()
 {

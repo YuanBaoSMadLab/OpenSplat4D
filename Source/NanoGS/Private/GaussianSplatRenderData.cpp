@@ -3,6 +3,7 @@
 #include "GaussianSplatRenderData.h"
 #include "GaussianSplatAsset.h"
 #include "RHICommandList.h"
+#include "Misc/ScopeExit.h"
 
 FGaussianSplatRenderData::FGaussianSplatRenderData()
 {
@@ -32,27 +33,35 @@ void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset)
 	PositionFormat = Asset->PositionFormat;
 
 	// --- Pack splat data (16 bytes/splat) ---
+	// PERF: read directly from asset bulk data (locked in place) instead of
+	// copying Position/Other/ColorTexture into temporary TArray first. For a
+	// 1M-splat asset this avoids ~50MB+ of transient allocations and 3 extra
+	// full-buffer memcpys during render-data build.
 	{
-		TArray<uint8> RawPositionData;
-		TArray<uint8> RawOtherData;
-		TArray<uint8> RawColorTextureData;
-		Asset->GetPositionData(RawPositionData);
-		Asset->GetOtherData(RawOtherData);
-		Asset->GetColorTextureData(RawColorTextureData);
+		int64 PositionSize = 0, OtherSize = 0, ColorSize = 0;
+		const uint8* RawPositionData = static_cast<const uint8*>(Asset->LockPositionDataReadOnly(&PositionSize));
+		const uint8* RawOtherData = static_cast<const uint8*>(Asset->LockOtherDataReadOnly(&OtherSize));
+		const uint8* RawColorTextureData = static_cast<const uint8*>(Asset->LockColorTextureDataReadOnly(&ColorSize));
+		ON_SCOPE_EXIT
+		{
+			Asset->UnlockPositionData();
+			Asset->UnlockOtherData();
+			Asset->UnlockColorTextureData();
+		};
 
 		const int32 ColorTexWidth = Asset->ColorTextureWidth;
 		const int32 ColorTexHeight = Asset->ColorTextureHeight;
 		const FFloat16Color* ColorPixels = nullptr;
-		bool bHasColor = (RawColorTextureData.Num() > 0 && ColorTexWidth > 0 && ColorTexHeight > 0);
+		bool bHasColor = (RawColorTextureData && ColorSize > 0 && ColorTexWidth > 0 && ColorTexHeight > 0);
 		if (bHasColor)
 		{
-			ColorPixels = reinterpret_cast<const FFloat16Color*>(RawColorTextureData.GetData());
+			ColorPixels = reinterpret_cast<const FFloat16Color*>(RawColorTextureData);
 		}
 
 		PackedSplatData.SetNumUninitialized(SplatCount * GaussianSplattingConstants::PackedSplatStride);
 		uint32* PackedPtr = reinterpret_cast<uint32*>(PackedSplatData.GetData());
-		const float* PosFloats = reinterpret_cast<const float*>(RawPositionData.GetData());
-		const float* OtherFloats = reinterpret_cast<const float*>(RawOtherData.GetData());
+		const float* PosFloats = reinterpret_cast<const float*>(RawPositionData);
+		const float* OtherFloats = reinterpret_cast<const float*>(RawOtherData);
 
 		for (int32 i = 0; i < SplatCount; i++)
 		{
