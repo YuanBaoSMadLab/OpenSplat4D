@@ -102,6 +102,13 @@ void FGaussianSplatAssetViewportClient::SetSplatAsset(UGaussianSplatAsset* InAss
 	if (NewActor && NewActor->GaussianSplatComponent)
 	{
 		NewActor->GaussianSplatComponent->SetSplatAsset(InAsset);
+
+		// Apply the asset's preview performance settings to the preview component
+		// so users can tune Nanite precision / visibility range in the asset editor.
+		NewActor->GaussianSplatComponent->LODErrorThreshold = InAsset->PreviewNanitePrecision;
+		NewActor->GaussianSplatComponent->MaxDrawDistance = InAsset->PreviewMaxDrawDistance;
+		NewActor->GaussianSplatComponent->FadeOutStartDistance = InAsset->PreviewFadeOutStartDistance;
+
 		PreviewActor = NewActor;
 
 		// Adjust camera to frame the asset (skipped on refresh rebuilds to keep the user's view)
@@ -164,6 +171,11 @@ void SGaussianSplatAssetViewport::SetSplatAsset(UGaussianSplatAsset* InAsset, bo
 	{
 		ViewportClient->SetSplatAsset(InAsset, bFrameAsset);
 	}
+}
+
+AGaussianSplatActor* SGaussianSplatAssetViewport::GetPreviewActor() const
+{
+	return ViewportClient.IsValid() ? ViewportClient->GetPreviewActor() : nullptr;
 }
 
 #undef LOCTEXT_NAMESPACE

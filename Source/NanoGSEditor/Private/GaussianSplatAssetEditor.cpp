@@ -3,6 +3,8 @@
 #include "GaussianSplatAssetEditor.h"
 #include "GaussianSplatAsset.h"
 #include "GaussianSplatAssetViewport.h"
+#include "NanoGSGaussianSplatComponent.h"
+#include "NanoGSGaussianSplatActor.h"
 #include "GaussianSplatEditorData.h"
 #include "PropertyEditorModule.h"
 #include "IDetailsView.h"
@@ -41,14 +43,33 @@ void FGaussianSplatAssetEditor::NotifyPostChange(const FPropertyChangedEvent& Pr
 {
 	FNotifyHook::NotifyPostChange(PropertyChangedEvent, PropertyThatChanged);
 
-	// Details-panel edits must stay in sync with the preview viewport. When the
-	// Nanite toggle changes, the cluster hierarchy is (re)built/cleared and the
-	// shared render data is invalidated -- re-create the preview actor so the
-	// viewport immediately reflects the new state instead of showing stale splats.
+	// Details-panel edits must stay in sync with the preview viewport.
+	const FName ChangedProp = PropertyChangedEvent.GetPropertyName();
+
+	// Nanite toggle: the cluster hierarchy is (re)built/cleared and the shared
+	// render data is invalidated -- re-create the preview actor so the viewport
+	// immediately reflects the new state instead of showing stale splats.
 	if (SplatAsset.IsValid() && ViewportWidget.IsValid() &&
-		PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, bEnableNanite))
+		ChangedProp == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, bEnableNanite))
 	{
 		ViewportWidget->SetSplatAsset(SplatAsset.Get(), /*bFrameAsset=*/false);
+	}
+	// Performance preview settings: push live onto the existing preview actor's
+	// component (no actor respawn / camera change needed).
+	else if (ChangedProp == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, PreviewNanitePrecision) ||
+			 ChangedProp == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, PreviewMaxDrawDistance) ||
+			 ChangedProp == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, PreviewFadeOutStartDistance))
+	{
+		if (AGaussianSplatActor* PreviewActor = ViewportWidget.IsValid() ? ViewportWidget->GetPreviewActor() : nullptr)
+		{
+			if (UGaussianSplatComponent* Comp = PreviewActor->GaussianSplatComponent)
+			{
+				Comp->ApplyPerformanceSettings(
+					SplatAsset->PreviewNanitePrecision,
+					SplatAsset->PreviewMaxDrawDistance,
+					SplatAsset->PreviewFadeOutStartDistance);
+			}
+		}
 	}
 }
 

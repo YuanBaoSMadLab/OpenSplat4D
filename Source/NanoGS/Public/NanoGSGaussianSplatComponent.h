@@ -151,9 +151,31 @@ public:
 
 	/** 开始淡出的距离（厘米）。0 = 到达最大可视距离时直接硬切。
 	 *  设为小于最大可视距离的值可获得平滑的远处淡出效果（如 0.8 × 最大距离）。 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|性能",
-		meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "100000.0", DisplayName = "淡出起始距离", EditCondition = "MaxDrawDistance > 0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|性能", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "100000.0", DisplayName = "淡出起始距离", EditCondition = "MaxDrawDistance > 0"))
 	float FadeOutStartDistance = 0.0f;
+
+	// ---- 性能参数蓝图接口（便于蓝图/运行时快速调用） ----
+
+	/** 设置 Nanite 精度（LOD 误差阈值）。调大 = 更激进降 LOD = 帧率更高。立即生效。 */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|性能", meta = (DisplayName = "设置 Nanite 精度"))
+	void SetNanitePrecision(float InThreshold);
+
+	/** 设置最大可视距离（cm）。超过该距离的 splat 被剔除。0 = 不限制。立即生效。 */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|性能", meta = (DisplayName = "设置最大可视距离"))
+	void SetVisibilityRange(float InDistance);
+
+	/** 设置淡出起始距离（cm）。0 = 到达最大可视距离时硬切。立即生效。 */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|性能", meta = (DisplayName = "设置淡出起始距离"))
+	void SetFadeOutStart(float InDistance);
+
+	/** 批量应用性能参数（编辑器预览用）：同时设置精度/可视距离/淡出，一次重建。 */
+	void ApplyPerformanceSettings(float InNanitePrecision, float InMaxDrawDistance, float InFadeOutStart)
+	{
+		LODErrorThreshold = FMath::Clamp(InNanitePrecision, 0.001f, 1.0f);
+		MaxDrawDistance = FMath::Max(InMaxDrawDistance, 0.0f);
+		FadeOutStartDistance = FMath::Max(InFadeOutStart, 0.0f);
+		MarkRenderStateDirty();
+	}
 
 	/** 阴影投射 - 是否投射阴影到周围场景 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (DisplayName = "投射阴影"))

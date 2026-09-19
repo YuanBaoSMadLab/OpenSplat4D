@@ -243,6 +243,18 @@ public:
 	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "预览 LOD 误差阈值", ClampMin = "0.0"))
 	float PreviewLODErrorThreshold = 0.1f;
 
+	/** 预览 Nanite 精度（LOD 误差阈值，与关卡组件同名属性同义）。调大 = 更快。 */
+	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "预览 Nanite 精度（LOD 误差阈值）", ClampMin = "0.001", ClampMax = "1.0"))
+	float PreviewNanitePrecision = 0.03f;
+
+	/** 预览最大可视距离（cm）。0 = 不限制。远处 splat 超过该距离被剔除。 */
+	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "预览最大可视距离", ClampMin = "0.0", UIMin = "0.0", UIMax = "100000.0"))
+	float PreviewMaxDrawDistance = 0.0f;
+
+	/** 预览淡出起始距离（cm）。0 = 到达最大可视距离时硬切。 */
+	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "预览淡出起始距离", ClampMin = "0.0", UIMin = "0.0", UIMax = "100000.0", EditCondition = "PreviewMaxDrawDistance > 0"))
+	float PreviewFadeOutStartDistance = 0.0f;
+
 	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "显示包围盒"))
 	bool bPreviewShowBounds = false;
 

@@ -60,6 +60,9 @@ public:
 	/** Set the asset to preview. bFrameAsset=false rebuilds without moving the camera. */
 	void SetSplatAsset(UGaussianSplatAsset* InAsset, bool bFrameAsset = true);
 
+	/** Get the current preview actor (may be null) */
+	AGaussianSplatActor* GetPreviewActor() const;
+
 private:
 	/** The viewport client */
 	TSharedPtr<FGaussianSplatAssetViewportClient> ViewportClient;

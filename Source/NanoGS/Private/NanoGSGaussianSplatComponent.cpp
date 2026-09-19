@@ -207,6 +207,24 @@ void UGaussianSplatComponent::PushCurrentTimeToProxy()
 	}
 }
 
+void UGaussianSplatComponent::SetNanitePrecision(float InThreshold)
+{
+	LODErrorThreshold = FMath::Clamp(InThreshold, 0.001f, 1.0f);
+	MarkRenderStateDirty();
+}
+
+void UGaussianSplatComponent::SetVisibilityRange(float InDistance)
+{
+	MaxDrawDistance = FMath::Max(InDistance, 0.0f);
+	MarkRenderStateDirty();
+}
+
+void UGaussianSplatComponent::SetFadeOutStart(float InDistance)
+{
+	FadeOutStartDistance = FMath::Max(InDistance, 0.0f);
+	MarkRenderStateDirty();
+}
+
 FPrimitiveSceneProxy* UGaussianSplatComponent::CreateSceneProxy()
 {
 	if (!SplatAsset || !SplatAsset->IsValid())
