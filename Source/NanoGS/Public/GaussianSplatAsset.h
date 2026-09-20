@@ -165,7 +165,8 @@ public:
 
 	// ------------------------------------------------------------------
 	// 4D temporal data (only populated when bIs4D is true)
-	// 16 bytes per splat: [AnchorTime f32 | TimeSigma f32 | reserved 8B]
+	// 16 bytes per splat: [AnchorTime f32 | TimeSigma f32 | VelocityXY half2 |
+	// VelocityZ half + hasVelocity flag half]
 	// Covers ALL splats (original + LOD). LOD splats get default
 	// (AnchorTime=0, Sigma=1e10) => always visible.
 	// ------------------------------------------------------------------

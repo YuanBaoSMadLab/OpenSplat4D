@@ -7,7 +7,7 @@
 // Shader parameters
 ByteAddressBuffer PackedSplatBuffer;  // 16 bytes/splat packed data
 ByteAddressBuffer SHBuffer;           // SH data (currently unused)
-ByteAddressBuffer TemporalBuffer;     // 4D temporal data (16 bytes/splat: AnchorTime f32 | Sigma f32 | reserved 8B)
+ByteAddressBuffer TemporalBuffer;     // 4D temporal data (16 bytes/splat: AnchorTime f32 | Sigma f32 | VelocityXY half2 | VelocityZ half + hasVelocity flag half)
 
 // Keyframe 4D: per-frame PLY sequence. Each frame stores every splat's full
 // state in 64 bytes: Position 3xf32 | Rotation 4xf32 (XYZW) | Scale 3xf32 |
@@ -157,15 +157,30 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		const float3 ColA = asfloat(uint3(A2.w, A3.x, A3.y));
 		const float3 ColB = asfloat(uint3(B2.w, B3.x, B3.y));
 
-		// Quaternion nlerp with shortest-arc sign alignment
+		// Quaternion slerp with shortest-arc sign alignment.
+		// Ex4DGS explicitly uses spherical interpolation for rotations; plain
+		// lerp produces uneven angular velocity on large rotations.
 		float4 RotBAligned = RotB;
-		if (dot(RotA, RotB) < 0.0)
+		float DotAR = dot(RotA, RotB);
+		if (DotAR < 0.0)
 		{
 			RotBAligned = -RotB;
+			DotAR = -DotAR;
+		}
+		float4 SlerpRot;
+		if (DotAR > 0.9995)
+		{
+			SlerpRot = normalize(lerp(RotA, RotBAligned, Alpha));
+		}
+		else
+		{
+			const float Theta = acos(clamp(DotAR, -1.0, 1.0));
+			const float SinTheta = sin(Theta);
+			SlerpRot = (sin((1.0 - Alpha) * Theta) * RotA + sin(Alpha * Theta) * RotBAligned) / SinTheta;
 		}
 
 		localPos = lerp(PosA, PosB, Alpha);
-		rotation = normalize(lerp(RotA, RotBAligned, Alpha));
+		rotation = normalize(SlerpRot);
 		scale = lerp(SclA, SclB, Alpha) * SplatScale;
 		colorOpacity = float4(lerp(ColA, ColB, Alpha), lerp(OpA, OpB, Alpha));
 		opacity = colorOpacity.a * OpacityScale;
@@ -174,7 +189,9 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	// 4D temporal marginalization (spacetime gaussians):
 	// opacity is weighted by w(t) = exp(-0.5 * (T - t)^2 / sigma^2), so a
 	// gaussian fades in/out around its anchor time. Static splats carry a huge
-	// sigma so w ~= 1 everywhere.
+	// sigma so w ~= 1 everywhere. Additionally, splats with a linear velocity
+	// (SpacetimeGaussians' first-order motion term) are position-extrapolated:
+	// pos(t) = pos0 + v * (t - anchorTime).
 	if (UseTemporal)
 	{
 		uint TBase = splatIndex * 16;
@@ -190,6 +207,15 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 			return;
 		}
 		opacity *= TimeWeight;
+
+		// Velocity extrapolation (matches Ex4DGS static-point drift and STG's
+		// first-order polynomial motion term)
+		const float2 VelXY = UnpackHalf2x16(TemporalBuffer.Load(TBase + 8));
+		const float2 VelZFlag = UnpackHalf2x16(TemporalBuffer.Load(TBase + 12));
+		if (VelZFlag.y > 0.0)
+		{
+			localPos += float3(VelXY.x, VelXY.y, VelZFlag.x) * Dt;
+		}
 	}
 
 	// Transform to world space

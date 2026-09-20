@@ -2,6 +2,7 @@
 
 #include "GaussianSplatAsset.h"
 #include "GaussianSplatRenderData.h"
+#include "Math/Float16.h"
 #include "Engine/Texture.h"
 #include "Engine/Texture2D.h"
 #include "TextureResource.h"
@@ -254,8 +255,17 @@ void UGaussianSplatAsset::InitializeFromSplatData(const TArray<FGaussianSplatDat
 				const FGaussianSplatData& Splat = InSplats[i];
 				Ptr[i * 4 + 0] = *reinterpret_cast<const uint32*>(&Splat.AnchorTime);
 				Ptr[i * 4 + 1] = *reinterpret_cast<const uint32*>(&Splat.TimeSigma);
-				Ptr[i * 4 + 2] = 0; // reserved (future: velocity XY, half2)
-				Ptr[i * 4 + 3] = 0; // reserved (future: velocity Z + flag, half2)
+
+				// Reserved 8B: linear velocity as half2 | half2 (vz, hasVelocity flag).
+				// Mirrors SpacetimeGaussians' first-order motion term; the shader
+				// extrapolates pos(t) = pos0 + v * (t - anchorTime).
+				const bool bHasVelocity = Splat.Velocity.SizeSquared() > 1e-12f;
+				const uint16 VX = FFloat16(bHasVelocity ? Splat.Velocity.X : 0.0f).Encoded;
+				const uint16 VY = FFloat16(bHasVelocity ? Splat.Velocity.Y : 0.0f).Encoded;
+				const uint16 VZ = FFloat16(bHasVelocity ? Splat.Velocity.Z : 0.0f).Encoded;
+				constexpr uint16 VelocityFlag = 0x3C00; // half 1.0
+				Ptr[i * 4 + 2] = static_cast<uint32>(VX) | (static_cast<uint32>(VY) << 16);
+				Ptr[i * 4 + 3] = static_cast<uint32>(VZ) | (bHasVelocity ? (static_cast<uint32>(VelocityFlag) << 16) : 0u);
 			}
 
 			TemporalBulkData.Lock(LOCK_READ_WRITE);

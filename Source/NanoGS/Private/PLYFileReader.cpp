@@ -544,6 +544,15 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 					const float ScaleT = ReadF(VertexData, OffScaleT, 23.0f);
 					Splat.TimeSigma = FMath::Exp(ScaleT); // ~1e10 default when absent
 				}
+
+				// Linear velocity: SpacetimeGaussians stores a 9-term polynomial
+				// motion (motion_0..8); the first-order term motion_0..2 is the
+				// velocity. pos(t) = pos0 + velocity * (t - anchor). Units match
+				// the raw PLY position (meters) and time (asset time units), so
+				// no conversion is applied here.
+				Splat.Velocity.X = GetPropertyFloat(VertexData, Header, TEXT("motion_0"), 0.0f);
+				Splat.Velocity.Y = GetPropertyFloat(VertexData, Header, TEXT("motion_1"), 0.0f);
+				Splat.Velocity.Z = GetPropertyFloat(VertexData, Header, TEXT("motion_2"), 0.0f);
 			}
 
 			// Linearize the data

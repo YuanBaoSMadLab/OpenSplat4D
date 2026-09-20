@@ -96,6 +96,13 @@ struct FGaussianSplatData
 	/** Temporal standard deviation sigma = exp(scale_t). Huge value => always visible (static). */
 	float TimeSigma = 1e10f;
 
+	/**
+	 * Linear velocity (first-order motion term) in PLY units per time unit.
+	 * Mirrors SpacetimeGaussians' motion_0..2 (first-order polynomial term):
+	 * pos(t) = pos0 + Velocity * (t - AnchorTime). Zero => static splat.
+	 */
+	FVector3f Velocity = FVector3f::ZeroVector;
+
 	FGaussianSplatData()
 	{
 		for (int32 i = 0; i < 15; i++)
