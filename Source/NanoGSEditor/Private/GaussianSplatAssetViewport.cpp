@@ -109,6 +109,19 @@ void FGaussianSplatAssetViewportClient::SetSplatAsset(UGaussianSplatAsset* InAss
 		NewActor->GaussianSplatComponent->MaxDrawDistance = InAsset->PreviewMaxDrawDistance;
 		NewActor->GaussianSplatComponent->FadeOutStartDistance = InAsset->PreviewFadeOutStartDistance;
 
+		// 4D playback preview: start/pause according to the asset's preview
+		// settings (only takes effect on assets that contain temporal data).
+		NewActor->GaussianSplatComponent->bAutoPlay = InAsset->PreviewAutoPlay;
+		NewActor->GaussianSplatComponent->PlayRate = InAsset->PreviewPlayRate;
+		if (InAsset->PreviewAutoPlay)
+		{
+			NewActor->GaussianSplatComponent->Play4D();
+		}
+		else
+		{
+			NewActor->GaussianSplatComponent->Pause4D();
+		}
+
 		PreviewActor = NewActor;
 
 		// Adjust camera to frame the asset (skipped on refresh rebuilds to keep the user's view)

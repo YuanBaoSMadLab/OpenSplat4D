@@ -56,6 +56,27 @@ void FGaussianSplatAssetEditor::NotifyPostChange(const FPropertyChangedEvent& Pr
 	}
 	// Performance preview settings: push live onto the existing preview actor's
 	// component (no actor respawn / camera change needed).
+	else if (ChangedProp == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, PreviewAutoPlay) ||
+			 ChangedProp == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, PreviewPlayRate))
+	{
+		// 4D playback preview settings: push live (no rebuild needed)
+		if (AGaussianSplatActor* PreviewActor = ViewportWidget.IsValid() ? ViewportWidget->GetPreviewActor() : nullptr)
+		{
+			if (UGaussianSplatComponent* Comp = PreviewActor->GaussianSplatComponent)
+			{
+				Comp->bAutoPlay = SplatAsset->PreviewAutoPlay;
+				Comp->PlayRate = SplatAsset->PreviewPlayRate;
+				if (SplatAsset->PreviewAutoPlay)
+				{
+					Comp->Play4D();
+				}
+				else
+				{
+					Comp->Pause4D();
+				}
+			}
+		}
+	}
 	else if (ChangedProp == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, PreviewNanitePrecision) ||
 			 ChangedProp == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, PreviewMaxDrawDistance) ||
 			 ChangedProp == GET_MEMBER_NAME_CHECKED(UGaussianSplatAsset, PreviewFadeOutStartDistance))

@@ -255,6 +255,14 @@ public:
 	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "预览淡出起始距离", ClampMin = "0.0", UIMin = "0.0", UIMax = "100000.0", EditCondition = "PreviewMaxDrawDistance > 0"))
 	float PreviewFadeOutStartDistance = 0.0f;
 
+	/** 预览视口自动播放 4D 时序（仅含时间数据的 4D 资产生效）。 */
+	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "预览 4D 自动播放"))
+	bool PreviewAutoPlay = true;
+
+	/** 预览 4D 播放速度（1 = 原速）。 */
+	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "预览 4D 播放速度", ClampMin = "0.0", ClampMax = "10.0", UIMin = "0.0", UIMax = "5.0", EditCondition = "PreviewAutoPlay"))
+	float PreviewPlayRate = 1.0f;
+
 	UPROPERTY(EditAnywhere, Category = "预览设置", meta = (DisplayName = "显示包围盒"))
 	bool bPreviewShowBounds = false;
 
