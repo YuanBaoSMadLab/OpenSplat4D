@@ -34,6 +34,7 @@ public class NanoGSEditor : ModuleRules
 			{
 				"Slate",
 				"SlateCore",
+				"InputCore",
 				"UnrealEd",
 				"AssetTools",
 				"EditorFramework",

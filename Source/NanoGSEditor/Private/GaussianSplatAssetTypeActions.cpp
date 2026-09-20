@@ -3,6 +3,7 @@
 #include "GaussianSplatAssetTypeActions.h"
 #include "GaussianSplatAsset.h"
 #include "GaussianSplatAssetEditor.h"
+#include "GaussianSplat4DEditor.h"
 #include "EditorReimportHandler.h"
 #include "ToolMenuSection.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -118,8 +119,18 @@ void FAssetTypeActions_GaussianSplatAsset::OpenAssetEditor(const TArray<UObject*
 	{
 		if (UGaussianSplatAsset* Asset = Cast<UGaussianSplatAsset>(Object))
 		{
-			TSharedRef<FGaussianSplatAssetEditor> NewEditor = MakeShareable(new FGaussianSplatAssetEditor());
-			NewEditor->InitGaussianSplatAssetEditor(Mode, EditWithinLevelEditor, Asset);
+			// 3D / 4D 分流：4D 资产打开专用"播放器式"编辑器（带时间轴 transport bar），
+			// 3D 资产维持原编辑器（编辑工具 + details）。
+			if (Asset->Is4D())
+			{
+				TSharedRef<FGaussianSplat4DEditor> NewEditor = MakeShareable(new FGaussianSplat4DEditor());
+				NewEditor->InitGaussianSplat4DEditor(Mode, EditWithinLevelEditor, Asset);
+			}
+			else
+			{
+				TSharedRef<FGaussianSplatAssetEditor> NewEditor = MakeShareable(new FGaussianSplatAssetEditor());
+				NewEditor->InitGaussianSplatAssetEditor(Mode, EditWithinLevelEditor, Asset);
+			}
 		}
 	}
 }
