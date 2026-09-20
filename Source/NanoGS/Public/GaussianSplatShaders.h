@@ -23,6 +23,12 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER_SRV(ByteAddressBuffer, PackedSplatBuffer)  // 16 bytes/splat packed data
 		SHADER_PARAMETER_SRV(ByteAddressBuffer, SHBuffer)           // SH data (currently unused)
 		SHADER_PARAMETER_SRV(ByteAddressBuffer, TemporalBuffer)     // 4D temporal data (16 bytes/splat)
+		// Keyframe 4D (per-frame PLY sequence; overrides temporal marginalization when enabled)
+		SHADER_PARAMETER_SRV(ByteAddressBuffer, KeyframeBuffer)     // 64 bytes/splat/frame keyframe data
+		SHADER_PARAMETER(uint32, UseKeyframes)
+		SHADER_PARAMETER(uint32, KeyframeSplatCount)                // M: splats per frame
+		SHADER_PARAMETER(uint32, KeyframeFrameCount)                // N: number of keyframes
+		SHADER_PARAMETER(float, KeyframeFrameTime)                  // Current frame index (float)
 		// 4D temporal marginalization
 		SHADER_PARAMETER(uint32, UseTemporal)
 		SHADER_PARAMETER(float, CurrentTime)

@@ -66,8 +66,21 @@ public:
 	FBufferRHIRef TemporalBuffer;
 	FShaderResourceViewRHIRef TemporalBufferSRV;
 
+	/** Keyframe 4D data buffer (64 bytes/splat/frame; dummy 64B when asset is not keyframe 4D) */
+	FBufferRHIRef KeyframeBuffer;
+	FShaderResourceViewRHIRef KeyframeBufferSRV;
+
 	/** Whether the asset has 4D temporal data */
 	bool bIs4D = false;
+
+	/** Whether the asset uses keyframe 4D playback (mutually exclusive with temporal marginalization at bind time) */
+	bool bIsKeyframe4D = false;
+
+	/** Number of keyframes stored in KeyframeBuffer */
+	int32 KeyframeFrameCount = 0;
+
+	/** Splats per frame covered by KeyframeBuffer (M at import; independent of later LOD-grown SplatCount) */
+	int32 KeyframeSplatCount = 0;
 
 	/** Splat-to-cluster index buffer (static, loaded from asset) */
 	FBufferRHIRef SplatClusterIndexBuffer;
@@ -91,6 +104,7 @@ private:
 	TArray<uint8> PackedSplatData;
 	TArray<uint8> SHData;
 	TArray<uint8> TemporalData;
+	TArray<uint8> KeyframeData;
 	TArray<FGaussianChunkInfo> CachedChunkData;
 	TArray<FGaussianGPUCluster> CachedClusterData;
 	TArray<uint32> CachedSplatClusterIndices;

@@ -47,6 +47,26 @@ public:
 	/** Import quality level (currently unused - always uses Float32 positions for maximum accuracy) */
 	EGaussianQualityLevel QualityLevel = EGaussianQualityLevel::VeryHigh;
 
+	/**
+	 * Import a sequence of per-frame PLY files as a keyframe 4D asset
+	 * (asset v7: bIsKeyframe4D + KeyframeBulkData, TimeStart=0, TimeEnd=N-1).
+	 * Files are sorted by name to determine the frame order. Every frame must
+	 * contain exactly the same vertex count as frame 0, otherwise the import
+	 * fails (Postshot-style per-frame training output is not frame-aligned).
+	 * @param FilePaths Paths to the PLY frames
+	 * @param InParent Parent object (usually a UPackage) for the new asset
+	 * @param InName Name for the new asset
+	 * @param Flags Object flags
+	 * @param OutError Optional error description on failure
+	 * @return The created asset, or nullptr on failure
+	 */
+	static UGaussianSplatAsset* ImportPLYSequence(
+		const TArray<FString>& FilePaths,
+		UObject* InParent,
+		FName InName,
+		EObjectFlags Flags,
+		FString* OutError = nullptr);
+
 private:
 	/**
 	 * Import a PLY file and create/update a Gaussian Splat asset

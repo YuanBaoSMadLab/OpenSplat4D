@@ -7,6 +7,9 @@
 #include "TextureResource.h"
 #include "GaussianClusterBuilder.h"
 #include "PLYFileReader.h"
+#include "Misc/FileHelper.h"
+#include "Serialization/MemoryWriter.h"
+#include "Serialization/MemoryReader.h"
 
 #if WITH_EDITOR
 #include "Misc/ScopedSlowTask.h"
@@ -89,6 +92,19 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 		TimeStart = 0.f;
 		TimeEnd = 0.f;
 	}
+
+	// Keyframe 4D fields (Version 7+; v5/v6 assets keep defaults)
+	if (Version >= 7)
+	{
+		Ar << bIsKeyframe4D;
+		Ar << KeyframeCount;
+		KeyframeBulkData.Serialize(Ar, this);
+	}
+	else if (Ar.IsLoading())
+	{
+		bIsKeyframe4D = false;
+		KeyframeCount = 0;
+	}
 }
 
 void UGaussianSplatAsset::PostLoad()
@@ -161,6 +177,7 @@ int64 UGaussianSplatAsset::GetMemoryUsage() const
 	TotalBytes += ChunkData.Num() * sizeof(FGaussianChunkInfo);
 	TotalBytes += ColorTextureBulkData.GetBulkDataSize();
 	TotalBytes += TemporalBulkData.GetBulkDataSize();
+	TotalBytes += KeyframeBulkData.GetBulkDataSize();
 
 	if (ColorTexture)
 	{
@@ -754,6 +771,324 @@ const void* UGaussianSplatAsset::LockTemporalDataReadOnly(int64* OutSize) const
 void UGaussianSplatAsset::UnlockTemporalData() const
 {
 	if (TemporalBulkData.GetBulkDataSize() > 0) TemporalBulkData.Unlock();
+}
+
+const void* UGaussianSplatAsset::LockKeyframeDataReadOnly(int64* OutSize) const
+{
+	const int64 DataSize = KeyframeBulkData.GetBulkDataSize();
+	if (OutSize) *OutSize = DataSize;
+	return (DataSize > 0) ? KeyframeBulkData.LockReadOnly() : nullptr;
+}
+
+void UGaussianSplatAsset::UnlockKeyframeData() const
+{
+	if (KeyframeBulkData.GetBulkDataSize() > 0) KeyframeBulkData.Unlock();
+}
+
+// ----------------------------------------------------------------------------
+// .o4d v2 dedicated container (magic 'O4D2')
+//
+// Layout (all little-endian):
+//   [0..3]   magic 'O','4','D','2'
+//   u32      Version = 2
+//   u32      Flags   (bit0 = keyframe 4D)
+//   i32      M       (splats per frame = SplatCount)
+//   i32      N       (keyframe count; 0 = static/3D)
+//   f32      TimeStart
+//   f32      TimeEnd
+//   M x      FGaussianSplatData records (via operator<<)
+//   [N*M*64] keyframe block (same layout as KeyframeBulkData, present when N>0)
+//
+// NOTE: FGaussianSplatData::operator<< does not serialize AnchorTime/TimeSigma,
+// so a t/scale_t (temporal marginalization) 4D asset saved this way comes back
+// as a static asset. The .o4d v2 container targets keyframe 4D / 3D assets.
+// ----------------------------------------------------------------------------
+
+#define O4D2_CONTAINER_VERSION 2u
+#define O4D2_FLAG_KEYFRAME_4D  0x1u
+
+bool UGaussianSplatAsset::SaveToO4DFile(FString FilePath)
+{
+	if (SplatCount <= 0)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SaveToO4DFile: asset '%s' has no splat data"), *GetName());
+		return false;
+	}
+
+	// 1. Decompress the stored bulk data into raw splat records
+	TArray<FGaussianSplatData> Splats;
+	if (!DecompressToSplatData(Splats))
+	{
+		UE_LOG(LogTemp, Error, TEXT("SaveToO4DFile: failed to decompress splat data for asset '%s'"), *GetName());
+		return false;
+	}
+
+	// Non-const: FArchive::operator<< binds int32 to a mutable lvalue reference
+	int32 M = SplatCount;
+	int32 N = (bIsKeyframe4D && KeyframeCount > 0) ? KeyframeCount : 0;
+
+	// 2. Serialize container into memory
+	TArray<uint8> Buffer;
+	FMemoryWriter Writer(Buffer, true);
+
+	uint8 Magic[4] = { 'O', '4', 'D', '2' };
+	Writer.Serialize(Magic, 4);
+
+	uint32 Version = O4D2_CONTAINER_VERSION;
+	Writer << Version;
+
+	uint32 Flags = bIsKeyframe4D ? O4D2_FLAG_KEYFRAME_4D : 0u;
+	Writer << Flags;
+
+	Writer << M;
+	Writer << N;
+
+	float Start = TimeStart;
+	float End = TimeEnd;
+	Writer << Start;
+	Writer << End;
+
+	for (int32 i = 0; i < M; i++)
+	{
+		Writer << Splats[i];
+	}
+
+	// 3. Keyframe block (raw bytes, same layout as KeyframeBulkData)
+	if (N > 0)
+	{
+		int64 KeyframeSize = 0;
+		const void* KeyframePtr = LockKeyframeDataReadOnly(&KeyframeSize);
+		if (!KeyframePtr || KeyframeSize < static_cast<int64>(N) * M * KeyframeStride)
+		{
+			if (KeyframePtr)
+			{
+				UnlockKeyframeData();
+			}
+			UE_LOG(LogTemp, Error, TEXT("SaveToO4DFile: keyframe data missing/short on asset '%s' (need %lld bytes, have %lld)"),
+				*GetName(), static_cast<int64>(N) * M * KeyframeStride, KeyframeSize);
+			return false;
+		}
+		Writer.Serialize(const_cast<void*>(KeyframePtr), KeyframeSize);
+		UnlockKeyframeData();
+	}
+
+	return FFileHelper::SaveArrayToFile(Buffer, *FilePath);
+}
+
+UGaussianSplatAsset* UGaussianSplatAsset::LoadFromO4DFile(FString FilePath, UObject* Outer)
+{
+	TArray<uint8> Buffer;
+	if (!FFileHelper::LoadFileToArray(Buffer, *FilePath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("LoadFromO4DFile: cannot open file: %s"), *FilePath);
+		return nullptr;
+	}
+
+	FMemoryReader Reader(Buffer, true);
+
+	uint8 Magic[4] = { 0, 0, 0, 0 };
+	Reader.Serialize(Magic, 4);
+	if (Magic[0] != 'O' || Magic[1] != '4' || Magic[2] != 'D' || Magic[3] != '2')
+	{
+		UE_LOG(LogTemp, Error, TEXT("LoadFromO4DFile: bad magic in %s (expected O4D2)"), *FilePath);
+		return nullptr;
+	}
+
+	uint32 Version = 0;
+	Reader << Version;
+	if (Version != O4D2_CONTAINER_VERSION)
+	{
+		UE_LOG(LogTemp, Error, TEXT("LoadFromO4DFile: unsupported container version %u in %s"), Version, *FilePath);
+		return nullptr;
+	}
+
+	uint32 Flags = 0;
+	int32 M = 0;
+	int32 N = 0;
+	float Start = 0.f;
+	float End = 0.f;
+	Reader << Flags;
+	Reader << M;
+	Reader << N;
+	Reader << Start;
+	Reader << End;
+
+	// Sanity limits (mirror the PLY reader's 200M splat safety cap)
+	constexpr int32 MaxReasonableSplats = 200 * 1024 * 1024;
+	constexpr int32 MaxReasonableKeyframes = 1024 * 1024;
+	if (M <= 0 || M > MaxReasonableSplats || N < 0 || N > MaxReasonableKeyframes)
+	{
+		UE_LOG(LogTemp, Error, TEXT("LoadFromO4DFile: invalid header (M=%d, N=%d) in %s"), M, N, *FilePath);
+		return nullptr;
+	}
+
+	// 1. Read splat records
+	TArray<FGaussianSplatData> Splats;
+	Splats.SetNum(M);
+	for (int32 i = 0; i < M; i++)
+	{
+		Reader << Splats[i];
+	}
+
+	// 2. Read keyframe block
+	TArray<uint8> KeyframeData;
+	if (N > 0)
+	{
+		const int64 KeyframeBytes = static_cast<int64>(N) * M * KeyframeStride;
+		const int64 Remaining = Reader.TotalSize() - Reader.Tell();
+		if (Remaining < KeyframeBytes)
+		{
+			UE_LOG(LogTemp, Error, TEXT("LoadFromO4DFile: truncated keyframe block in %s (need %lld, have %lld)"),
+				*FilePath, KeyframeBytes, Remaining);
+			return nullptr;
+		}
+		KeyframeData.SetNumUninitialized(KeyframeBytes);
+		Reader.Serialize(KeyframeData.GetData(), KeyframeBytes);
+	}
+
+	// 3. Create the asset and rebuild its render-facing data
+	UObject* OuterObject = Outer;
+	if (!OuterObject)
+	{
+		OuterObject = (UObject*)GetTransientPackage();
+	}
+	UGaussianSplatAsset* Asset = NewObject<UGaussianSplatAsset>(OuterObject, NAME_None, RF_Public);
+	if (!Asset)
+	{
+		return nullptr;
+	}
+
+	// Pick SH bands by scanning for non-zero higher-order coefficients
+	int32 DetectedSHBands = 0;
+	for (int32 i = 0; i < M && DetectedSHBands == 0; i++)
+	{
+		for (int32 c = 0; c < 15; c++)
+		{
+			if (FMath::Abs(Splats[i].SH[c].X) + FMath::Abs(Splats[i].SH[c].Y) + FMath::Abs(Splats[i].SH[c].Z) > 1e-6f)
+			{
+				DetectedSHBands = 3;
+				break;
+			}
+		}
+	}
+	Asset->SHBands = DetectedSHBands;
+
+	Asset->InitializeFromSplatData(Splats, EGaussianQualityLevel::VeryHigh);
+	Asset->SourceFilePath = FilePath;
+
+	// Keyframe/temporal state is set AFTER InitializeFromSplatData (whose
+	// temporal auto-detection only sees the default AnchorTime/TimeSigma
+	// because operator<< does not serialize them).
+	Asset->bIsKeyframe4D = (Flags & O4D2_FLAG_KEYFRAME_4D) != 0;
+	Asset->KeyframeCount = N;
+	Asset->TimeStart = Start;
+	Asset->TimeEnd = End;
+	Asset->bIs4D = (N > 0);
+
+	if (N > 0)
+	{
+		Asset->KeyframeBulkData.Lock(LOCK_READ_WRITE);
+		void* Dest = Asset->KeyframeBulkData.Realloc(KeyframeData.Num());
+		FMemory::Memcpy(Dest, KeyframeData.GetData(), KeyframeData.Num());
+		Asset->KeyframeBulkData.Unlock();
+		Asset->KeyframeBulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("LoadFromO4DFile: loaded '%s' (%d splats, %d keyframes, keyframe4D=%d)"),
+		*FilePath, M, N, Asset->bIsKeyframe4D ? 1 : 0);
+	return Asset;
+}
+
+bool UGaussianSplatAsset::DecompressToSplatData(TArray<FGaussianSplatData>& OutSplats) const
+{
+	OutSplats.Reset();
+	if (SplatCount <= 0)
+	{
+		return false;
+	}
+
+	OutSplats.SetNum(SplatCount);
+
+	int64 PosSize = 0, OtherSize = 0, ColorSize = 0, SHSize = 0;
+	const uint8* RawPosition = static_cast<const uint8*>(LockPositionDataReadOnly(&PosSize));
+	const uint8* RawOther = static_cast<const uint8*>(LockOtherDataReadOnly(&OtherSize));
+	const uint8* RawColor = static_cast<const uint8*>(LockColorTextureDataReadOnly(&ColorSize));
+	const uint8* RawSH = (SHBands > 0) ? static_cast<const uint8*>(LockSHDataReadOnly(&SHSize)) : nullptr;
+	ON_SCOPE_EXIT
+	{
+		UnlockPositionData();
+		UnlockOtherData();
+		UnlockColorTextureData();
+		UnlockSHData();
+	};
+
+	if (!RawPosition || PosSize < static_cast<int64>(SplatCount) * 12 ||
+		!RawOther || OtherSize < static_cast<int64>(SplatCount) * 28)
+	{
+		return false;
+	}
+
+	const FFloat16Color* ColorPixels = nullptr;
+	const bool bHasColor = (RawColor && ColorSize > 0 && ColorTextureWidth > 0 && ColorTextureHeight > 0);
+	if (bHasColor)
+	{
+		ColorPixels = reinterpret_cast<const FFloat16Color*>(RawColor);
+	}
+
+	const FFloat16* SHHalf = reinterpret_cast<const FFloat16*>(RawSH);
+	// SH buffer stores TotalCoeffs (= NumHigherCoeffs + 1 for DC) coefficients, 3 channels each
+	const int32 TotalCoeffs = (SHBands == 1) ? 4 : (SHBands == 2) ? 9 : (SHBands == 3) ? 16 : 0;
+	const bool bHasSH = (RawSH && SHSize >= static_cast<int64>(SplatCount) * TotalCoeffs * 3 * static_cast<int32>(sizeof(FFloat16)));
+
+	for (int32 i = 0; i < SplatCount; i++)
+	{
+		FGaussianSplatData& Splat = OutSplats[i];
+
+		// Position (float32, UE cm)
+		const float* Pos = reinterpret_cast<const float*>(RawPosition + i * 12);
+		Splat.Position = FVector3f(Pos[0], Pos[1], Pos[2]);
+
+		// Rotation (normalized quaternion) + Scale (linear cm), 28B record
+		const float* Other = reinterpret_cast<const float*>(RawOther + i * 28);
+		Splat.Rotation = FQuat4f(Other[0], Other[1], Other[2], Other[3]);
+		Splat.Scale = FVector3f(Other[4], Other[5], Other[6]);
+
+		// Color + opacity from the Morton-swizzled float16 texture.
+		// The texture stores the final display color (0.5 + C0 * DC) and the
+		// sigmoid-opacity; invert the DC conversion to recover SH_DC.
+		if (bHasColor)
+		{
+			int32 TexX, TexY;
+			GaussianSplattingUtils::SplatIndexToTextureCoord(i, ColorTextureWidth, TexX, TexY);
+			if (TexY < ColorTextureHeight)
+			{
+				const FFloat16Color& Pixel = ColorPixels[TexY * ColorTextureWidth + TexX];
+				Splat.Opacity = FMath::Clamp(Pixel.A.GetFloat(), 0.0f, 1.0f);
+				Splat.SH_DC = FVector3f(
+					(Pixel.R.GetFloat() - 0.5f) / GaussianSplattingConstants::SH_C0,
+					(Pixel.G.GetFloat() - 0.5f) / GaussianSplattingConstants::SH_C0,
+					(Pixel.B.GetFloat() - 0.5f) / GaussianSplattingConstants::SH_C0);
+			}
+		}
+
+		// Higher-order SH coefficients (float16), DC first then bands 1-3
+		if (bHasSH)
+		{
+			const int32 BaseIdx = i * TotalCoeffs * 3;
+			for (int32 c = 1; c < TotalCoeffs; c++)
+			{
+				Splat.SH[c - 1] = FVector3f(
+					SHHalf[BaseIdx + c * 3 + 0].GetFloat(),
+					SHHalf[BaseIdx + c * 3 + 1].GetFloat(),
+					SHHalf[BaseIdx + c * 3 + 2].GetFloat());
+			}
+		}
+
+		// AnchorTime/TimeSigma intentionally left at defaults (0 / 1e10):
+		// they are not part of the .o4d container's splat records.
+	}
+
+	return true;
 }
 
 void UGaussianSplatAsset::UnlockPositionData() const

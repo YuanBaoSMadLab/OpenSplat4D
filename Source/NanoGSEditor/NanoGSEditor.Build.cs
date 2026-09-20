@@ -30,23 +30,25 @@ public class NanoGSEditor : ModuleRules
 		);
 
 		PrivateDependencyModuleNames.AddRange(
-			new string[]
-			{
-				"Slate",
-				"SlateCore",
-				"InputCore",
-				"UnrealEd",
-				"AssetTools",
-				"EditorFramework",
-				"Projects",
-				"ToolMenus",
-				"PropertyEditor",
-				"AdvancedPreviewScene",
-				"EditorStyle",
-				"ComponentVisualizers",
-				"WorkspaceMenuStructure"
-			}
-		);
+				new string[]
+				{
+					"Slate",
+					"SlateCore",
+					"InputCore",
+					"UnrealEd",
+					"AssetTools",
+					"AssetRegistry",
+					"DesktopPlatform",
+					"EditorFramework",
+					"Projects",
+					"ToolMenus",
+					"PropertyEditor",
+					"AdvancedPreviewScene",
+					"EditorStyle",
+					"ComponentVisualizers",
+					"WorkspaceMenuStructure"
+				}
+			);
 
 		// UE 6.0+ splits FEditorViewportClientBase into a separate EditorViewport module
 		if (Target.Version.MajorVersion >= 6)

@@ -4,10 +4,18 @@
 #include "GaussianSplatAsset.h"
 #include "GaussianSplatAssetEditor.h"
 #include "GaussianSplat4DEditor.h"
+#include "GaussianSplatAssetFactory.h"
 #include "EditorReimportHandler.h"
 #include "ToolMenuSection.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Misc/Paths.h"
+#include "Misc/MessageDialog.h"
+#include "DesktopPlatformModule.h"
+#include "Framework/Application/SlateApplication.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetToolsModule.h"
+#include "ObjectTools.h"
+#include "UObject/Package.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions_GaussianSplatAsset"
 
@@ -62,6 +70,19 @@ void FAssetTypeActions_GaussianSplatAsset::GetActions(const TArray<UObject*>& In
 		FSlateIcon(),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteShowInfo, GaussianSplatAssets),
+			FCanExecuteAction()
+		)
+	);
+
+	// PLY sequence import (keyframe 4D): opens a multi-select file dialog and
+	// builds a single keyframe 4D asset from the selected per-frame PLY files.
+	Section.AddMenuEntry(
+		"GaussianSplatAsset_ImportPLYSequence",
+		LOCTEXT("ImportPLYSequenceLabel", "导入 PLY 序列（关键帧 4D）"),
+		LOCTEXT("ImportPLYSequenceTooltip", "选择多个逐帧 PLY 文件（按文件名排序），导入为关键帧 4D 资产。要求每帧顶点数一致。"),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteImportPLYSequence, GaussianSplatAssets),
 			FCanExecuteAction()
 		)
 	);
@@ -266,6 +287,95 @@ bool FAssetTypeActions_GaussianSplatAsset::AreAllNaniteDisabled(TArray<TWeakObje
 		}
 	}
 	return Objects.Num() > 0;
+}
+
+void FAssetTypeActions_GaussianSplatAsset::ExecuteImportPLYSequence(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects)
+{
+	// 1. Multi-select file dialog for the PLY frames
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (!DesktopPlatform)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("ImportSequenceNoPlatform", "无法打开文件选择对话框。"));
+		return;
+	}
+
+	// Default browse directory: folder of the first selected asset's source file
+	FString DefaultFolder;
+	for (const TWeakObjectPtr<UGaussianSplatAsset>& AssetPtr : Objects)
+	{
+		if (UGaussianSplatAsset* Asset = AssetPtr.Get())
+		{
+			if (!Asset->SourceFilePath.IsEmpty())
+			{
+				DefaultFolder = FPaths::GetPath(Asset->SourceFilePath);
+				break;
+			}
+		}
+	}
+	if (DefaultFolder.IsEmpty())
+	{
+		DefaultFolder = FPaths::ProjectContentDir();
+	}
+
+	TArray<FString> SelectedFiles;
+	const void* ParentWindowHandle = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr);
+	if (!DesktopPlatform->OpenFileDialog(
+			ParentWindowHandle,
+			TEXT("选择 PLY 序列帧（可多选）"),
+			DefaultFolder,
+			TEXT(""),
+			TEXT("PLY 文件 (*.ply)|*.ply"),
+			EFileDialogFlags::Multiple,
+			SelectedFiles) || SelectedFiles.Num() < 2)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("ImportSequenceNeedFrames", "请至少选择 2 个 PLY 文件才能构成关键帧 4D 序列。"));
+		return;
+	}
+
+	// 2. Target package path: same folder as the first selected asset (fallback /Game/)
+	FString PackagePath = TEXT("/Game");
+	for (const TWeakObjectPtr<UGaussianSplatAsset>& AssetPtr : Objects)
+	{
+		if (UGaussianSplatAsset* Asset = AssetPtr.Get())
+		{
+			const FString AssetPackageName = Asset->GetPackage()->GetName();
+			const int32 SlashIndex = AssetPackageName.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+			if (SlashIndex != INDEX_NONE)
+			{
+				PackagePath = AssetPackageName.Left(SlashIndex);
+			}
+			break;
+		}
+	}
+
+	// 3. Asset name: first sorted frame's base name, sanitized and made unique
+	SelectedFiles.Sort([](const FString& A, const FString& B) { return A < B; });
+	FString AssetBaseName = ObjectTools::SanitizeObjectName(FPaths::GetBaseFilename(SelectedFiles[0]));
+	if (AssetBaseName.IsEmpty())
+	{
+		AssetBaseName = TEXT("PLYSequence");
+	}
+	FString OutPackageName, OutAssetName;
+	FAssetToolsModule::GetModule().Get().CreateUniqueAssetName(PackagePath / AssetBaseName, TEXT(""), OutPackageName, OutAssetName);
+
+	UPackage* TargetPackage = CreatePackage(*OutPackageName);
+
+	// 4. Run the sequence import
+	FString ImportError;
+	UGaussianSplatAsset* NewAsset = UGaussianSplatAssetFactory::ImportPLYSequence(
+		SelectedFiles, TargetPackage, FName(*OutAssetName), RF_Public | RF_Standalone, &ImportError);
+
+	if (!NewAsset)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(
+			ImportError.IsEmpty() ? TEXT("PLY 序列导入失败，请查看输出日志。") : ImportError));
+		return;
+	}
+
+	FAssetRegistryModule::AssetCreated(NewAsset);
+	NewAsset->MarkPackageDirty();
+
+	UE_LOG(LogTemp, Log, TEXT("Created keyframe 4D asset '%s' from %d PLY frames"), *NewAsset->GetName(), SelectedFiles.Num());
 }
 
 #undef LOCTEXT_NAMESPACE

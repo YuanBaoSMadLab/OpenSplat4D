@@ -37,6 +37,9 @@ private:
 	/** Handler for disabling Nanite */
 	void ExecuteDisableNanite(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
 
+	/** Handler for importing a multi-file PLY sequence as a keyframe 4D asset */
+	void ExecuteImportPLYSequence(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
+
 	/** Check if all selected assets have Nanite enabled */
 	bool AreAllNaniteEnabled(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects) const;
 

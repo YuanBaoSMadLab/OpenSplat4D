@@ -123,6 +123,19 @@ public:
 	/** Whether the asset has 4D temporal data */
 	bool bIs4D = false;
 
+	/** Keyframe 4D data buffer (static, from asset; dummy when not keyframe 4D) */
+	FBufferRHIRef KeyframeBuffer;
+	FShaderResourceViewRHIRef KeyframeBufferSRV;
+
+	/** Whether the asset uses keyframe 4D playback (overrides temporal marginalization when set) */
+	bool bIsKeyframe4D = false;
+
+	/** Number of keyframes in KeyframeBuffer */
+	int32 KeyframeFrameCount = 0;
+
+	/** Splats per frame covered by KeyframeBuffer */
+	int32 KeyframeSplatCount = 0;
+
 	/** Current 4D playback time (asset time units). Written by render commands from the owning component. */
 	float CurrentTime = 0.f;
 

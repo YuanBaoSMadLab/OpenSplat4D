@@ -9,6 +9,16 @@ ByteAddressBuffer PackedSplatBuffer;  // 16 bytes/splat packed data
 ByteAddressBuffer SHBuffer;           // SH data (currently unused)
 ByteAddressBuffer TemporalBuffer;     // 4D temporal data (16 bytes/splat: AnchorTime f32 | Sigma f32 | reserved 8B)
 
+// Keyframe 4D: per-frame PLY sequence. Each frame stores every splat's full
+// state in 64 bytes: Position 3xf32 | Rotation 4xf32 (XYZW) | Scale 3xf32 |
+// Opacity f32 | Color RGB 3xf32 (sRGB display color) | reserved 8B.
+// Record offset: base = (frame * KeyframeSplatCount + splatIndex) * 64.
+ByteAddressBuffer KeyframeBuffer;
+uint UseKeyframes;        // 1 = keyframe 4D mode (overrides PackedSplatBuffer unpack + SH)
+uint KeyframeSplatCount;  // M: splats per frame
+uint KeyframeFrameCount;  // N: number of keyframes
+float KeyframeFrameTime;  // Current frame index as a float (interpolated between FA and FA+1)
+
 // 4D temporal marginalization: opacity *= w(t) = exp(-0.5 * (T - t)^2 / sigma^2)
 uint UseTemporal;         // 1 = asset has temporal data
 float CurrentTime;        // Current playback time (asset time units)
@@ -104,6 +114,62 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	float3 scale = splat.Scale * SplatScale;
 	float4 colorOpacity = splat.ColorOpacity;
 	float opacity = colorOpacity.a * OpacityScale;
+
+	// Keyframe 4D: position/rotation/scale/opacity/color ALL come from
+	// interpolated keyframes instead of the PackedSplatBuffer unpack result.
+	// The CPU forces UseTemporal=0 in this mode (mutually exclusive).
+	if (UseKeyframes)
+	{
+		if (KeyframeFrameCount == 0u || splatIndex >= KeyframeSplatCount)
+		{
+			// No keyframe data covers this splat (e.g. LOD splat appended after import)
+			WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
+			return;
+		}
+
+		const float FT = clamp(KeyframeFrameTime, 0.0, (float)(KeyframeFrameCount - 1u));
+		const uint FA = (uint)floor(FT);
+		const uint FB = min(FA + 1u, KeyframeFrameCount - 1u);
+		const float Alpha = FT - (float)FA;
+
+		const uint BaseA = (FA * KeyframeSplatCount + splatIndex) * 64u;
+		const uint BaseB = (FB * KeyframeSplatCount + splatIndex) * 64u;
+
+		// 64B record = 16 uint words:
+		//   w0-2 pos | w3-6 quat XYZW | w7-9 scale | w10 opacity | w11-13 color | w14-15 reserved
+		const uint4 A0 = KeyframeBuffer.Load4(BaseA);
+		const uint4 A1 = KeyframeBuffer.Load4(BaseA + 16u);
+		const uint4 A2 = KeyframeBuffer.Load4(BaseA + 32u);
+		const uint4 A3 = KeyframeBuffer.Load4(BaseA + 48u);
+		const uint4 B0 = KeyframeBuffer.Load4(BaseB);
+		const uint4 B1 = KeyframeBuffer.Load4(BaseB + 16u);
+		const uint4 B2 = KeyframeBuffer.Load4(BaseB + 32u);
+		const uint4 B3 = KeyframeBuffer.Load4(BaseB + 48u);
+
+		const float3 PosA = asfloat(uint3(A0.x, A0.y, A0.z));
+		const float3 PosB = asfloat(uint3(B0.x, B0.y, B0.z));
+		const float4 RotA = float4(asfloat(A0.w), asfloat(A1.x), asfloat(A1.y), asfloat(A1.z));
+		const float4 RotB = float4(asfloat(B0.w), asfloat(B1.x), asfloat(B1.y), asfloat(B1.z));
+		const float3 SclA = asfloat(uint3(A1.w, A2.x, A2.y));
+		const float3 SclB = asfloat(uint3(B1.w, B2.x, B2.y));
+		const float OpA = asfloat(A2.z);
+		const float OpB = asfloat(B2.z);
+		const float3 ColA = asfloat(uint3(A2.w, A3.x, A3.y));
+		const float3 ColB = asfloat(uint3(B2.w, B3.x, B3.y));
+
+		// Quaternion nlerp with shortest-arc sign alignment
+		float4 RotBAligned = RotB;
+		if (dot(RotA, RotB) < 0.0)
+		{
+			RotBAligned = -RotB;
+		}
+
+		localPos = lerp(PosA, PosB, Alpha);
+		rotation = normalize(lerp(RotA, RotBAligned, Alpha));
+		scale = lerp(SclA, SclB, Alpha) * SplatScale;
+		colorOpacity = float4(lerp(ColA, ColB, Alpha), lerp(OpA, OpB, Alpha));
+		opacity = colorOpacity.a * OpacityScale;
+	}
 
 	// 4D temporal marginalization (spacetime gaussians):
 	// opacity is weighted by w(t) = exp(-0.5 * (T - t)^2 / sigma^2), so a
@@ -207,7 +273,9 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	// Compute final color
 	float3 finalColor;
 
-	if (UseSHRendering && NumSHCoeffs > 0)
+	// Keyframe mode skips SH: colorOpacity already carries the interpolated
+	// per-keyframe display color (frame SH data is not stored per keyframe).
+	if (UseSHRendering && NumSHCoeffs > 0 && !UseKeyframes)
 	{
 		// View-dependent SH rendering
 		// Load SH coefficients from buffer (DC + higher-order)

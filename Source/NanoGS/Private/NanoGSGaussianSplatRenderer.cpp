@@ -168,9 +168,14 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
 	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
-	// 4D temporal marginalization (no-op for static assets: UseTemporal=0)
+	// 4D: keyframe playback overrides temporal marginalization (mutually exclusive)
 	Parameters.TemporalBuffer = GPUResources->TemporalBufferSRV;
-	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
+	Parameters.KeyframeBuffer = GPUResources->KeyframeBufferSRV;
+	Parameters.UseKeyframes = GPUResources->bIsKeyframe4D ? 1u : 0u;
+	Parameters.KeyframeSplatCount = (uint32)GPUResources->KeyframeSplatCount;
+	Parameters.KeyframeFrameCount = (uint32)GPUResources->KeyframeFrameCount;
+	Parameters.KeyframeFrameTime = GPUResources->CurrentTime;
+	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
 	// Distance-based visibility range (0 = unlimited)
@@ -827,9 +832,14 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
 	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
-	// 4D temporal marginalization (no-op for static assets: UseTemporal=0)
+	// 4D: keyframe playback overrides temporal marginalization (mutually exclusive)
 	Parameters.TemporalBuffer = GPUResources->TemporalBufferSRV;
-	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
+	Parameters.KeyframeBuffer = GPUResources->KeyframeBufferSRV;
+	Parameters.UseKeyframes = GPUResources->bIsKeyframe4D ? 1u : 0u;
+	Parameters.KeyframeSplatCount = (uint32)GPUResources->KeyframeSplatCount;
+	Parameters.KeyframeFrameCount = (uint32)GPUResources->KeyframeFrameCount;
+	Parameters.KeyframeFrameTime = GPUResources->CurrentTime;
+	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
 	// Distance-based visibility range (0 = unlimited)
@@ -971,9 +981,14 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
 	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
-	// 4D temporal marginalization (no-op for static assets: UseTemporal=0)
+	// 4D: keyframe playback overrides temporal marginalization (mutually exclusive)
 	Parameters.TemporalBuffer = GPUResources->TemporalBufferSRV;
-	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
+	Parameters.KeyframeBuffer = GPUResources->KeyframeBufferSRV;
+	Parameters.UseKeyframes = GPUResources->bIsKeyframe4D ? 1u : 0u;
+	Parameters.KeyframeSplatCount = (uint32)GPUResources->KeyframeSplatCount;
+	Parameters.KeyframeFrameCount = (uint32)GPUResources->KeyframeFrameCount;
+	Parameters.KeyframeFrameTime = GPUResources->CurrentTime;
+	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
 	// Distance-based visibility range (0 = unlimited)
@@ -1433,9 +1448,14 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 
 	FGaussianSplatCalcViewDataCS::FParameters Parameters;
 	Parameters.PackedSplatBuffer = GPUResources->PackedSplatBufferSRV;
-	// 4D temporal marginalization (no-op for static assets: UseTemporal=0)
+	// 4D: keyframe playback overrides temporal marginalization (mutually exclusive)
 	Parameters.TemporalBuffer = GPUResources->TemporalBufferSRV;
-	Parameters.UseTemporal = GPUResources->bIs4D ? 1u : 0u;
+	Parameters.KeyframeBuffer = GPUResources->KeyframeBufferSRV;
+	Parameters.UseKeyframes = GPUResources->bIsKeyframe4D ? 1u : 0u;
+	Parameters.KeyframeSplatCount = (uint32)GPUResources->KeyframeSplatCount;
+	Parameters.KeyframeFrameCount = (uint32)GPUResources->KeyframeFrameCount;
+	Parameters.KeyframeFrameTime = GPUResources->CurrentTime;
+	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
 	// Distance-based visibility range (0 = unlimited)

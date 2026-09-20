@@ -19,7 +19,8 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnGaussianSplatAssetChanged, UGaussianSplat
 
 // Serialization magic/version for format identification
 #define GAUSSIAN_SPLAT_ASSET_MAGIC   0x47535056  // "GSPV"
-#define GAUSSIAN_SPLAT_ASSET_VERSION 6  // v6: optional 4D temporal data (bIs4D/TimeStart/TimeEnd/TemporalBulkData). v5 assets load unchanged.
+// v7: keyframe 4D data (bIsKeyframe4D/KeyframeCount/KeyframeBulkData). v5/v6 assets load unchanged (Version<7 never reads the new fields).
+#define GAUSSIAN_SPLAT_ASSET_VERSION 7
 
 /**
  * Asset containing Gaussian Splatting data loaded from PLY files
@@ -194,6 +195,66 @@ public:
 	/** Lock temporal bulk data in place. Returns nullptr if empty. */
 	const void* LockTemporalDataReadOnly(int64* OutSize = nullptr) const;
 	void UnlockTemporalData() const;
+
+	// ------------------------------------------------------------------
+	// Keyframe 4D data (second 4D mode, mutually exclusive with the
+	// t/scale_t temporal marginalization above; guarded by bIsKeyframe4D).
+	// Per-frame PLY sequence: each frame stores every splat's full state in
+	// 64 bytes: Position 3xf32 (12B) | Rotation 4xf32 XYZW (16B) | Scale
+	// 3xf32 (12B) | Opacity f32 (4B) | Color RGB 3xf32 (12B) | reserved 8B.
+	// Record offset: base = (frame * SplatCount + splatIndex) * 64.
+	// TimeStart=0, TimeEnd=KeyframeCount-1 => CurrentTime is the frame
+	// index as a float (play rate = frames per second).
+	// ------------------------------------------------------------------
+
+	/** Whether this asset uses keyframe 4D playback (per-frame PLY sequence) */
+	UPROPERTY(VisibleAnywhere, Category = "4D", meta = (DisplayName = "关键帧 4D 数据"))
+	bool bIsKeyframe4D = false;
+
+	/** Number of keyframes stored (N). TimeEnd = KeyframeCount - 1. */
+	UPROPERTY(VisibleAnywhere, Category = "4D", meta = (DisplayName = "关键帧数"))
+	int32 KeyframeCount = 0;
+
+	/** Per-frame splat state (KeyframeCount * SplatCount * KeyframeStride bytes, only when bIsKeyframe4D) */
+	FByteBulkData KeyframeBulkData;
+
+	/** Keyframe record stride in bytes */
+	static constexpr int32 KeyframeStride = 64;
+
+	/** Whether this asset uses keyframe 4D playback */
+	UFUNCTION(BlueprintCallable, Category = "4D")
+	bool IsKeyframe4D() const { return bIsKeyframe4D; }
+
+	/** Lock keyframe bulk data in place. Returns nullptr if empty. */
+	const void* LockKeyframeDataReadOnly(int64* OutSize = nullptr) const;
+	void UnlockKeyframeData() const;
+
+	/**
+	 * Save this asset to the dedicated .o4d v2 container file
+	 * (magic 'O4D2' + header + splat records + optional keyframe block).
+	 * @param FilePath Target file path (typically with .o4d extension)
+	 * @return True on success
+	 */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅")
+	bool SaveToO4DFile(FString FilePath);
+
+	/**
+	 * Load an asset from a .o4d v2 container file created by SaveToO4DFile
+	 * (or produced alongside the keyframe 4D importer).
+	 * @param FilePath Source .o4d file path
+	 * @param Outer Outer for the new asset (defaults to the transient package)
+	 * @return The loaded asset, or nullptr on failure
+	 */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅")
+	static UGaussianSplatAsset* LoadFromO4DFile(FString FilePath, UObject* Outer);
+
+	/**
+	 * Decompress the stored bulk data back into raw splat records
+	 * (positions float32, rotation/scale float32, opacity + SH DC from the
+	 * color texture, higher-order SH from the SH buffer).
+	 * Used by SaveToO4DFile; not every field is bit-exact (float16 colors/SH).
+	 */
+	bool DecompressToSplatData(TArray<FGaussianSplatData>& OutSplats) const;
 
 	/** Color texture width */
 	UPROPERTY()

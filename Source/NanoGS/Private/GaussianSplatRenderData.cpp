@@ -32,6 +32,38 @@ void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset)
 	SplatCount = Asset->GetSplatCount();
 	PositionFormat = Asset->PositionFormat;
 	bIs4D = Asset->Is4D();
+	bIsKeyframe4D = Asset->IsKeyframe4D();
+
+	// --- Pack keyframe 4D data (64 bytes/splat/frame) ---
+	if (bIsKeyframe4D)
+	{
+		int64 KeyframeSize = 0;
+		const uint8* RawKeyframeData = static_cast<const uint8*>(Asset->LockKeyframeDataReadOnly(&KeyframeSize));
+		ON_SCOPE_EXIT
+		{
+			Asset->UnlockKeyframeData();
+		};
+
+		KeyframeFrameCount = Asset->KeyframeCount;
+		if (RawKeyframeData && KeyframeSize > 0 && KeyframeFrameCount > 0)
+		{
+			// Derive M from the actual bulk data size so a later Nanite rebuild
+			// (which grows SplatCount with LOD splats) cannot invalidate the check.
+			KeyframeSplatCount = static_cast<int32>(KeyframeSize / (static_cast<int64>(KeyframeFrameCount) * UGaussianSplatAsset::KeyframeStride));
+			KeyframeData.SetNumUninitialized(static_cast<int32>(KeyframeSize));
+			FMemory::Memcpy(KeyframeData.GetData(), RawKeyframeData, KeyframeData.Num());
+		}
+		else
+		{
+			// Keyframe data missing (shouldn't happen) -- fall back to static frame-0 rendering
+			UE_LOG(LogTemp, Warning, TEXT("GaussianSplatRenderData: asset '%s' marked keyframe 4D but keyframe data missing; treating as static"),
+				*AssetName);
+			KeyframeData.Reset();
+			bIsKeyframe4D = false;
+			KeyframeFrameCount = 0;
+			KeyframeSplatCount = 0;
+		}
+	}
 
 	// --- Pack 4D temporal data (16 bytes/splat) ---
 	if (bIs4D)
@@ -295,6 +327,39 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 		SharedBufferCount++;
 	}
 
+	// --- Keyframe 4D buffer (always create at least a dummy for shader binding) ---
+	{
+		uint32 KeyframeDataSize = KeyframeData.Num();
+		if (KeyframeDataSize == 0)
+		{
+			KeyframeDataSize = UGaussianSplatAsset::KeyframeStride; // dummy single record
+		}
+
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianKeyframeBuffer"),
+			KeyframeDataSize,
+			0,
+			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
+			.SetInitialState(ERHIAccess::SRVMask);
+		KeyframeBuffer = RHICmdList.CreateBuffer(Desc);
+
+		void* Data = RHICmdList.LockBuffer(KeyframeBuffer, 0, KeyframeDataSize, RLM_WriteOnly);
+		if (KeyframeData.Num() > 0)
+		{
+			FMemory::Memcpy(Data, KeyframeData.GetData(), KeyframeData.Num());
+		}
+		else
+		{
+			FMemory::Memzero(Data, KeyframeDataSize);
+		}
+		RHICmdList.UnlockBuffer(KeyframeBuffer);
+
+		KeyframeBufferSRV = RHICmdList.CreateShaderResourceView(
+			KeyframeBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Raw));
+		SharedBufferCount++;
+	}
+
 	// --- Chunk buffer (always create at least a dummy for shader binding) ---
 	{
 		uint32 ChunkCount = CachedChunkData.Num();
@@ -407,6 +472,7 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 	PackedSplatData.Empty();
 	SHData.Empty();
 	TemporalData.Empty();
+	KeyframeData.Empty();
 	CachedChunkData.Empty();
 	CachedClusterData.Empty();
 	CachedSplatClusterIndices.Empty();
@@ -430,6 +496,8 @@ void FGaussianSplatRenderData::ReleaseGPUBuffers()
 	ClusterBufferSRV.SafeRelease();
 	TemporalBuffer.SafeRelease();
 	TemporalBufferSRV.SafeRelease();
+	KeyframeBuffer.SafeRelease();
+	KeyframeBufferSRV.SafeRelease();
 	SplatClusterIndexBuffer.SafeRelease();
 	SplatClusterIndexBufferSRV.SafeRelease();
 	bGPUBuffersCreated = false;
