@@ -3,6 +3,7 @@
 #include "PLYFileReader.h"
 #include "Misc/FileHelper.h"
 #include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformMemory.h"
 
 bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatData>& OutSplats, FString& OutError, int32* OutSHBands, bool* OutHasTemporal)
 {
@@ -90,6 +91,20 @@ bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatD
 	{
 		OutError = FString::Printf(TEXT("File truncated: expected %lld bytes of vertex data, file size is %lld"),
 			ExpectedEnd, FileSize);
+		return false;
+	}
+
+	// Memory guard: the CPU-side splat array is ~240 bytes per vertex. Refuse
+	// huge imports up-front with a clear message instead of crashing (OOM can
+	// surface as a random access violation deep inside the read loop).
+	const int64 RequiredBytes = static_cast<int64>(Header.VertexCount) * sizeof(FGaussianSplatData);
+	const FPlatformMemoryStats MemStats = FPlatformMemory::GetStats();
+	if (MemStats.AvailablePhysical > 0 && RequiredBytes > static_cast<int64>(MemStats.AvailablePhysical * 0.75))
+	{
+		OutError = FString::Printf(TEXT("Not enough memory to import %d splats: needs %.1f GB, only %.1f GB available. Reduce the splat count (decimate the PLY) or close other applications."),
+			Header.VertexCount,
+			RequiredBytes / (1024.0 * 1024.0 * 1024.0),
+			MemStats.AvailablePhysical / (1024.0 * 1024.0 * 1024.0));
 		return false;
 	}
 
@@ -217,7 +232,9 @@ bool FPLYFileReader::ParseHeader(IFileHandle* FileHandle, FPLYHeader& OutHeader,
 		if (TrimmedLine.StartsWith(TEXT("element vertex")))
 		{
 			TArray<FString> Parts;
-			TrimmedLine.ParseIntoArray(Parts, TEXT(" "));
+			// ParseIntoArrayWS: split on ANY whitespace (space/tab/multiple), so
+			// headers written with tabs or double spaces still parse correctly.
+			TrimmedLine.ParseIntoArrayWS(Parts);
 			if (Parts.Num() >= 3)
 			{
 				OutHeader.VertexCount = FCString::Atoi(*Parts[2]);
@@ -235,7 +252,7 @@ bool FPLYFileReader::ParseHeader(IFileHandle* FileHandle, FPLYHeader& OutHeader,
 		if (bInVertexElement && TrimmedLine.StartsWith(TEXT("property")))
 		{
 			TArray<FString> Parts;
-			TrimmedLine.ParseIntoArray(Parts, TEXT(" "));
+			TrimmedLine.ParseIntoArrayWS(Parts);
 
 			if (Parts.Num() >= 3)
 			{
@@ -251,21 +268,33 @@ bool FPLYFileReader::ParseHeader(IFileHandle* FileHandle, FPLYHeader& OutHeader,
 				{
 					TypeSize = 8;
 				}
-				else if (Type == TEXT("uchar") || Type == TEXT("uint8"))
+				else if (Type == TEXT("uchar") || Type == TEXT("uint8") || Type == TEXT("char") || Type == TEXT("int8"))
 				{
 					TypeSize = 1;
 				}
-				else if (Type == TEXT("int") || Type == TEXT("int32"))
+				else if (Type == TEXT("ushort") || Type == TEXT("uint16") || Type == TEXT("short") || Type == TEXT("int16"))
+				{
+					TypeSize = 2;
+				}
+				else if (Type == TEXT("uint") || Type == TEXT("uint32") || Type == TEXT("int") || Type == TEXT("int32"))
 				{
 					TypeSize = 4;
 				}
-				else if (Type == TEXT("short") || Type == TEXT("int16"))
+				else if (Type == TEXT("int64") || Type == TEXT("uint64") || Type == TEXT("long"))
 				{
-					TypeSize = 2;
+					TypeSize = 8;
+				}
+				else
+				{
+					// Unknown type (e.g. "list"): skip the property entirely so it
+					// can never produce a bogus offset within the vertex data.
+					UE_LOG(LogTemp, Warning, TEXT("PLYFileReader: Skipping unsupported property type '%s' (name '%s')"), *Type, *Name);
+					continue;
 				}
 
 				OutHeader.PropertyNames.Add(Name);
 				OutHeader.PropertyOffsets.Add(Name, CurrentOffset);
+				OutHeader.PropertySizes.Add(Name, TypeSize);
 				CurrentOffset += TypeSize;
 			}
 			continue;
@@ -299,7 +328,8 @@ bool FPLYFileReader::ParseHeader(IFileHandle* FileHandle, FPLYHeader& OutHeader,
 
 	if (OutHeader.VertexStride <= 0)
 	{
-		OutError = TEXT("Parsed vertex stride is 0 — PLY header has no recognized properties");
+		OutError = FString::Printf(TEXT("Parsed vertex stride is 0 — PLY header has no recognized properties. Found property names: [%s]"),
+			*FString::Join(OutHeader.PropertyNames, TEXT(", ")));
 		return false;
 	}
 
@@ -359,6 +389,46 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 	TArray<uint8> ChunkBuffer;
 	ChunkBuffer.SetNumUninitialized(ChunkSize * VertexStride);
 
+	// Precompute property offsets ONCE (not per vertex): with 57M vertices and
+	// 20+ lookups each, per-vertex FString Printf + TMap Find dominated import
+	// time and hammered the allocator. All cached properties below are declared
+	// float in 3DGS PLY files; color/other fallbacks keep using the type-aware
+	// GetPropertyFloat.
+	auto FindOff = [&Header](const TCHAR* Name) -> int32
+	{
+		if (const int32* P = Header.PropertyOffsets.Find(FString(Name)))
+		{
+			return *P;
+		}
+		return -1;
+	};
+	auto ReadF = [VertexStride](const uint8* VD, int32 Off, float Def) -> float
+	{
+		// Bounds check keeps the chunk read inside the vertex record.
+		return (Off >= 0 && Off + 4 <= VertexStride) ? *reinterpret_cast<const float*>(VD + Off) : Def;
+	};
+
+	const int32 OffX = FindOff(TEXT("x")), OffY = FindOff(TEXT("y")), OffZ = FindOff(TEXT("z"));
+	const int32 OffRot[4] = { FindOff(TEXT("rot_0")), FindOff(TEXT("rot_1")), FindOff(TEXT("rot_2")), FindOff(TEXT("rot_3")) };
+	const int32 OffScale[3] = { FindOff(TEXT("scale_0")), FindOff(TEXT("scale_1")), FindOff(TEXT("scale_2")) };
+	const int32 OffOpacity = FindOff(TEXT("opacity"));
+	const int32 OffDC[3] = { FindOff(TEXT("f_dc_0")), FindOff(TEXT("f_dc_1")), FindOff(TEXT("f_dc_2")) };
+	const int32 OffT = FindOff(TEXT("t"));
+	const int32 OffScaleT = FindOff(TEXT("scale_t"));
+	const bool bHasDC = OffDC[0] >= 0 && OffDC[1] >= 0 && OffDC[2] >= 0;
+	const bool bHasTemporal = OffT >= 0 || OffScaleT >= 0;
+
+	int32 OffRest[3][15];
+	for (int32 c = 0; c < 15; c++)
+	{
+		for (int32 ch = 0; ch < 3; ch++)
+		{
+			OffRest[ch][c] = (c < CoeffsPerChannel)
+				? FindOff(*FString::Printf(TEXT("f_rest_%d"), c + ch * CoeffsPerChannel))
+				: -1;
+		}
+	}
+
 	int32 VerticesRemaining = Header.VertexCount;
 	int32 VertexIndex = 0;
 
@@ -383,9 +453,9 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 			// Most 3DGS training pipelines use COLMAP which has Y pointing down
 			// Multiply by 100 to convert from meters (PLY) to centimeters (UE)
 			constexpr float MetersToUE = 100.0f;
-			float PlyX = GetPropertyFloat(VertexData, Header, TEXT("x"));
-			float PlyY = GetPropertyFloat(VertexData, Header, TEXT("y"));
-			float PlyZ = GetPropertyFloat(VertexData, Header, TEXT("z"));
+			float PlyX = ReadF(VertexData, OffX, 0.0f);
+			float PlyY = ReadF(VertexData, OffY, 0.0f);
+			float PlyZ = ReadF(VertexData, OffZ, 0.0f);
 			Splat.Position.X = PlyZ * MetersToUE;    // PLY Z -> UE X (forward)
 			Splat.Position.Y = PlyX * MetersToUE;    // PLY X -> UE Y (right)
 			Splat.Position.Z = -PlyY * MetersToUE;   // PLY -Y -> UE Z (up, negated because PLY Y points down)
@@ -394,10 +464,10 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 			// PLY uses (w, x, y, z) format with Y-down (COLMAP convention)
 			// Pattern: when position axis is NOT negated, quaternion component IS negated (and vice versa)
 			// Position: PLY.X -> UE.Y (not negated), PLY.Y -> UE.-Z (negated), PLY.Z -> UE.X (not negated)
-			float QW = GetPropertyFloat(VertexData, Header, TEXT("rot_0"), 1.0f); // identity w
-			float QX = GetPropertyFloat(VertexData, Header, TEXT("rot_1"), 0.0f);
-			float QY = GetPropertyFloat(VertexData, Header, TEXT("rot_2"), 0.0f);
-			float QZ = GetPropertyFloat(VertexData, Header, TEXT("rot_3"), 0.0f);
+			float QW = ReadF(VertexData, OffRot[0], 1.0f); // identity w
+			float QX = ReadF(VertexData, OffRot[1], 0.0f);
+			float QY = ReadF(VertexData, OffRot[2], 0.0f);
+			float QZ = ReadF(VertexData, OffRot[3], 0.0f);
 			Splat.Rotation.W = QW;
 			Splat.Rotation.X = -QZ;   // PLY Z -> UE X (negated: position not negated)
 			Splat.Rotation.Y = -QX;   // PLY X -> UE Y (negated: position not negated)
@@ -405,27 +475,27 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 
 			// Scale - Reorder to match coordinate system conversion
 			// Scale is always positive magnitude, no negation needed
-			float ScaleX = GetPropertyFloat(VertexData, Header, TEXT("scale_0"), -4.5f); // ~1cm default
-			float ScaleY = GetPropertyFloat(VertexData, Header, TEXT("scale_1"), -4.5f);
-			float ScaleZ = GetPropertyFloat(VertexData, Header, TEXT("scale_2"), -4.5f);
+			float ScaleX = ReadF(VertexData, OffScale[0], -4.5f); // ~1cm default
+			float ScaleY = ReadF(VertexData, OffScale[1], -4.5f);
+			float ScaleZ = ReadF(VertexData, OffScale[2], -4.5f);
 			Splat.Scale.X = ScaleZ;  // PLY Z -> UE X
 			Splat.Scale.Y = ScaleX;  // PLY X -> UE Y
 			Splat.Scale.Z = ScaleY;  // PLY Y -> UE Z
 
 			// Opacity
-			Splat.Opacity = GetPropertyFloat(VertexData, Header, TEXT("opacity"), 10.0f); // ≈1.0 after sigmoid
+			Splat.Opacity = ReadF(VertexData, OffOpacity, 10.0f); // ≈1.0 after sigmoid
 
 			// SH DC (base color) — fall back to red/green/blue if f_dc_*
 			// isn't present (standard COLMAP point cloud PLY), then to white.
-			if (Header.PropertyOffsets.Contains(TEXT("f_dc_0")))
+			if (bHasDC)
 			{
-				Splat.SH_DC.X = GetPropertyFloat(VertexData, Header, TEXT("f_dc_0"));
-				Splat.SH_DC.Y = GetPropertyFloat(VertexData, Header, TEXT("f_dc_1"));
-				Splat.SH_DC.Z = GetPropertyFloat(VertexData, Header, TEXT("f_dc_2"));
+				Splat.SH_DC.X = ReadF(VertexData, OffDC[0], 0.0f);
+				Splat.SH_DC.Y = ReadF(VertexData, OffDC[1], 0.0f);
+				Splat.SH_DC.Z = ReadF(VertexData, OffDC[2], 0.0f);
 			}
 			else if (Header.PropertyOffsets.Contains(TEXT("red")))
 			{
-				// Normalize from [0,255] to [0,1]
+				// Normalize from [0,255] to [0,1] (may be uchar — type-aware read)
 				Splat.SH_DC.X = GetPropertyFloat(VertexData, Header, TEXT("red")) / 255.0f;
 				Splat.SH_DC.Y = GetPropertyFloat(VertexData, Header, TEXT("green")) / 255.0f;
 				Splat.SH_DC.Z = GetPropertyFloat(VertexData, Header, TEXT("blue")) / 255.0f;
@@ -444,20 +514,14 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 				Splat.SH_DC.Z = 1.0f;
 			}
 
-			// SH rest coefficients (bands 1-3)
-			// Uses CoeffsPerChannel detected earlier (outside the loop)
+			// SH rest coefficients (bands 1-3), planar layout via cached offsets
 			for (int32 c = 0; c < GaussianSplattingConstants::NumSHCoefficients; c++)
 			{
 				if (c < CoeffsPerChannel)
 				{
-					// Read from correct planar positions
-					FString PropNameR = FString::Printf(TEXT("f_rest_%d"), c);
-					FString PropNameG = FString::Printf(TEXT("f_rest_%d"), c + CoeffsPerChannel);
-					FString PropNameB = FString::Printf(TEXT("f_rest_%d"), c + CoeffsPerChannel * 2);
-
-					Splat.SH[c].X = GetPropertyFloat(VertexData, Header, PropNameR);
-					Splat.SH[c].Y = GetPropertyFloat(VertexData, Header, PropNameG);
-					Splat.SH[c].Z = GetPropertyFloat(VertexData, Header, PropNameB);
+					Splat.SH[c].X = ReadF(VertexData, OffRest[0][c], 0.0f);
+					Splat.SH[c].Y = ReadF(VertexData, OffRest[1][c], 0.0f);
+					Splat.SH[c].Z = ReadF(VertexData, OffRest[2][c], 0.0f);
 				}
 				else
 				{
@@ -469,14 +533,17 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 			// 4D temporal properties (optional; defaults keep splats static)
 			// NOTE: t stays in PLY time units (e.g. normalized [-1,1]); scale_t is
 			// log-encoded like spatial scales but is in TIME units (no meter conversion).
-			if (Header.PropertyOffsets.Contains(TEXT("t")))
+			if (bHasTemporal)
 			{
-				Splat.AnchorTime = GetPropertyFloat(VertexData, Header, TEXT("t"), 0.0f);
-			}
-			if (Header.PropertyOffsets.Contains(TEXT("scale_t")))
-			{
-				const float ScaleT = GetPropertyFloat(VertexData, Header, TEXT("scale_t"), 23.0f);
-				Splat.TimeSigma = FMath::Exp(ScaleT); // ~1e10 default when absent
+				if (OffT >= 0)
+				{
+					Splat.AnchorTime = ReadF(VertexData, OffT, 0.0f);
+				}
+				if (OffScaleT >= 0)
+				{
+					const float ScaleT = ReadF(VertexData, OffScaleT, 23.0f);
+					Splat.TimeSigma = FMath::Exp(ScaleT); // ~1e10 default when absent
+				}
 			}
 
 			// Linearize the data
@@ -522,7 +589,28 @@ float FPLYFileReader::GetPropertyFloat(const uint8* VertexData, const FPLYHeader
 		return DefaultValue;
 	}
 
-	// Assuming all properties are float (which is standard for 3DGS PLY files)
-	const float* ValuePtr = reinterpret_cast<const float*>(VertexData + *OffsetPtr);
-	return *ValuePtr;
+	const int32 Offset = *OffsetPtr;
+	const int32* SizePtr = Header.PropertySizes.Find(PropertyName);
+	const int32 PropSize = SizePtr ? *SizePtr : 4;
+
+	// NEVER read past the end of the vertex record: doing so for the last
+	// vertex in a chunk overruns the chunk buffer (access violation), which is
+	// exactly what happens when a file mixes float properties with uchar ones
+	// and every property is blindly read as a 4-byte float.
+	if (Offset + PropSize > Header.VertexStride)
+	{
+		return DefaultValue;
+	}
+
+	switch (PropSize)
+	{
+	case 1:
+		return static_cast<float>(*reinterpret_cast<const uint8*>(VertexData + Offset));
+	case 2:
+		return static_cast<float>(*reinterpret_cast<const int16*>(VertexData + Offset));
+	case 8:
+		return static_cast<float>(*reinterpret_cast<const double*>(VertexData + Offset));
+	default:
+		return *reinterpret_cast<const float*>(VertexData + Offset);
+	}
 }

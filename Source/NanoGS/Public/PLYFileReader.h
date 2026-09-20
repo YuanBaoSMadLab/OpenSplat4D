@@ -22,6 +22,9 @@ struct FPLYHeader
 	/** Property name to byte offset mapping */
 	TMap<FString, int32> PropertyOffsets;
 
+	/** Property name to byte size mapping (respects declared PLY type) */
+	TMap<FString, int32> PropertySizes;
+
 	/** Bytes per vertex */
 	int32 VertexStride = 0;
 
