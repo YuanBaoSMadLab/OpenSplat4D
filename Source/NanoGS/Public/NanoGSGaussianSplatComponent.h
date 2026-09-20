@@ -168,6 +168,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|性能", meta = (DisplayName = "设置淡出起始距离"))
 	void SetFadeOutStart(float InDistance);
 
+	/** 设置深度排序间隔（帧）。相机移动时每 N 帧才完整排序一次。大场景建议 2~4。立即生效。 */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|性能", meta = (DisplayName = "设置排序间隔"))
+	void SetSortInterval(int32 InFrames);
+
 	/** 批量应用性能参数（编辑器预览用）：同时设置精度/可视距离/淡出，一次重建。 */
 	void ApplyPerformanceSettings(float InNanitePrecision, float InMaxDrawDistance, float InFadeOutStart)
 	{

@@ -407,6 +407,7 @@ public:
 	float GetLODErrorThreshold() const { return LODErrorThreshold; }
 	float GetMaxDrawDistance() const { return MaxDrawDistance; }
 	float GetFadeOutStartDistance() const { return FadeOutStartDistance; }
+	int32 GetSortEveryNthFrame() const { return SortEveryNthFrame; }
 
 	/** Check if this proxy is safe to use for rendering.
 	 *  Returns false if proxy is being destroyed or has invalid resources.
@@ -453,6 +454,7 @@ private:
 	float LODErrorThreshold = 0.03f;
 	float MaxDrawDistance = 0.0f;
 	float FadeOutStartDistance = 0.0f;
+	int32 SortEveryNthFrame = 1;
 	bool bEnableFrustumCulling = true;
 
 	/** Shadow parameters */

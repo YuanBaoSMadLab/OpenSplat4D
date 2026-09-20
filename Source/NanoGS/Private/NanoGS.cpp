@@ -548,9 +548,27 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 						// --------------------------------------------------
 						// Phase 3: Single global CalcDistances + RadixSort
 						// (all indirect — count driven by GPU prefix sum)
+						//
+						// Sort-interval optimization: re-sort only every Nth
+						// camera-moved frame. Between sorts the previous depth
+						// order is reused (slight blend-order error only). The
+						// radix sort over all visible splats is the dominant
+						// per-frame cost on large scenes.
 						// --------------------------------------------------
-						FGaussianSplatRenderer::DispatchCalcDistancesGlobalIndirect(RHICmdList, RawAccumulator);
-						FGaussianSplatRenderer::DispatchRadixSortGlobalIndirect(RHICmdList, RawAccumulator);
+						int32 SortInterval = 1;
+						for (const auto& Info : ValidProxies)
+						{
+							SortInterval = FMath::Max(SortInterval, Info.Proxy->GetSortEveryNthFrame());
+						}
+						RawAccumulator->SortFrameCounter++;
+						const bool bRunSort = !RawAccumulator->bHasCachedSortData ||
+							SortInterval <= 1 ||
+							(RawAccumulator->SortFrameCounter % SortInterval) == 1;
+						if (bRunSort)
+						{
+							FGaussianSplatRenderer::DispatchCalcDistancesGlobalIndirect(RHICmdList, RawAccumulator);
+							FGaussianSplatRenderer::DispatchRadixSortGlobalIndirect(RHICmdList, RawAccumulator);
+						}
 
 						// Update caches — only for processed proxies
 						RawAccumulator->bHasCachedSortData = true;
@@ -646,9 +664,22 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 
 						// --------------------------------------------------
 						// Phase 2: Single global CalcDistances + RadixSort
+						// (sort-interval optimization, see compaction path)
 						// --------------------------------------------------
-						FGaussianSplatRenderer::DispatchCalcDistancesGlobal(RHICmdList, RawAccumulator, (int32)CappedTotalSplatCount);
-						FGaussianSplatRenderer::DispatchRadixSortGlobal(RHICmdList, RawAccumulator, (int32)CappedTotalSplatCount);
+						int32 SortInterval = 1;
+						for (const auto& Info : ValidProxies)
+						{
+							SortInterval = FMath::Max(SortInterval, Info.Proxy->GetSortEveryNthFrame());
+						}
+						RawAccumulator->SortFrameCounter++;
+						const bool bRunSort = !RawAccumulator->bHasCachedSortData ||
+							SortInterval <= 1 ||
+							(RawAccumulator->SortFrameCounter % SortInterval) == 1;
+						if (bRunSort)
+						{
+							FGaussianSplatRenderer::DispatchCalcDistancesGlobal(RHICmdList, RawAccumulator, (int32)CappedTotalSplatCount);
+							FGaussianSplatRenderer::DispatchRadixSortGlobal(RHICmdList, RawAccumulator, (int32)CappedTotalSplatCount);
+						}
 
 						// Update caches
 						RawAccumulator->bHasCachedSortData = true;

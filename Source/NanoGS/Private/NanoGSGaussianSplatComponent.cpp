@@ -50,6 +50,7 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, LODErrorThreshold) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxDrawDistance) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FadeOutStartDistance) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SortEveryNthFrame) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bCastShadow) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, ShadowIntensity))
 	{
@@ -222,6 +223,12 @@ void UGaussianSplatComponent::SetVisibilityRange(float InDistance)
 void UGaussianSplatComponent::SetFadeOutStart(float InDistance)
 {
 	FadeOutStartDistance = FMath::Max(InDistance, 0.0f);
+	MarkRenderStateDirty();
+}
+
+void UGaussianSplatComponent::SetSortInterval(int32 InFrames)
+{
+	SortEveryNthFrame = FMath::Clamp(InFrames, 1, 8);
 	MarkRenderStateDirty();
 }
 

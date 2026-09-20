@@ -701,6 +701,7 @@ FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent
 	, LODErrorThreshold(InComponent->LODErrorThreshold)
 	, MaxDrawDistance(InComponent->MaxDrawDistance)
 	, FadeOutStartDistance(InComponent->FadeOutStartDistance)
+	, SortEveryNthFrame(InComponent->SortEveryNthFrame)
 	, bEnableFrustumCulling(InComponent->bEnableFrustumCulling)
 	, bCastShadow(InComponent->bCastShadow)
 	, ShadowProxyDetail(InComponent->ShadowProxyDetail)

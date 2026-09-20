@@ -102,6 +102,11 @@ struct NANOGS_API FGaussianGlobalAccumulator
 	uint32 CachedTotalSplatCount = 0;
 	FMatrix CachedViewProjectionMatrix = FMatrix::Identity;
 
+	/** Frames since the last depth sort ran (counts only camera-moved frames).
+	 *  Used by the sort-interval optimization: re-sorting every Nth moved frame
+	 *  reuses the previous depth order in between, saving a full radix sort. */
+	int32 SortFrameCounter = 0;
+
 	//----------------------------------------------------------------------
 	// Previous frame data for velocity calculation (per-view)
 	// (UE5's PrevViewInfo is not populated for PostOpaqueRender callbacks,
