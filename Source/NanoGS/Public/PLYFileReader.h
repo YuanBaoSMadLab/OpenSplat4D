@@ -76,9 +76,11 @@ private:
 	 * @param Header Parsed header information
 	 * @param OutSplats Output array of splat data
 	 * @param OutError Error message if reading failed
+	 * @param bFudan4D True when the file was detected as fudan-zvg 4DGS (rot_4..7 + scale_3)
+	 * @param FudanChannels 4D SH channel count C ∈ {1,6,16,33} (sh_channels_4d), valid when bFudan4D
 	 * @return True if successful
 	 */
-	static bool ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& Header, TArray<FGaussianSplatData>& OutSplats, FString& OutError);
+	static bool ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& Header, TArray<FGaussianSplatData>& OutSplats, FString& OutError, bool bFudan4D = false, int32 FudanChannels = 1);
 
 	/**
 	 * Linearize splat data from raw PLY values

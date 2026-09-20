@@ -103,6 +103,26 @@ struct FGaussianSplatData
 	 */
 	FVector3f Velocity = FVector3f::ZeroVector;
 
+	// ---- Fudan 4DGS (Native 4D) fields (only meaningful when the source PLY
+	// has rot_4..7 + scale_3). Not serialized in operator<< -- consumed at
+	// import time to build the asset's Native4DBulkData. ----
+
+	/** True when the PLY was detected as the fudan-zvg 4DGS (dual-quaternion) format. */
+	bool bFudan4D = false;
+
+	/** Linear temporal scale sigma_t = exp(scale_3). Huge value => static splat. */
+	float TimeScale4D = 1e10f;
+
+	/** Dual-quaternion left part q_l (a,b,c,d) for the 4D rotation. */
+	FVector4f Rot4L = FVector4f(1.f, 0.f, 0.f, 0.f);
+
+	/** Dual-quaternion right part q_r (p,q,r,s) for the 4D rotation. */
+	FVector4f Rot4R = FVector4f(1.f, 0.f, 0.f, 0.f);
+
+	/** 4D spherical-cylindrical harmonics coefficients (C x 3 values, DC included).
+	 *  C ∈ {1, 6, 16, 33} (sh_channels_4d). Empty for 3D imports. */
+	TArray<FVector3f> SH4D;
+
 	FGaussianSplatData()
 	{
 		for (int32 i = 0; i < 15; i++)

@@ -106,6 +106,17 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 		bIsKeyframe4D = false;
 		KeyframeCount = 0;
 	}
+
+	// Fudan 4DGS native-4D fields (Version 8+; v5-v7 assets keep defaults)
+	if (Version >= 8)
+	{
+		Ar << bIsNative4D;
+		Native4DBulkData.Serialize(Ar, this);
+	}
+	else if (Ar.IsLoading())
+	{
+		bIsNative4D = false;
+	}
 }
 
 void UGaussianSplatAsset::PostLoad()
@@ -179,6 +190,7 @@ int64 UGaussianSplatAsset::GetMemoryUsage() const
 	TotalBytes += ColorTextureBulkData.GetBulkDataSize();
 	TotalBytes += TemporalBulkData.GetBulkDataSize();
 	TotalBytes += KeyframeBulkData.GetBulkDataSize();
+	TotalBytes += Native4DBulkData.GetBulkDataSize();
 
 	if (ColorTexture)
 	{
@@ -223,6 +235,80 @@ void UGaussianSplatAsset::InitializeFromSplatData(const TArray<FGaussianSplatDat
 	CompressRotationScale(InSplats);
 	CreateColorTextureData(InSplats);  // Store raw data for serialization
 	CreateColorTextureFromData();       // Create the runtime texture
+
+	// ---- Fudan 4DGS (Native 4D) data: build when splats carry the fudan
+	// dual-quaternion format (detected by the PLY reader via bFudan4D).
+	// Must run BEFORE CompressSH (its Native4D packing keys off bIsNative4D). ----
+	{
+		bool bHasNative4D = false;
+		float MinT = FLT_MAX, MaxT = -FLT_MAX;
+		for (const FGaussianSplatData& Splat : InSplats)
+		{
+			// Explicit fudan flag from the PLY reader, or (for programmatically
+			// built splat data) a non-identity dual quaternion.
+			if (Splat.bFudan4D ||
+				!Splat.Rot4L.Equals(FVector4f(1.f, 0.f, 0.f, 0.f), 1e-6f) ||
+				!Splat.Rot4R.Equals(FVector4f(1.f, 0.f, 0.f, 0.f), 1e-6f))
+			{
+				bHasNative4D = true;
+				MinT = FMath::Min(MinT, Splat.AnchorTime);
+				MaxT = FMath::Max(MaxT, Splat.AnchorTime);
+			}
+		}
+
+		if (bHasNative4D)
+		{
+			bIsNative4D = true;
+			// Is4D() already ORs bIsNative4D, but keep bIs4D explicitly true so
+			// downstream sort-invalidation (time change => re-sort) applies.
+			bIs4D = true;
+			TimeStart = MinT;
+			TimeEnd = MaxT;
+
+			TArray<uint8> Native4D;
+			Native4D.SetNumUninitialized(SplatCount * Native4DStride);
+			uint32* Ptr = reinterpret_cast<uint32*>(Native4D.GetData());
+			for (int32 i = 0; i < SplatCount; i++)
+			{
+				const FGaussianSplatData& Splat = InSplats[i];
+				uint32* W = Ptr + i * 20; // 80 bytes = 20 uint32
+
+				// w0-2: mu.xyz (UE cm -- same conversion as PositionBulkData), w3: mu.t
+				FVector4f Mu(Splat.Position.X, Splat.Position.Y, Splat.Position.Z, Splat.AnchorTime);
+				// w4-6: s.xyz linear (PLY meters -- Splat.Scale is UE cm, /100 back to meters);
+				// w7: s.t linear sigma_t
+				FVector4f S4(Splat.Scale.X * 0.01f, Splat.Scale.Y * 0.01f, Splat.Scale.Z * 0.01f, Splat.TimeScale4D);
+				// LOD splats (appended after import) carry default fields: they
+				// degenerate to static 3D splats (sigma_t = 1e10 => weight ~1).
+				FMemory::Memcpy(&W[0], &Mu, sizeof(FVector4f));
+				FMemory::Memcpy(&W[4], &S4, sizeof(FVector4f));
+				FMemory::Memcpy(&W[8], &Splat.Rot4L, sizeof(FVector4f));
+				FMemory::Memcpy(&W[12], &Splat.Rot4R, sizeof(FVector4f));
+
+				// w16: linear opacity, w17: prefilter variance, w18-19: pad
+				float Opacity = Splat.Opacity;
+				float Prefilter = 1e-6f;
+				FMemory::Memcpy(&W[16], &Opacity, sizeof(float));
+				FMemory::Memcpy(&W[17], &Prefilter, sizeof(float));
+				W[18] = 0u;
+				W[19] = 0u;
+			}
+
+			Native4DBulkData.Lock(LOCK_READ_WRITE);
+			void* Dest = Native4DBulkData.Realloc(Native4D.Num());
+			FMemory::Memcpy(Dest, Native4D.GetData(), Native4D.Num());
+			Native4DBulkData.Unlock();
+			Native4DBulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
+
+			UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset: Native 4D (fudan) data built (%d splats, time range [%.4f, %.4f])"),
+				SplatCount, TimeStart, TimeEnd);
+		}
+		else
+		{
+			bIsNative4D = false;
+		}
+	}
+
 	CompressSH(InSplats);
 
 	// ---- 4D temporal data: build if any splat carries temporal info ----
@@ -276,8 +362,10 @@ void UGaussianSplatAsset::InitializeFromSplatData(const TArray<FGaussianSplatDat
 			UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset: 4D temporal data built (%d splats, time range [%.4f, %.4f])"),
 				SplatCount, TimeStart, TimeEnd);
 		}
-		else
+		else if (!bIsNative4D)
 		{
+			// No t/scale_t splats. Native 4D assets keep bIs4D (set by the
+			// fudan block above) for sort-invalidation purposes.
 			bIs4D = false;
 		}
 	}
@@ -614,6 +702,63 @@ void UGaussianSplatAsset::CompressSH(const TArray<FGaussianSplatData>& InSplats)
 		return;
 	}
 
+	// ---- Native 4D (fudan) path: SHBands is the 4D SH channel count C ----
+	// C ∈ {1, 6, 16, 32, 33, 48} coefficients per splat (DC included), each
+	// with 3 color channels, stored as float16: C*6 bytes per splat.
+	// The shader derives (deg, deg_t) from C: 1->(0,0) 6->(1,0) 16->(2,0)
+	// 33->(3,0) 32->(3,1) 48->(3,2).
+	if (bIsNative4D)
+	{
+		switch (SHBands)
+		{
+		case 1: case 6: case 16: case 32: case 33: case 48: break;
+		default:
+			UE_LOG(LogTemp, Warning, TEXT("CompressSH: Native4D path got invalid SHBands=%d; falling back to C=16"), SHBands);
+			SHBands = 16;
+			break;
+		}
+		const int32 C = SHBands;
+		const int32 BytesPerSplat = C * 3 * static_cast<int32>(sizeof(FFloat16));
+		const int32 TotalBytes = SplatCount * BytesPerSplat;
+
+		SHBulkData.Lock(LOCK_READ_WRITE);
+		FFloat16* HalfPtr = reinterpret_cast<FFloat16*>(SHBulkData.Realloc(TotalBytes));
+
+		for (int32 i = 0; i < SplatCount; i++)
+		{
+			const FGaussianSplatData& Splat = InSplats[i];
+			const int32 BaseIdx = i * C * 3;
+
+			// DC first, then the higher-order 4D coefficients. LOD splats
+			// (no SH4D) fall back to the 3D SH array contents / zeros.
+			const int32 NumStored = FMath::Min(Splat.SH4D.Num(), C);
+			for (int32 c = 0; c < C; c++)
+			{
+				FVector3f Coeff = FVector3f::ZeroVector;
+				if (c < NumStored)
+				{
+					Coeff = Splat.SH4D[c];
+				}
+				else if (c >= 1 && c - 1 < 15)
+				{
+					// Defensive fallback for splats without 4D SH data
+					Coeff = Splat.SH[c - 1];
+				}
+				HalfPtr[BaseIdx + c * 3 + 0] = FFloat16(Coeff.X);
+				HalfPtr[BaseIdx + c * 3 + 1] = FFloat16(Coeff.Y);
+				HalfPtr[BaseIdx + c * 3 + 2] = FFloat16(Coeff.Z);
+			}
+		}
+
+		SHBulkData.Unlock();
+		SHBulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
+		SHFormat = EGaussianSHFormat::Float16;
+
+		UE_LOG(LogTemp, Log, TEXT("CompressSH: Native4D path (C=%d, %d bytes/splat, %d total)"),
+			C, BytesPerSplat, TotalBytes);
+		return;
+	}
+
 	// Debug: Check if any SH coefficients are non-zero
 	int32 NonZeroSHCount = 0;
 	float MaxSHValue = 0.0f;
@@ -795,13 +940,25 @@ void UGaussianSplatAsset::UnlockKeyframeData() const
 	if (KeyframeBulkData.GetBulkDataSize() > 0) KeyframeBulkData.Unlock();
 }
 
+const void* UGaussianSplatAsset::LockNative4DDataReadOnly(int64* OutSize) const
+{
+	const int64 DataSize = Native4DBulkData.GetBulkDataSize();
+	if (OutSize) *OutSize = DataSize;
+	return (DataSize > 0) ? Native4DBulkData.LockReadOnly() : nullptr;
+}
+
+void UGaussianSplatAsset::UnlockNative4DData() const
+{
+	if (Native4DBulkData.GetBulkDataSize() > 0) Native4DBulkData.Unlock();
+}
+
 // ----------------------------------------------------------------------------
 // .o4d v2 dedicated container (magic 'O4D2')
 //
 // Layout (all little-endian):
 //   [0..3]   magic 'O','4','D','2'
 //   u32      Version = 2
-//   u32      Flags   (bit0 = keyframe 4D)
+//   u32      Flags   (bit0 = keyframe 4D, bit1 = native 4D flag only)
 //   i32      M       (splats per frame = SplatCount)
 //   i32      N       (keyframe count; 0 = static/3D)
 //   f32      TimeStart
@@ -816,6 +973,7 @@ void UGaussianSplatAsset::UnlockKeyframeData() const
 
 #define O4D2_CONTAINER_VERSION 2u
 #define O4D2_FLAG_KEYFRAME_4D  0x1u
+#define O4D2_FLAG_NATIVE_4D    0x2u
 
 bool UGaussianSplatAsset::SaveToO4DFile(FString FilePath)
 {
@@ -847,7 +1005,8 @@ bool UGaussianSplatAsset::SaveToO4DFile(FString FilePath)
 	uint32 Version = O4D2_CONTAINER_VERSION;
 	Writer << Version;
 
-	uint32 Flags = bIsKeyframe4D ? O4D2_FLAG_KEYFRAME_4D : 0u;
+	uint32 Flags = (bIsKeyframe4D ? O4D2_FLAG_KEYFRAME_4D : 0u)
+		| (bIsNative4D ? O4D2_FLAG_NATIVE_4D : 0u);
 	Writer << Flags;
 
 	Writer << M;
@@ -990,6 +1149,15 @@ UGaussianSplatAsset* UGaussianSplatAsset::LoadFromO4DFile(FString FilePath, UObj
 	// temporal auto-detection only sees the default AnchorTime/TimeSigma
 	// because operator<< does not serialize them).
 	Asset->bIsKeyframe4D = (Flags & O4D2_FLAG_KEYFRAME_4D) != 0;
+	// Native 4D flag: the .o4d v2 splat records (operator<<) do not carry the
+	// fudan 4D fields (Rot4L/Rot4R/SH4D/AnchorTime), so the 80B native block
+	// cannot be rebuilt here. Keep the flag for fidelity but the asset will
+	// fall back to a static render (RenderData gates on actual bulk presence).
+	Asset->bIsNative4D = (Flags & O4D2_FLAG_NATIVE_4D) != 0;
+	if (Asset->bIsNative4D && Asset->Native4DBulkData.GetBulkDataSize() <= 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("LoadFromO4DFile: '%s' is flagged native 4D but .o4d v2 does not carry native 4D bulk data; it will render as static 3D. Re-import the original fudan PLY for 4D playback."), *FilePath);
+	}
 	Asset->KeyframeCount = N;
 	Asset->TimeStart = Start;
 	Asset->TimeEnd = End;

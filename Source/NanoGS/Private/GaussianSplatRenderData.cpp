@@ -33,6 +33,35 @@ void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset)
 	PositionFormat = Asset->PositionFormat;
 	bIs4D = Asset->Is4D();
 	bIsKeyframe4D = Asset->IsKeyframe4D();
+	bIsNative4D = Asset->IsNative4D();
+
+	// --- Pack native 4D (fudan) data (80 bytes/splat) ---
+	if (bIsNative4D)
+	{
+		int64 Native4DSize = 0;
+		const uint8* RawNative4DData = static_cast<const uint8*>(Asset->LockNative4DDataReadOnly(&Native4DSize));
+		ON_SCOPE_EXIT
+		{
+			Asset->UnlockNative4DData();
+		};
+
+		if (RawNative4DData && Native4DSize > 0)
+		{
+			Native4DSplatCount = static_cast<int32>(Native4DSize / UGaussianSplatAsset::Native4DStride);
+			Native4DData.SetNumUninitialized(static_cast<int32>(Native4DSize));
+			FMemory::Memcpy(Native4DData.GetData(), RawNative4DData, Native4DData.Num());
+			TimeDuration4D = Asset->TimeEnd - Asset->TimeStart;
+		}
+		else
+		{
+			// Native 4D data missing (e.g. .o4d round-trip) -- fall back to static rendering
+			UE_LOG(LogTemp, Warning, TEXT("GaussianSplatRenderData: asset '%s' marked native 4D but native 4D data missing; treating as static"),
+				*AssetName);
+			Native4DData.Reset();
+			bIsNative4D = false;
+			Native4DSplatCount = 0;
+		}
+	}
 
 	// --- Pack keyframe 4D data (64 bytes/splat/frame) ---
 	if (bIsKeyframe4D)
@@ -65,8 +94,9 @@ void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset)
 		}
 	}
 
-	// --- Pack 4D temporal data (16 bytes/splat) ---
-	if (bIs4D)
+	// --- Pack 4D temporal data (16 bytes/splat; skipped for native 4D assets,
+	// which carry no t/scale_t records and keep bIs4D only for sort gating) ---
+	if (bIs4D && !bIsNative4D)
 	{
 		int64 TemporalSize = 0;
 		const uint8* RawTemporalData = static_cast<const uint8*>(Asset->LockTemporalDataReadOnly(&TemporalSize));
@@ -360,6 +390,39 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 		SharedBufferCount++;
 	}
 
+	// --- Native 4D (fudan) buffer (always create at least a dummy for shader binding) ---
+	{
+		uint32 Native4DDataSize = Native4DData.Num();
+		if (Native4DDataSize == 0)
+		{
+			Native4DDataSize = UGaussianSplatAsset::Native4DStride; // dummy single record
+		}
+
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianNative4DBuffer"),
+			Native4DDataSize,
+			0,
+			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
+			.SetInitialState(ERHIAccess::SRVMask);
+		Native4DBuffer = RHICmdList.CreateBuffer(Desc);
+
+		void* Data = RHICmdList.LockBuffer(Native4DBuffer, 0, Native4DDataSize, RLM_WriteOnly);
+		if (Native4DData.Num() > 0)
+		{
+			FMemory::Memcpy(Data, Native4DData.GetData(), Native4DData.Num());
+		}
+		else
+		{
+			FMemory::Memzero(Data, Native4DDataSize);
+		}
+		RHICmdList.UnlockBuffer(Native4DBuffer);
+
+		Native4DBufferSRV = RHICmdList.CreateShaderResourceView(
+			Native4DBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Raw));
+		SharedBufferCount++;
+	}
+
 	// --- Chunk buffer (always create at least a dummy for shader binding) ---
 	{
 		uint32 ChunkCount = CachedChunkData.Num();
@@ -473,6 +536,7 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 	SHData.Empty();
 	TemporalData.Empty();
 	KeyframeData.Empty();
+	Native4DData.Empty();
 	CachedChunkData.Empty();
 	CachedClusterData.Empty();
 	CachedSplatClusterIndices.Empty();
@@ -498,6 +562,8 @@ void FGaussianSplatRenderData::ReleaseGPUBuffers()
 	TemporalBufferSRV.SafeRelease();
 	KeyframeBuffer.SafeRelease();
 	KeyframeBufferSRV.SafeRelease();
+	Native4DBuffer.SafeRelease();
+	Native4DBufferSRV.SafeRelease();
 	SplatClusterIndexBuffer.SafeRelease();
 	SplatClusterIndexBufferSRV.SafeRelease();
 	bGPUBuffersCreated = false;

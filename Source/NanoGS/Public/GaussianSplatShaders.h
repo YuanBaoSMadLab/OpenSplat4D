@@ -33,6 +33,11 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, UseTemporal)
 		SHADER_PARAMETER(float, CurrentTime)
 		SHADER_PARAMETER(float, TimeWeightMinAlpha)
+		// Native 4D (fudan dual-quaternion; overrides temporal marginalization when enabled)
+		SHADER_PARAMETER_SRV(ByteAddressBuffer, Native4DBuffer)   // 80 bytes/splat native 4D data
+		SHADER_PARAMETER(uint32, UseNative4D)
+		SHADER_PARAMETER(uint32, Native4DSplatCount)              // splats covered by Native4DBuffer
+		SHADER_PARAMETER(float, TimeDuration)                     // TimeEnd - TimeStart (eval_shfs_4d 'l')
 		// Distance-based visibility range (0 = unlimited)
 		SHADER_PARAMETER(float, MaxDrawDistance)
 		SHADER_PARAMETER(float, FadeOutStartDistance)

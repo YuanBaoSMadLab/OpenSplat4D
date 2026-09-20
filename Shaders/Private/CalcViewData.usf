@@ -23,6 +23,16 @@ float KeyframeFrameTime;  // Current frame index as a float (interpolated betwee
 uint UseTemporal;         // 1 = asset has temporal data
 float CurrentTime;        // Current playback time (asset time units)
 float TimeWeightMinAlpha; // Early-out threshold: splats with w below this are culled
+
+// Native 4D (fudan 4DGS): 80 bytes/splat dual-quaternion spacetime records.
+// Overrides temporal marginalization and keyframes. Splats beyond
+// Native4DSplatCount (LOD splats appended after import) fall back to static
+// 3D rendering from the base PackedSplatBuffer unpack.
+ByteAddressBuffer Native4DBuffer;
+uint UseNative4D;         // 1 = asset has native 4D data
+uint Native4DSplatCount;  // splats covered by Native4DBuffer
+float TimeDuration;       // TimeEnd - TimeStart (eval_shfs_4d 'l')
+
 RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer; //pass calculated result to ViewDataBuffer
 
 // Cluster visibility integration (UNIFIED APPROACH)
@@ -101,6 +111,159 @@ void WriteInvalidSplat(uint outputIndex, uint clusterID, uint lodLevel)
 	viewData.ClusterID = clusterID;
 
 	ViewDataBuffer[outputIndex] = viewData;
+}
+
+#define NATIVE4D_PI 3.14159265358979f
+
+// Project a local-space 3D covariance to a 2D screen-space covariance.
+// Extracted from the old inline block so the native-4D conditioned
+// covariance can reuse the same local->world->view projection without
+// going through CalcCovariance3D.
+float2x2 ProjectCovarianceToWorld2D(float3x3 cov3D_local, float3 viewPos)
+{
+	float3x3 localToWorldRot = (float3x3)LocalToWorld;
+	float3x3 cov3D_world = mul(transpose(localToWorldRot), mul(cov3D_local, localToWorldRot));
+	float3x3 viewMat = (float3x3)WorldToView;
+	return CalcCovariance2D(cov3D_world, viewMat, viewPos, FocalLength);
+}
+
+// Load one 4D SH coefficient (3 x float16 = 6 bytes) from the SH buffer.
+// Same 4-byte-aligned read pattern as LoadSH: ByteAddressBuffer requires
+// 4-byte aligned loads, so extract the float16 pair from the covering words.
+float3 LoadSH4DCoeff(ByteAddressBuffer shBuffer, uint baseOffset, uint coeffIndex)
+{
+	uint byteOffset = baseOffset + coeffIndex * 6u;
+	uint alignedOffset = byteOffset & ~3u;
+	uint misalignment = byteOffset & 3u; // 0 or 2 (6-byte stride keeps 2B alignment)
+	uint3 data = shBuffer.Load3(alignedOffset);
+
+	if (misalignment == 0)
+	{
+		return float3(f16tof32(data.x & 0xFFFF), f16tof32(data.x >> 16), f16tof32(data.y & 0xFFFF));
+	}
+	else
+	{
+		return float3(f16tof32(data.x >> 16), f16tof32(data.y & 0xFFFF), f16tof32(data.y >> 16));
+	}
+}
+
+// Native 4D view-dependent SH evaluation. Line-by-line port of fudan's
+// eval_shfs_4d (sh_utils.py) as specialized by the renderer in
+// computeColorFromSH_4D (forward.cu): spatial basis l0m0..l3p3 evaluated on
+// the view direction, then t1/t2 temporal harmonics (nested inside deg > 2)
+// reusing the same spatial basis against sh[16..31] / sh[32..47].
+// C (SHBufferCoeffs) is the 4D channel count; (deg, deg_t) derive from it:
+// 1->(0,0) 6->(1,0) 16->(2,0) 33->(3,0) 32->(3,1) 48->(3,2).
+// Returns the raw SH result; the caller adds the +0.5 display offset.
+float3 EvaluateSH4D(ByteAddressBuffer shBuffer, uint splatIndex, uint C, float3 dir, float DirT, float TimeDur)
+{
+	uint Deg = 0u, DegT = 0u;
+	if      (C >= 48u) { Deg = 3u; DegT = 2u; }
+	else if (C >= 33u) { Deg = 3u; DegT = 0u; }
+	else if (C >= 32u) { Deg = 3u; DegT = 1u; }
+	else if (C >= 16u) { Deg = 2u; DegT = 0u; }
+	else if (C >= 6u)  { Deg = 1u; DegT = 0u; }
+
+	const uint baseOffset = splatIndex * C * 6u;
+	const float l = max(TimeDur, 1e-6); // guard single-anchor assets (l = 0)
+
+	// Load one coefficient; only touched terms cost buffer reads (loads are
+	// dynamically uniform per splat, so no divergence concern).
+	#define NATIVE4D_LOAD(idx) LoadSH4DCoeff(shBuffer, baseOffset, (idx))
+
+	float l0m0 = SH_C0;
+	float3 result = l0m0 * NATIVE4D_LOAD(0u);
+	if (Deg > 0u)
+	{
+		float x = dir.x;
+		float y = dir.y;
+		float z = dir.z;
+		float l1m1 = -1.0 * SH_C1 * y;
+		float l1m0 = SH_C1 * z;
+		float l1p1 = -1.0 * SH_C1 * x;
+		result +=
+			l1m1 * NATIVE4D_LOAD(1u) +
+			l1m0 * NATIVE4D_LOAD(2u) +
+			l1p1 * NATIVE4D_LOAD(3u);
+		if (Deg > 1u)
+		{
+			float xx = x * x, yy = y * y, zz = z * z;
+			float xy = x * y, yz = y * z, xz = x * z;
+			float l2m2 = SH_C2_0 * xy;
+			float l2m1 = SH_C2_1 * yz;
+			float l2m0 = SH_C2_2 * (2.0 * zz - xx - yy);
+			float l2p1 = SH_C2_3 * xz;
+			float l2p2 = SH_C2_4 * (xx - yy);
+			result +=
+				l2m2 * NATIVE4D_LOAD(4u) +
+				l2m1 * NATIVE4D_LOAD(5u) +
+				l2m0 * NATIVE4D_LOAD(6u) +
+				l2p1 * NATIVE4D_LOAD(7u) +
+				l2p2 * NATIVE4D_LOAD(8u);
+			if (Deg > 2u)
+			{
+				float l3m3 = SH_C3_0 * y * (3.0 * xx - yy);
+				float l3m2 = SH_C3_1 * xy * z;
+				float l3m1 = SH_C3_2 * y * (4.0 * zz - xx - yy);
+				float l3m0 = SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
+				float l3p1 = SH_C3_4 * x * (4.0 * zz - xx - yy);
+				float l3p2 = SH_C3_5 * z * (xx - yy);
+				float l3p3 = SH_C3_6 * x * (xx - 3.0 * yy);
+				result +=
+					l3m3 * NATIVE4D_LOAD(9u) +
+					l3m2 * NATIVE4D_LOAD(10u) +
+					l3m1 * NATIVE4D_LOAD(11u) +
+					l3m0 * NATIVE4D_LOAD(12u) +
+					l3p1 * NATIVE4D_LOAD(13u) +
+					l3p2 * NATIVE4D_LOAD(14u) +
+					l3p3 * NATIVE4D_LOAD(15u);
+				if (DegT > 0u)
+				{
+					float t1 = cos(2.0 * NATIVE4D_PI * DirT / l);
+					result += t1 * (
+						l0m0 * NATIVE4D_LOAD(16u) +
+						l1m1 * NATIVE4D_LOAD(17u) +
+						l1m0 * NATIVE4D_LOAD(18u) +
+						l1p1 * NATIVE4D_LOAD(19u) +
+						l2m2 * NATIVE4D_LOAD(20u) +
+						l2m1 * NATIVE4D_LOAD(21u) +
+						l2m0 * NATIVE4D_LOAD(22u) +
+						l2p1 * NATIVE4D_LOAD(23u) +
+						l2p2 * NATIVE4D_LOAD(24u) +
+						l3m3 * NATIVE4D_LOAD(25u) +
+						l3m2 * NATIVE4D_LOAD(26u) +
+						l3m1 * NATIVE4D_LOAD(27u) +
+						l3m0 * NATIVE4D_LOAD(28u) +
+						l3p1 * NATIVE4D_LOAD(29u) +
+						l3p2 * NATIVE4D_LOAD(30u) +
+						l3p3 * NATIVE4D_LOAD(31u));
+					if (DegT > 1u)
+					{
+						float t2 = cos(2.0 * NATIVE4D_PI * DirT * 2.0 / l);
+						result += t2 * (
+							l0m0 * NATIVE4D_LOAD(32u) +
+							l1m1 * NATIVE4D_LOAD(33u) +
+							l1m0 * NATIVE4D_LOAD(34u) +
+							l1p1 * NATIVE4D_LOAD(35u) +
+							l2m2 * NATIVE4D_LOAD(36u) +
+							l2m1 * NATIVE4D_LOAD(37u) +
+							l2m0 * NATIVE4D_LOAD(38u) +
+							l2p1 * NATIVE4D_LOAD(39u) +
+							l2p2 * NATIVE4D_LOAD(40u) +
+							l3m3 * NATIVE4D_LOAD(41u) +
+							l3m2 * NATIVE4D_LOAD(42u) +
+							l3m1 * NATIVE4D_LOAD(43u) +
+							l3m0 * NATIVE4D_LOAD(44u) +
+							l3p1 * NATIVE4D_LOAD(45u) +
+							l3p2 * NATIVE4D_LOAD(46u) +
+							l3p3 * NATIVE4D_LOAD(47u));
+					}
+				}
+			}
+		}
+	}
+	#undef NATIVE4D_LOAD
+	return result;
 }
 
 // Core: transform a single splat to screen space and write to ViewDataBuffer
@@ -218,6 +381,119 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		}
 	}
 
+	// Native 4D (fudan 4DGS): the splat is a spacetime gaussian whose
+	// rotation is a dual quaternion q_l ⊗ q_r. Ported line-by-line from
+	// fudan's forward.cu computeCov3D_conditional: R4 = M_r·M_l, M4 = S·R4,
+	// Sigma4 = M4ᵀ·M4, then temporal marginalization (opacity *= w(t)) and
+	// covariance conditioning. All 4D math runs in PLY space (meters); the
+	// conditioned 3D covariance / mean offset are converted to UE cm after.
+	// CPU forces UseTemporal=0 and UseKeyframes=0 in this mode (mutually
+	// exclusive), so this branch fully owns the geometry.
+	float Native4DDirT = 0.0;                 // mu.t - CurrentTime (eval_shfs_4d dir_t)
+	bool bNative4DSplat = false;
+	float3x3 Native4DCovLocal = float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+	if (UseNative4D && splatIndex < Native4DSplatCount)
+	{
+		bNative4DSplat = true;
+
+		// 80B record (20 uint32):
+		//   w0-2  mu.xyz (UE cm)      w3     mu.t (anchor time)
+		//   w4-6  s.xyz (PLY m, lin)  w7     s.t (linear sigma_t)
+		//   w8-11 q_l (XYZW)          w12-15 q_r (XYZW)
+		//   w16   linear opacity      w17    prefilter variance
+		//   w18-19 pad
+		const uint NB = splatIndex * 80u;
+		const uint4 N0 = Native4DBuffer.Load4(NB);
+		const uint4 N1 = Native4DBuffer.Load4(NB + 16u);
+		const uint4 N2 = Native4DBuffer.Load4(NB + 32u);
+		const uint4 N3 = Native4DBuffer.Load4(NB + 48u);
+		const uint4 N4 = Native4DBuffer.Load4(NB + 64u);
+
+		const float3 Mu = asfloat(N0.xyz);   // UE cm
+		const float MuT = asfloat(N0.w);     // anchor time t
+		const float3 Sp = asfloat(N1.xyz);   // PLY meters (linear)
+		const float St = asfloat(N1.w);      // temporal sigma (linear)
+		const float4 Ql = asfloat(N2);
+		const float4 Qr = asfloat(N3);
+		opacity = asfloat(N4.x) * OpacityScale;
+
+		// dt = timestamp - t (forward.cu)
+		Native4DDirT = MuT - CurrentTime;
+		const float Dt4D = CurrentTime - MuT;
+
+		// Dual-quaternion left/right multiplication matrices. GLM constructs
+		// column-major, so the HLSL row-major constructor receives the
+		// transposed literal (forward.cu M_l / M_r).
+		const float a = Ql.x, b = Ql.y, c = Ql.z, d = Ql.w;
+		const float p = Qr.x, q = Qr.y, r = Qr.z, s = Qr.w;
+		const float4x4 Ml = float4x4(
+			 a, -b,  c, -d,
+			 b,  a, -d, -c,
+			-c,  d,  a,  b,
+			 d,  c,  b,  a);
+		const float4x4 Mr = float4x4(
+			 p, -q,  r,  s,
+			 q,  p, -s,  r,
+			-r,  s,  p,  q,
+			-s, -r, -q,  p);
+
+		// S = diag(s.xyz, s.t). SplatScale is deliberately NOT folded into S
+		// (CUDA folds scale_modifier here): the user-facing SplatScale resizes
+		// only the conditioned spatial covariance below, keeping the temporal
+		// fade scale-invariant.
+		const float4x4 S4 = float4x4(
+			Sp.x, 0, 0, 0,
+			0, Sp.y, 0, 0,
+			0, 0, Sp.z, 0,
+			0, 0, 0, St);
+
+		// R4 = M_r * M_l ; M = S * R4 ; Sigma4 = Mᵀ * M   (forward.cu)
+		const float4x4 R4 = mul(Mr, Ml);
+		const float4x4 M4 = mul(S4, R4);
+		const float4x4 Sigma4 = mul(transpose(M4), M4);
+
+		// Temporal marginalization (forward.cu):
+		//   marginal_t = exp(-0.5 * dt^2 / (prefilter + cov_t))
+		const float CovT = Sigma4[3][3];
+		const float PrefilterVar = asfloat(N4.y);
+		const float MarginalT = exp(-0.5 * Dt4D * Dt4D /
+			((PrefilterVar > 0.0) ? (PrefilterVar + CovT) : CovT));
+		if (MarginalT < TimeWeightMinAlpha)  // CUDA uses a fixed 0.05 mask
+		{
+			WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
+			return;
+		}
+		opacity *= MarginalT;
+
+		// Covariance conditioning (forward.cu):
+		//   cov3D = Sigma_xx - Sigma_xt · Sigma_tx / Sigma_tt
+		//   delta_mean = Sigma_xt / Sigma_tt · dt  (scale-modifier independent)
+		const float3x3 Cov11 = float3x3(
+			Sigma4[0][0], Sigma4[0][1], Sigma4[0][2],
+			Sigma4[1][0], Sigma4[1][1], Sigma4[1][2],
+			Sigma4[2][0], Sigma4[2][1], Sigma4[2][2]);
+		const float3 Cov12 = float3(Sigma4[0][3], Sigma4[1][3], Sigma4[2][3]);
+		const float3 DeltaMeanPly = Cov12 * (Dt4D / CovT);
+
+		float3x3 CovCond = Cov11;
+		CovCond[0] -= Cov12 * (Cov12[0] / CovT);
+		CovCond[1] -= Cov12 * (Cov12[1] / CovT);
+		CovCond[2] -= Cov12 * (Cov12[2] / CovT);
+
+		// PLY(m) -> UE local (cm): ue.x = ply.z, ue.y = ply.x, ue.z = -ply.y
+		// (same mapping as the SH view-direction transform and the importer).
+		const float3x3 PlyToUe = float3x3(0, 0, 1, 1, 0, 0, 0, -1, 0);
+
+		// Position: mu (cm) + mean offset (m -> cm). SplatScale-independent,
+		// matching the 3D path where position is never scaled.
+		localPos = Mu + (100.0 * mul(PlyToUe, DeltaMeanPly));
+
+		// Covariance: PLY m² -> UE cm² (×100²), then × SplatScale² (matches
+		// the 3D path where scale *= SplatScale feeds CalcCovariance3D).
+		Native4DCovLocal = (100.0 * 100.0 * SplatScale * SplatScale) *
+			mul(PlyToUe, mul(CovCond, transpose(PlyToUe)));
+	}
+
 	// Transform to world space
 	float4 worldPos = mul(float4(localPos, 1.0), LocalToWorld);
 	float4 clipPos = mul(worldPos, WorldToClip);
@@ -260,12 +536,19 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	viewPos.x = clamp(viewPos.x / viewPos.z, -limX, limX) * viewPos.z;
 	viewPos.y = clamp(viewPos.y / viewPos.z, -limY, limY) * viewPos.z;
 
-	// Calculate covariance
-	float3x3 cov3D_local = CalcCovariance3D(rotation, scale);
-	float3x3 localToWorldRot = (float3x3)LocalToWorld;
-	float3x3 cov3D_world = mul(transpose(localToWorldRot), mul(cov3D_local, localToWorldRot));
-	float3x3 viewMat = (float3x3)WorldToView;
-	float2x2 cov2D = CalcCovariance2D(cov3D_world, viewMat, viewPos.xyz, FocalLength);
+	// Calculate covariance: native-4D splats carry the time-conditioned
+	// spacetime covariance; everything else uses the static 3D form. Both
+	// then share the same local->world->view projection.
+	float3x3 cov3D_local;
+	if (bNative4DSplat)
+	{
+		cov3D_local = Native4DCovLocal;
+	}
+	else
+	{
+		cov3D_local = CalcCovariance3D(rotation, scale);
+	}
+	float2x2 cov2D = ProjectCovarianceToWorld2D(cov3D_local, viewPos.xyz);
 
 	// Decompose to axes
 	float2 axis1, axis2;
@@ -299,9 +582,28 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	// Compute final color
 	float3 finalColor;
 
+	// Native 4D: view- AND time-dependent SH (fudan eval_shfs_4d). SHBuffer
+	// carries the 4D coefficients (C = SHBufferCoeffs channels per splat).
+	if (bNative4DSplat)
+	{
+		// View direction from camera to splat (SH training convention) in PLY
+		// space. Same axis mapping as the 3D path below (PLY.X = UE.Y,
+		// PLY.Y = -UE.Z, PLY.Z = UE.X), without the extra negation because the
+		// direction is already camera->splat.
+		float3 viewDirWorld = normalize(worldPos.xyz - CameraPosition);
+		float3 viewDirLocal = mul(viewDirWorld, transpose((float3x3)LocalToWorld));
+		float3 viewDirPLY = normalize(float3(viewDirLocal.y, -viewDirLocal.z, viewDirLocal.x));
+
+		float3 shColor = EvaluateSH4D(SHBuffer, splatIndex, SHBufferCoeffs, viewDirPLY, Native4DDirT, TimeDuration);
+
+		// +0.5 display offset, clamp, sRGB output (deferred linear conversion),
+		// exactly like the 3D SH path.
+		shColor = 0.5 + shColor;
+		finalColor = max(shColor, 0.0);
+	}
 	// Keyframe mode skips SH: colorOpacity already carries the interpolated
 	// per-keyframe display color (frame SH data is not stored per keyframe).
-	if (UseSHRendering && NumSHCoeffs > 0 && !UseKeyframes)
+	else if (UseSHRendering && NumSHCoeffs > 0 && !UseKeyframes)
 	{
 		// View-dependent SH rendering
 		// Load SH coefficients from buffer (DC + higher-order)

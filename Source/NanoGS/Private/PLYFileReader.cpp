@@ -76,26 +76,130 @@ bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatD
 	const bool bHasTemporalProps =
 		Header.PropertyOffsets.Contains(TEXT("t")) ||
 		Header.PropertyOffsets.Contains(TEXT("scale_t"));
-	if (OutHasTemporal)
-	{
-		*OutHasTemporal = bHasTemporalProps;
-	}
-	if (bHasTemporalProps)
-	{
-		UE_LOG(LogTemp, Log, TEXT("PLYFileReader: Detected 4D temporal properties (t/scale_t)"));
 
-		// DECLARED LIMITATION: SpacetimeGaussians stores a cubic polynomial
-		// motion (motion_0..8). We evaluate only the linear term (motion_0..2 =
-		// velocity); quadratic/cubic terms are ignored, so fast-moving splats
-		// may drift slightly from the training rendering. Higher-order support
-		// is intentionally not implemented (16B/splat temporal budget).
-		// 声明：检测到 STG 高阶运动项时仅做一阶（线性速度）外推。
-		if (Header.PropertyOffsets.Contains(TEXT("motion_3")))
+	// ------------------------------------------------------------------
+	// Fudan 4DGS detection (fudan-zvg/4d-gaussian-splatting, Native 4D):
+	//   rot_0..3 = q_l(a,b,c,d), rot_4..7 = q_r(p,q,r,s) dual quaternion
+	//   scale_3  = log-encoded temporal scale (sigma_t = exp(scale_3))
+	//   t        = temporal mean mu_t
+	//   f_rest   = 4D spherical-cylindrical SH, 3 x (C-1) floats,
+	//              C ∈ sh_channels_4d = [1, 6, 16, 33]
+	// Priority: rot_4+ beats t/scale_t (fudan files carry both; a fudan file
+	// must NOT be misdetected as the SpacetimeGaussians temporal format).
+	// ------------------------------------------------------------------
+	bool bFudan4D = false;
+	int32 FudanChannels = 1; // C (SH channel count incl. DC)
+	const bool bHasRot4 =
+		Header.PropertyOffsets.Contains(TEXT("rot_4")) ||
+		Header.PropertyOffsets.Contains(TEXT("rot_5")) ||
+		Header.PropertyOffsets.Contains(TEXT("rot_6")) ||
+		Header.PropertyOffsets.Contains(TEXT("rot_7"));
+	if (bHasRot4 && Header.PropertyOffsets.Contains(TEXT("scale_3")))
+	{
+		// Validate the f_rest count against the 4D channel count C.
+		// PLY stores f_rest planar (all R coeffs, then G, then B):
+		//   C=48 -> 141 coeffs (f_rest_0..140), C=33 -> 96 (f_rest_0..95),
+		//   C=32 -> 93 (f_rest_0..92), C=16 -> 45, C=6 -> 15, C=1 -> none.
+		// C=48/(deg3,deg_t2) and C=32/(deg3,deg_t1) come from the deg_t>0
+		// branch of get_max_sh_channels: (deg+1)^2*(deg_t+1) with deg=3.
+		bool bRestCountValid = false;
+		if (Header.PropertyOffsets.Contains(TEXT("f_rest_140")))
 		{
-			UE_LOG(LogTemp, Warning,
-				TEXT("PLYFileReader: SpacetimeGaussians higher-order motion terms (motion_3..8) detected. "
-				     "Only the linear term (motion_0..2) is evaluated -- fast-moving splats may drift. "
-				     "(声明：高阶运动项未求值，仅一阶速度外推近似)"));
+			FudanChannels = 48;
+			bRestCountValid = true;
+		}
+		else if (Header.PropertyOffsets.Contains(TEXT("f_rest_95")))
+		{
+			FudanChannels = 33;
+			bRestCountValid = true;
+		}
+		else if (Header.PropertyOffsets.Contains(TEXT("f_rest_92")))
+		{
+			FudanChannels = 32;
+			bRestCountValid = true;
+		}
+		else if (Header.PropertyOffsets.Contains(TEXT("f_rest_44")))
+		{
+			FudanChannels = 16;
+			bRestCountValid = true;
+		}
+		else if (Header.PropertyOffsets.Contains(TEXT("f_rest_14")))
+		{
+			FudanChannels = 6;
+			bRestCountValid = true;
+		}
+		else if (!Header.PropertyOffsets.Contains(TEXT("f_rest_0")))
+		{
+			FudanChannels = 1;
+			bRestCountValid = true;
+		}
+
+		if (bRestCountValid)
+		{
+			bFudan4D = true;
+		}
+		else
+		{
+			// f_rest present but count matches no 4D channel table entry:
+			// reject the fudan interpretation and fall back to a plain import.
+			UE_LOG(LogTemp, Error,
+				TEXT("PLYFileReader: rot_4..7 + scale_3 detected but f_rest count matches no "
+				     "4D SH channel count [1,6,16,32,33,48]. Falling back to a plain (static/temporal) import."));
+		}
+	}
+
+	if (bFudan4D)
+	{
+		UE_LOG(LogTemp, Log,
+			TEXT("PLYFileReader: Detected fudan-zvg 4DGS format (rot_4..7 dual quaternion + scale_3). "
+			     "SH channels C=%d."), FudanChannels);
+
+		// Store C directly (1/6/16/32/33/48) as SHBands. For native-4D assets
+		// the asset/renderer interpret SHBands as C, NOT the 3D band count
+		// (shader derives (deg, deg_t) from C: 1->(0,0) 6->(1,0) 16->(2,0)
+		// 33->(3,0) 32->(3,1) 48->(3,2)).
+		if (OutSHBands)
+		{
+			*OutSHBands = FudanChannels;
+		}
+
+		// A fudan file also carries t (mu_t) — consumed by the native-4D path,
+		// so do NOT report the spacetime-gaussians temporal format.
+		if (OutHasTemporal)
+		{
+			*OutHasTemporal = false;
+		}
+
+		if (bHasTemporalProps)
+		{
+			UE_LOG(LogTemp, Log,
+				TEXT("PLYFileReader: t/scale_t properties also present; rot_4..7 takes priority "
+				     "(fudan 4DGS mu_t is used as the temporal mean, not a temporal-marginalization anchor)."));
+		}
+	}
+	else
+	{
+		if (OutHasTemporal)
+		{
+			*OutHasTemporal = bHasTemporalProps;
+		}
+		if (bHasTemporalProps)
+		{
+			UE_LOG(LogTemp, Log, TEXT("PLYFileReader: Detected 4D temporal properties (t/scale_t)"));
+
+			// DECLARED LIMITATION: SpacetimeGaussians stores a cubic polynomial
+			// motion (motion_0..8). We evaluate only the linear term (motion_0..2 =
+			// velocity); quadratic/cubic terms are ignored, so fast-moving splats
+			// may drift slightly from the training rendering. Higher-order support
+			// is intentionally not implemented (16B/splat temporal budget).
+			// 声明：检测到 STG 高阶运动项时仅做一阶（线性速度）外推。
+			if (Header.PropertyOffsets.Contains(TEXT("motion_3")))
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("PLYFileReader: SpacetimeGaussians higher-order motion terms (motion_3..8) detected. "
+					     "Only the linear term (motion_0..2) is evaluated -- fast-moving splats may drift. "
+					     "(声明：高阶运动项未求值，仅一阶速度外推近似)"));
+			}
 		}
 	}
 
@@ -123,7 +227,7 @@ bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatD
 	}
 
 	// Read vertex data using streamed I/O
-	if (!ReadVertexData(FileHandle.Get(), Header, OutSplats, OutError))
+	if (!ReadVertexData(FileHandle.Get(), Header, OutSplats, OutError, bFudan4D, FudanChannels))
 	{
 		return false;
 	}
@@ -371,7 +475,7 @@ bool FPLYFileReader::ParseHeader(IFileHandle* FileHandle, FPLYHeader& OutHeader,
 	return true;
 }
 
-bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& Header, TArray<FGaussianSplatData>& OutSplats, FString& OutError)
+bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& Header, TArray<FGaussianSplatData>& OutSplats, FString& OutError, bool bFudan4D, int32 FudanChannels)
 {
 	OutSplats.SetNum(Header.VertexCount);
 
@@ -431,6 +535,39 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 	const int32 OffScaleT = FindOff(TEXT("scale_t"));
 	const bool bHasDC = OffDC[0] >= 0 && OffDC[1] >= 0 && OffDC[2] >= 0;
 	const bool bHasTemporal = OffT >= 0 || OffScaleT >= 0;
+
+	// Fudan 4DGS properties: rot_4..7 (dual quaternion right part), scale_3
+	// (log temporal scale) and up to 3x47 f_rest coefficients (planar layout;
+	// C=48 => K=47 per channel).
+	int32 OffScale3 = -1;
+	int32 OffRot4R[4] = { -1, -1, -1, -1 };
+	int32 OffFudanRest[3][48];
+	for (int32 ch = 0; ch < 3; ch++)
+	{
+		for (int32 c = 0; c < 48; c++)
+		{
+			OffFudanRest[ch][c] = -1;
+		}
+	}
+	int32 FudanRestPerChannel = 0;
+	if (bFudan4D)
+	{
+		OffScale3 = FindOff(TEXT("scale_3"));
+		OffRot4R[0] = FindOff(TEXT("rot_4"));
+		OffRot4R[1] = FindOff(TEXT("rot_5"));
+		OffRot4R[2] = FindOff(TEXT("rot_6"));
+		OffRot4R[3] = FindOff(TEXT("rot_7"));
+		FudanRestPerChannel = FMath::Clamp(FudanChannels - 1, 0, 47);
+		for (int32 ch = 0; ch < 3; ch++)
+		{
+			for (int32 c = 0; c < FudanRestPerChannel; c++)
+			{
+				OffFudanRest[ch][c] = FindOff(*FString::Printf(TEXT("f_rest_%d"), c + ch * FudanRestPerChannel));
+			}
+		}
+		UE_LOG(LogTemp, Log, TEXT("PLYFileReader: Fudan 4D read path active (C=%d, rest/channel=%d)"),
+			FudanChannels, FudanRestPerChannel);
+	}
 
 	int32 OffRest[3][15];
 	for (int32 c = 0; c < 15; c++)
@@ -528,10 +665,12 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 				Splat.SH_DC.Z = 1.0f;
 			}
 
-			// SH rest coefficients (bands 1-3), planar layout via cached offsets
+			// SH rest coefficients (bands 1-3), planar layout via cached offsets.
+			// Skipped for fudan 4D files: their f_rest count/layout follows the
+			// 4D channel table (read into SH4D below), not the 3D band table.
 			for (int32 c = 0; c < GaussianSplattingConstants::NumSHCoefficients; c++)
 			{
-				if (c < CoeffsPerChannel)
+				if (!bFudan4D && c < CoeffsPerChannel)
 				{
 					Splat.SH[c].X = ReadF(VertexData, OffRest[0][c], 0.0f);
 					Splat.SH[c].Y = ReadF(VertexData, OffRest[1][c], 0.0f);
@@ -567,6 +706,53 @@ bool FPLYFileReader::ReadVertexData(IFileHandle* FileHandle, const FPLYHeader& H
 				Splat.Velocity.X = GetPropertyFloat(VertexData, Header, TEXT("motion_0"), 0.0f);
 				Splat.Velocity.Y = GetPropertyFloat(VertexData, Header, TEXT("motion_1"), 0.0f);
 				Splat.Velocity.Z = GetPropertyFloat(VertexData, Header, TEXT("motion_2"), 0.0f);
+			}
+
+			// Fudan 4DGS (Native 4D): read t (mu_t), scale_3 (log sigma_t),
+			// rot_0..7 (dual quaternion) and the 4D SH coefficients. The dual
+			// quaternion stays in PLY space -- the shader conjugates the resulting
+			// covariance into UE local space (see CalcViewData.usf).
+			if (bFudan4D)
+			{
+				Splat.bFudan4D = true;
+				if (OffT >= 0)
+				{
+					Splat.AnchorTime = ReadF(VertexData, OffT, 0.0f);
+				}
+				if (OffScale3 >= 0)
+				{
+					const float Scale3 = ReadF(VertexData, OffScale3, 23.0f);
+					Splat.TimeScale4D = FMath::Exp(Scale3); // linear sigma_t (time units)
+				}
+
+				// q_l = rot_0..3 = (a, b, c, d), q_r = rot_4..7 = (p, q, r, s)
+				Splat.Rot4L = FVector4f(
+					ReadF(VertexData, OffRot[0], 1.0f),
+					ReadF(VertexData, OffRot[1], 0.0f),
+					ReadF(VertexData, OffRot[2], 0.0f),
+					ReadF(VertexData, OffRot[3], 0.0f));
+				Splat.Rot4R = FVector4f(
+					ReadF(VertexData, OffRot4R[0], 1.0f),
+					ReadF(VertexData, OffRot4R[1], 0.0f),
+					ReadF(VertexData, OffRot4R[2], 0.0f),
+					ReadF(VertexData, OffRot4R[3], 0.0f));
+				const float NormL = Splat.Rot4L.Size();
+				const float NormR = Splat.Rot4R.Size();
+				if (NormL > 1e-12f) Splat.Rot4L /= NormL;
+				if (NormR > 1e-12f) Splat.Rot4R /= NormR;
+
+				// 4D SH: planar layout f_rest_{c + ch*K}, K = C-1 coefficients per
+				// channel; DC stays in f_dc_0..2 (already read into SH_DC above).
+				const int32 K = FudanRestPerChannel;
+				Splat.SH4D.SetNum(K + 1);
+				Splat.SH4D[0] = Splat.SH_DC;
+				for (int32 c = 0; c < K; c++)
+				{
+					Splat.SH4D[c + 1] = FVector3f(
+						ReadF(VertexData, OffFudanRest[0][c], 0.0f),
+						ReadF(VertexData, OffFudanRest[1][c], 0.0f),
+						ReadF(VertexData, OffFudanRest[2][c], 0.0f));
+				}
 			}
 
 			// Linearize the data

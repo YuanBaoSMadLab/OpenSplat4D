@@ -175,9 +175,14 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.KeyframeSplatCount = (uint32)GPUResources->KeyframeSplatCount;
 	Parameters.KeyframeFrameCount = (uint32)GPUResources->KeyframeFrameCount;
 	Parameters.KeyframeFrameTime = GPUResources->CurrentTime;
-	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D) ? 1u : 0u;
+	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D && !GPUResources->bIsNative4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
+	// Native 4D (fudan): overrides temporal marginalization and keyframes
+	Parameters.Native4DBuffer = GPUResources->Native4DBufferSRV;
+	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
+	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;
+	Parameters.TimeDuration = GPUResources->TimeDuration4D;
 	// Distance-based visibility range (0 = unlimited)
 	Parameters.MaxDrawDistance = MaxDrawDistance;
 	Parameters.FadeOutStartDistance = FadeOutStartDistance;
@@ -236,7 +241,17 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
 	{
 		int32 StoredSHBands = GPUResources->GetSHBands();
-		Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+		if (GPUResources->bIsNative4D)
+		{
+			// For native-4D assets SHBands carries the 4D SH channel count C
+			// (1/6/16/32/33/48) -- stored per-splat stride, shader derives
+			// (deg, deg_t) from it.
+			Parameters.SHBufferCoeffs = StoredSHBands;
+		}
+		else
+		{
+			Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+		}
 	}
 	Parameters.UseSHRendering = (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale = OpacityScale;
@@ -839,9 +854,14 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.KeyframeSplatCount = (uint32)GPUResources->KeyframeSplatCount;
 	Parameters.KeyframeFrameCount = (uint32)GPUResources->KeyframeFrameCount;
 	Parameters.KeyframeFrameTime = GPUResources->CurrentTime;
-	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D) ? 1u : 0u;
+	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D && !GPUResources->bIsNative4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
+	// Native 4D (fudan): overrides temporal marginalization and keyframes
+	Parameters.Native4DBuffer = GPUResources->Native4DBufferSRV;
+	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
+	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;
+	Parameters.TimeDuration = GPUResources->TimeDuration4D;
 	// Distance-based visibility range (0 = unlimited)
 	Parameters.MaxDrawDistance = MaxDrawDistance;
 	Parameters.FadeOutStartDistance = FadeOutStartDistance;
@@ -892,7 +912,17 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
 	{
 		int32 StoredSHBands = GPUResources->GetSHBands();
-		Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+		if (GPUResources->bIsNative4D)
+		{
+			// For native-4D assets SHBands carries the 4D SH channel count C
+			// (1/6/16/32/33/48) -- stored per-splat stride, shader derives
+			// (deg, deg_t) from it.
+			Parameters.SHBufferCoeffs = StoredSHBands;
+		}
+		else
+		{
+			Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+		}
 	}
 	Parameters.UseSHRendering = (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale = OpacityScale;
@@ -988,9 +1018,14 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	Parameters.KeyframeSplatCount = (uint32)GPUResources->KeyframeSplatCount;
 	Parameters.KeyframeFrameCount = (uint32)GPUResources->KeyframeFrameCount;
 	Parameters.KeyframeFrameTime = GPUResources->CurrentTime;
-	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D) ? 1u : 0u;
+	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D && !GPUResources->bIsNative4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
+	// Native 4D (fudan): overrides temporal marginalization and keyframes
+	Parameters.Native4DBuffer = GPUResources->Native4DBufferSRV;
+	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
+	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;
+	Parameters.TimeDuration = GPUResources->TimeDuration4D;
 	// Distance-based visibility range (0 = unlimited)
 	Parameters.MaxDrawDistance = MaxDrawDistance;
 	Parameters.FadeOutStartDistance = FadeOutStartDistance;
@@ -1052,7 +1087,17 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	Parameters.NumSHCoeffs = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
 	{
 		int32 StoredSHBands = GPUResources->GetSHBands();
-		Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+		if (GPUResources->bIsNative4D)
+		{
+			// For native-4D assets SHBands carries the 4D SH channel count C
+			// (1/6/16/32/33/48) -- stored per-splat stride, shader derives
+			// (deg, deg_t) from it.
+			Parameters.SHBufferCoeffs = StoredSHBands;
+		}
+		else
+		{
+			Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+		}
 	}
 	Parameters.UseSHRendering = (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale = OpacityScale;
@@ -1455,9 +1500,14 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	Parameters.KeyframeSplatCount = (uint32)GPUResources->KeyframeSplatCount;
 	Parameters.KeyframeFrameCount = (uint32)GPUResources->KeyframeFrameCount;
 	Parameters.KeyframeFrameTime = GPUResources->CurrentTime;
-	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D) ? 1u : 0u;
+	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D && !GPUResources->bIsNative4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
+	// Native 4D (fudan): overrides temporal marginalization and keyframes
+	Parameters.Native4DBuffer = GPUResources->Native4DBufferSRV;
+	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
+	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;
+	Parameters.TimeDuration = GPUResources->TimeDuration4D;
 	// Distance-based visibility range (0 = unlimited)
 	Parameters.MaxDrawDistance = MaxDrawDistance;
 	Parameters.FadeOutStartDistance = FadeOutStartDistance;
@@ -1517,7 +1567,17 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	Parameters.NumSHCoeffs   = (EffectiveSHOrder == 0) ? 0 : (EffectiveSHOrder == 1) ? 4 : (EffectiveSHOrder == 2) ? 9 : 16;
 	{
 		int32 StoredSHBands = GPUResources->GetSHBands();
-		Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+		if (GPUResources->bIsNative4D)
+		{
+			// For native-4D assets SHBands carries the 4D SH channel count C
+			// (1/6/16/32/33/48) -- stored per-splat stride, shader derives
+			// (deg, deg_t) from it.
+			Parameters.SHBufferCoeffs = StoredSHBands;
+		}
+		else
+		{
+			Parameters.SHBufferCoeffs = (StoredSHBands == 0) ? 0 : (StoredSHBands == 1) ? 4 : (StoredSHBands == 2) ? 9 : 16;
+		}
 	}
 	Parameters.UseSHRendering = (EffectiveSHOrder > 0) ? 1 : 0;
 	Parameters.OpacityScale  = OpacityScale;

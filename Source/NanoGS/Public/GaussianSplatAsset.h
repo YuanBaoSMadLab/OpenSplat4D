@@ -19,8 +19,9 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnGaussianSplatAssetChanged, UGaussianSplat
 
 // Serialization magic/version for format identification
 #define GAUSSIAN_SPLAT_ASSET_MAGIC   0x47535056  // "GSPV"
-// v7: keyframe 4D data (bIsKeyframe4D/KeyframeCount/KeyframeBulkData). v5/v6 assets load unchanged (Version<7 never reads the new fields).
-#define GAUSSIAN_SPLAT_ASSET_VERSION 7
+// v7: keyframe 4D data (bIsKeyframe4D/KeyframeCount/KeyframeBulkData).
+// v8: fudan 4DGS native 4D data (bIsNative4D/Native4DBulkData). v5-v7 assets load unchanged.
+#define GAUSSIAN_SPLAT_ASSET_VERSION 8
 
 /**
  * Asset containing Gaussian Splatting data loaded from PLY files
@@ -189,13 +190,49 @@ public:
 	/** Temporal record stride in bytes */
 	static constexpr int32 TemporalStride = 16;
 
-	/** Whether this asset has temporal data */
+	/** Whether this asset has 4D data in any of the three modes */
 	UFUNCTION(BlueprintCallable, Category = "4D")
-	bool Is4D() const { return bIs4D; }
+	bool Is4D() const { return bIs4D || bIsKeyframe4D || bIsNative4D; }
 
 	/** Lock temporal bulk data in place. Returns nullptr if empty. */
 	const void* LockTemporalDataReadOnly(int64* OutSize = nullptr) const;
 	void UnlockTemporalData() const;
+
+	// ------------------------------------------------------------------
+	// Fudan 4DGS native-4D data (third 4D mode, mutually exclusive with the
+	// temporal marginalization and keyframe modes above; guarded by
+	// bIsNative4D). 80 bytes per splat:
+	//   w0-2  mu.xyz f32 (UE cm, same conversion as PositionBulkData)
+	//   w3    mu.t   f32 (PLY time units)
+	//   w4-6  s.xyz  f32 (linear, PLY meters -- the shader conjugates the
+	//              covariance built in PLY space into UE local space)
+	//   w7    s.t    f32 (linear sigma_t = exp(scale_3), time units)
+	//   w8-11 q_l    f32 x4 (a,b,c,d)
+	//   w12-15 q_r   f32 x4 (p,q,r,s)
+	//   w16   opacity f32 (linear, post-sigmoid)
+	//   w17   prefilter variance f32 (added to sigma_t^2)
+	//   w18-19 pad
+	// SH (4D spherical-cylindrical harmonics) lives in SHBulkData with
+	// SHBands reinterpreted as the sh_channels_4d index (C = [1,6,16,33]).
+	// ------------------------------------------------------------------
+
+	/** Whether this asset uses fudan-zvg 4DGS native 4D rendering */
+	UPROPERTY(VisibleAnywhere, Category = "4D", meta = (DisplayName = "Native 4D 数据（复旦）"))
+	bool bIsNative4D = false;
+
+	/** Per-splat native 4D data (80 bytes/splat, only when bIsNative4D) */
+	FByteBulkData Native4DBulkData;
+
+	/** Native 4D record stride in bytes */
+	static constexpr int32 Native4DStride = 80;
+
+	/** Whether this asset uses fudan 4DGS native 4D rendering */
+	UFUNCTION(BlueprintCallable, Category = "4D")
+	bool IsNative4D() const { return bIsNative4D; }
+
+	/** Lock native 4D bulk data in place. Returns nullptr if empty. */
+	const void* LockNative4DDataReadOnly(int64* OutSize = nullptr) const;
+	void UnlockNative4DData() const;
 
 	// ------------------------------------------------------------------
 	// Keyframe 4D data (second 4D mode, mutually exclusive with the

@@ -136,6 +136,19 @@ public:
 	/** Splats per frame covered by KeyframeBuffer */
 	int32 KeyframeSplatCount = 0;
 
+	/** Native 4D (fudan) data buffer (static, from asset; dummy when not native 4D) */
+	FBufferRHIRef Native4DBuffer;
+	FShaderResourceViewRHIRef Native4DBufferSRV;
+
+	/** Whether the asset uses native (fudan) 4D rendering */
+	bool bIsNative4D = false;
+
+	/** Number of splats covered by Native4DBuffer */
+	int32 Native4DSplatCount = 0;
+
+	/** Time duration (TimeEnd - TimeStart); the eval_shfs_4d 'l' parameter */
+	float TimeDuration4D = 0.f;
+
 	/** Current 4D playback time (asset time units). Written by render commands from the owning component. */
 	float CurrentTime = 0.f;
 

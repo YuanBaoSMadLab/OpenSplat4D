@@ -70,17 +70,30 @@ public:
 	FBufferRHIRef KeyframeBuffer;
 	FShaderResourceViewRHIRef KeyframeBufferSRV;
 
+	/** Native 4D (fudan) data buffer (80 bytes/splat; dummy 80B when asset is not native 4D) */
+	FBufferRHIRef Native4DBuffer;
+	FShaderResourceViewRHIRef Native4DBufferSRV;
+
 	/** Whether the asset has 4D temporal data */
 	bool bIs4D = false;
 
 	/** Whether the asset uses keyframe 4D playback (mutually exclusive with temporal marginalization at bind time) */
 	bool bIsKeyframe4D = false;
 
+	/** Whether the asset uses native (fudan) 4D rendering */
+	bool bIsNative4D = false;
+
 	/** Number of keyframes stored in KeyframeBuffer */
 	int32 KeyframeFrameCount = 0;
 
 	/** Splats per frame covered by KeyframeBuffer (M at import; independent of later LOD-grown SplatCount) */
 	int32 KeyframeSplatCount = 0;
+
+	/** Number of splats covered by Native4DBuffer (independent of later LOD-grown SplatCount) */
+	int32 Native4DSplatCount = 0;
+
+	/** Time duration (TimeEnd - TimeStart); the eval_shfs_4d 'l' parameter */
+	float TimeDuration4D = 0.f;
 
 	/** Splat-to-cluster index buffer (static, loaded from asset) */
 	FBufferRHIRef SplatClusterIndexBuffer;
@@ -105,6 +118,7 @@ private:
 	TArray<uint8> SHData;
 	TArray<uint8> TemporalData;
 	TArray<uint8> KeyframeData;
+	TArray<uint8> Native4DData;
 	TArray<FGaussianChunkInfo> CachedChunkData;
 	TArray<FGaussianGPUCluster> CachedClusterData;
 	TArray<uint32> CachedSplatClusterIndices;
