@@ -83,6 +83,20 @@ bool FPLYFileReader::ReadPLYFile(const FString& FilePath, TArray<FGaussianSplatD
 	if (bHasTemporalProps)
 	{
 		UE_LOG(LogTemp, Log, TEXT("PLYFileReader: Detected 4D temporal properties (t/scale_t)"));
+
+		// DECLARED LIMITATION: SpacetimeGaussians stores a cubic polynomial
+		// motion (motion_0..8). We evaluate only the linear term (motion_0..2 =
+		// velocity); quadratic/cubic terms are ignored, so fast-moving splats
+		// may drift slightly from the training rendering. Higher-order support
+		// is intentionally not implemented (16B/splat temporal budget).
+		// 声明：检测到 STG 高阶运动项时仅做一阶（线性速度）外推。
+		if (Header.PropertyOffsets.Contains(TEXT("motion_3")))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("PLYFileReader: SpacetimeGaussians higher-order motion terms (motion_3..8) detected. "
+				     "Only the linear term (motion_0..2) is evaluated -- fast-moving splats may drift. "
+				     "(声明：高阶运动项未求值，仅一阶速度外推近似)"));
+		}
 	}
 
 	// Validate file size against expected data
