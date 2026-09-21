@@ -3,6 +3,7 @@
 #include "GaussianSplatAssetFactory.h"
 #include "GaussianSplatAsset.h"
 #include "PLYFileReader.h"
+#include "FudanPthReader.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/ScopedSlowTask.h"
@@ -17,11 +18,18 @@ UGaussianSplatAssetFactory::UGaussianSplatAssetFactory()
 	SupportedClass = UGaussianSplatAsset::StaticClass();
 
 	Formats.Add(TEXT("ply;PLY 高斯泼溅文件"));
+	Formats.Add(TEXT("pth;PyTorch checkpoint 高斯泼溅文件 (复旦 4DGS)"));
 }
 
 bool UGaussianSplatAssetFactory::FactoryCanImport(const FString& Filename)
 {
 	const FString Extension = FPaths::GetExtension(Filename);
+	if (Extension.Equals(TEXT("pth"), ESearchCase::IgnoreCase))
+	{
+		// Accept all .pth files so legacy pickle checkpoints surface a clear
+		// error from FFudanPthReader::ReadPthFile instead of a silent no-op.
+		return true;
+	}
 	return Extension.Equals(TEXT("ply"), ESearchCase::IgnoreCase) && FPLYFileReader::IsValidPLYFile(Filename);
 }
 
@@ -136,20 +144,42 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 	FScopedSlowTask SlowTask(100.0f, FText::FromString(TEXT("正在导入 OpenSplat 资产...")));
 	SlowTask.MakeDialog(true);
 
-	// Read PLY file
-	SlowTask.EnterProgressFrame(30.0f, FText::FromString(TEXT("正在读取 PLY 文件...")));
+	// Read the source file. .pth routes to the fudan torch.save reader;
+	// everything else stays on the PLY path (detection purely by extension).
+	const FString SourceExtension = FPaths::GetExtension(FilePath).ToLower();
+	const bool bIsPthSource = SourceExtension == TEXT("pth");
+
+	// Read PLY/PTH file
+	SlowTask.EnterProgressFrame(30.0f, FText::FromString(
+		bIsPthSource ? TEXT("正在读取 PyTorch checkpoint...") : TEXT("正在读取 PLY 文件...")));
 
 	TArray<FGaussianSplatData> SplatData;
 	FString ErrorMessage;
 	int32 DetectedSHBands = 0;
 
-	if (!FPLYFileReader::ReadPLYFile(FilePath, SplatData, ErrorMessage, &DetectedSHBands))
+	bool bReadOk = false;
+	if (bIsPthSource)
 	{
-		UE_LOG(LogTemp, Error, TEXT("Failed to read PLY file: %s"), *ErrorMessage);
-		return nullptr;
+		bReadOk = FFudanPthReader::ReadPthFile(FilePath, SplatData, ErrorMessage, &DetectedSHBands);
+		if (bReadOk)
+		{
+			UE_LOG(LogTemp, Log, TEXT("Read %d splats from PyTorch checkpoint (4D SH channels: %d)"), SplatData.Num(), DetectedSHBands);
+		}
+	}
+	else
+	{
+		bReadOk = FPLYFileReader::ReadPLYFile(FilePath, SplatData, ErrorMessage, &DetectedSHBands);
+		if (bReadOk)
+		{
+			UE_LOG(LogTemp, Log, TEXT("Read %d splats from PLY file (SH bands: %d)"), SplatData.Num(), DetectedSHBands);
+		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("Read %d splats from PLY file (SH bands: %d)"), SplatData.Num(), DetectedSHBands);
+	if (!bReadOk)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Failed to read %s file: %s"), bIsPthSource ? TEXT("PTH") : TEXT("PLY"), *ErrorMessage);
+		return nullptr;
+	}
 
 	// Create or reuse asset
 	SlowTask.EnterProgressFrame(10.0f, FText::FromString(TEXT("正在创建资产...")));
