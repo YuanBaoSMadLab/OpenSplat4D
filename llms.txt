@@ -1,0 +1,98 @@
+# OpenSplat4D
+
+> Unreal Engine 5 plugin for real-time 3D and 4D Gaussian Splatting (3DGS / 4DGS) rendering.
+> Renders static 3D Gaussian Splatting models and time-varying 4D Gaussian Splatting models
+> (Spacetime Gaussians, keyframe/sequence 4DGS, Fudan native 4DGS) inside Unreal Engine 5.
+
+## Facts
+
+- Name: OpenSplat4D
+- Version: 0.2
+- Type: Unreal Engine C++ plugin (runtime + editor modules)
+- Engine versions: Unreal Engine 5.5 - 6.0 (verified builds on UE 5.7, 5.8, 6.0; Windows / Win64)
+- License: Apache-2.0
+- Repository: https://github.com/YuanBaoSMadLab/OpenSplat4D
+- Releases (prebuilt per engine version): https://github.com/YuanBaoSMadLab/OpenSplat4D/releases
+- Issues: https://github.com/YuanBaoSMadLab/OpenSplat4D/issues
+
+## What it does
+
+OpenSplat4D imports 3D and 4D Gaussian Splatting models into Unreal Engine 5 and renders them in
+real time on the GPU, with a Nanite-style cluster LOD hierarchy, cluster culling, depth sorting,
+indirect draw, and a dedicated 4D player editor for scrubbing and playing the time axis.
+
+Key capabilities:
+
+- Auto-detects the Gaussian Splatting model type directly from the imported file (no manual mode selection).
+- Renders static 3DGS (`.ply`, `.spz`) and three kinds of 4DGS in one shared GPU pipeline.
+- 4D player editor with play / pause / stop / step / timeline scrub / loop / playback speed.
+- Nanite-style cluster LOD, per-cluster culling, and a sort-interval control for large scenes.
+- Training workflow inside the editor: capture -> COLMAP sparse reconstruction -> 3DGS or 4DGS training.
+- World Partition HLOD builder that generates static 3DGS or dynamic 4DGS HLODs per cluster.
+- Blueprint API for performance settings and 4D playback.
+
+## Supported input formats
+
+- `.ply` - standard 3DGS point cloud (INRIA / Postshot / most trainers); static 3D
+- `.spz` - Niantic SPZ compressed 3DGS; static 3D
+- `.ply` with `t` and `scale_t` - Spacetime Gaussians (STG); 4D temporal marginalization, plus
+  first-order velocity extrapolation when `motion_0..2` is present
+- `.ply` with `rot_0..7` (dual quaternion) + `scale_3` + `f_rest` - Fudan 4DGS; native 4D
+- `.pth` - Fudan 4DGS PyTorch `torch.save` training checkpoint (parsed directly, no export step)
+- `.ply` sequence - keyframe / baked 4DGS (4DGaussians, Deformable-3DGS, Ex4DGS); imported through
+  "Import PLY Sequence (Keyframe 4D)" and interpolated on the GPU between frames
+- `.o4d` - OpenSplat4D native container (splats + optional keyframes + timeline); Blueprint save/load
+
+## 4D Gaussian Splatting model support
+
+- Spacetime Gaussians (STG): supported. Temporal marginalization `alpha *= exp(-0.5 * (t - T)^2 / sigma_t^2)`
+  with `sigma_t = exp(scale_t)`, plus first-order velocity extrapolation. Higher-order motion terms
+  `motion_3..8` are not evaluated (declared limitation, warning at import).
+- 4DGaussians / Deformable-3DGS / Ex4DGS (MLP or HexPlane deformation): supported through per-frame
+  baked PLY sequences, with GPU interpolation between frames (slerp for rotation).
+- Fudan 4DGS (native 4D primitives, ICLR 2024): supported. Dual-quaternion 4D rotation, 4D covariance
+  temporal conditioning (Schur complement), and 4D spherindrical harmonics for time- and view-dependent color.
+- Postshot 4D and Volinga `.nvol`: not supported (per-frame vertex counts and ordering do not match;
+  formats are closed).
+- Other native 4D variants (non-dual-quaternion 4D rotations): not supported.
+
+## Requirements
+
+- DirectX 12 / Shader Model 6 is required. DirectX 11 is not supported (the cluster culling compute
+  shader uses 9 UAVs, above the SM5 limit of 8).
+- All paths must be ASCII-only. Non-ASCII paths break the asset registry and COLMAP invocation.
+- Building from source requires Visual Studio 2022/2026 with the C++ game development workload.
+- The Niagara plugin is declared as a dependency, but authoring a Niagara System is not required.
+
+## Architecture
+
+- Module `NanoGS`: active rendering pipeline. `UGaussianSplatAsset` (serialized format v8; 3D plus
+  three 4D modes), `UGaussianSplatComponent`, `AGaussianSplatActor`, cluster builder, GPU renderer,
+  scene proxy, global accumulator, view extension.
+- Module `NanoGSEditor`: asset factories (PLY, `.pth`, PLY sequences), asset type actions, 3D asset
+  editor, 4D player editor, Slate transport bar, thumbnail renderer.
+- Module `OpenSplat4DRuntime`: reference-derived point cloud pipeline (`UOpenSplat4DPointCloud`,
+  `AOpenSplat4DSplatActor`), SPZ compression, capture set, training dataset.
+- Module `OpenSplat4DEditor`: editor mode and panel, actor/asset factories, HLOD builder, settings,
+  commandlet, reimport, Python step integration.
+- Shaders (HLSL) in `Shaders/Private`: `ClusterCulling.usf`, `CompactSplats.usf`, `CalcDistances.usf`,
+  `RadixSort.usf`, `CalcViewData.usf` (time evaluation happens here), `GaussianSplatRendering.usf`.
+- Python helpers in `Scripts/`: `openplat4d_helper.py`, `train_enhanced.py`, `clip_model.py`,
+  `export_4dgs.py`, `read_write_model.py`.
+
+## Documentation
+
+- README (English): https://github.com/YuanBaoSMadLab/OpenSplat4D/blob/main/README.md
+- README (Chinese): https://github.com/YuanBaoSMadLab/OpenSplat4D/blob/main/README-zh.md
+
+## Credits
+
+- `GaussianSplattingForUnrealEngine` by Italink - 3DGS Unreal Engine rendering base.
+- `NanoGaussianSplatting` - UE cluster LOD / compute pipeline reference.
+- `4d-gaussian-splatting` (Wu et al., INRIA GraphDeco lineage) - 4DGS temporal model.
+- `4d-gaussian-splatting` by Fudan University (Yang et al., ICLR 2024) - native 4D Gaussians with
+  spherindrical harmonics.
+- Niantic SPZ - compressed splat format.
+
+Training-side CUDA operators (`pointops2`, `simple-knn`, `diff-gaussian-rasterization`) are not
+ported; the Unreal Engine side implements forward inference in C++ and HLSL.
