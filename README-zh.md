@@ -272,18 +272,42 @@ OpenSplat4D/
 
 ## 致谢与许可
 
-以 **Apache-2.0** 许可证发布。本项目建立在以下开源工作之上：
+OpenSplat4D **自身的源码**以 **Apache-2.0** 许可证发布（见 [LICENSE](LICENSE)）。
+项目集成/参考了若干第三方组件，其许可条款并不相同，完整清单见
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)。
 
-| 角色 | 来源 |
-|---|---|
-| 3DGS 的 Unreal Engine 渲染基础 | `GaussianSplattingForUnrealEngine`（by Italink） |
-| UE 侧簇级 LOD / compute 管线参考 | `NanoGaussianSplatting` |
-| 4DGS 时序模型（训练 / 推理） | `4d-gaussian-splatting`（Wu et al.，INRIA GraphDeco 谱系） |
-| 原生 4D 高斯与球柱谐 | 复旦大学 `4d-gaussian-splatting`（Yang et al., ICLR 2024） |
-| 压缩 splat 格式（SPZ） | Niantic SPZ |
+| 角色 | 来源 | 许可证 |
+|---|---|---|
+| 3DGS 的 Unreal Engine 渲染基础 | [Italink/GaussianSplattingForUnrealEngine](https://github.com/Italink/GaussianSplattingForUnrealEngine) | MIT |
+| UE 侧簇级 LOD / compute 管线参考 | [TimChen1383/NanoGaussianSplatting](https://github.com/TimChen1383/NanoGaussianSplatting) | MIT |
+| 原生 4D 高斯与球柱谐（ICLR 2024） | [fudan-zvg/4d-gaussian-splatting](https://github.com/fudan-zvg/4d-gaussian-splatting) | MIT（顶层） |
+| 4DGS 训练仓库 | [ueoo/4d-gaussian-splatting](https://github.com/ueoo/4d-gaussian-splatting) | MIT（顶层） |
+| 压缩 splat 格式（SPZ） | Niantic Labs | MIT |
+| 训练侧 SSIM 算子 | [rahul-goel/fused-ssim](https://github.com/rahul-goel/fused-ssim) | MIT |
+| COLMAP 模型读写（`Scripts/read_write_model.py`） | [colmap/colmap](https://github.com/colmap/colmap) | BSD-3-Clause |
 
-训练所用 CUDA 算子（`pointops2`、`simple-knn`、`diff-gaussian-rasterization`）位于**训练侧**，未做移植
-—— Unreal Engine 侧只需要前向推理，已用 C++ 与 HLSL 实现。
+### 非商业组件 —— 商业使用前必读
+
+仓库中有两部分来自 **Inria / MPII 的 Gaussian-Splatting** 代码，该许可证**仅允许非商业的研究与评估用途**：
+
+- `Extensions/diff_gaussian_rasterization/` 与 `Extensions/simple_knn/` —— 训练侧预编译 CUDA 扩展，
+  文件内保留了原始的 Inria 版权头
+  （[diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)、
+  [simple-knn](https://gitlab.inria.fr/bkerbl/simple-knn)）。
+- `Shaders/Private/CalcViewData.usf` —— 原生 4D 求值路径移植自该代码库 `forward.cu` 的
+  `computeCov3D_conditional` / `computeColorFromSH_4D`。
+
+Inria 许可原文写道：*"THE USER CANNOT USE, EXPLOIT OR DISTRIBUTE THE SOFTWARE FOR COMMERCIAL
+PURPOSES WITHOUT PRIOR AND EXPLICIT CONSENT OF LICENSORS."*（未经许可方事先明确同意，用户不得将本软件
+用于商业目的使用、利用或分发。）
+
+**因此上面的 Apache-2.0 仅覆盖 OpenSplat4D 自身的代码。** 按当前形态将插件用于商业用途，
+需要以下二选一：向 Inria 取得商业授权（联系 stip-sophia.transfert@inria.fr），或把上述两处组件替换为
+独立实现 —— 原生 4D 的数学在已发表论文中有完整公式，可以在不转写 Inria 源码的前提下重新实现。
+完整声明见 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)。
+
+`teachers/` 与 `ThirdParty/` 仅为本地开发参考，不属于本仓库、也不在发行包中。
+仓库中**未发现** GPL / LGPL / AGPL 代码。
 
 ---
 

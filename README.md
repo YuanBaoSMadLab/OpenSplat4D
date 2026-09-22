@@ -299,19 +299,44 @@ attributes (`t`/`scale_t`, or `rot_0..7`/`scale_3`), or import per-frame PLYs th
 
 ## Credits and license
 
-Released under the **Apache-2.0** license. The project builds on these open-source works:
+OpenSplat4D's own source code is released under the **Apache-2.0** license (see [LICENSE](LICENSE)).
+The project integrates third-party components whose terms differ; the full inventory is in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
 
-| Role | Source |
-|---|---|
-| 3DGS Unreal Engine rendering base | `GaussianSplattingForUnrealEngine` by Italink |
-| UE-side cluster LOD / compute pipeline reference | `NanoGaussianSplatting` |
-| 4DGS temporal model (training / inference) | `4d-gaussian-splatting` (Wu et al., INRIA GraphDeco lineage) |
-| Native 4D Gaussians with spherindrical harmonics | `4d-gaussian-splatting` by Fudan University (Yang et al., ICLR 2024) |
-| Compressed splat format (SPZ) | Niantic SPZ |
+| Role | Source | License |
+|---|---|---|
+| 3DGS Unreal Engine rendering base | [Italink/GaussianSplattingForUnrealEngine](https://github.com/Italink/GaussianSplattingForUnrealEngine) | MIT |
+| UE-side cluster LOD / compute pipeline reference | [TimChen1383/NanoGaussianSplatting](https://github.com/TimChen1383/NanoGaussianSplatting) | MIT |
+| Native 4D Gaussians with spherindrical harmonics (ICLR 2024) | [fudan-zvg/4d-gaussian-splatting](https://github.com/fudan-zvg/4d-gaussian-splatting) | MIT (top level) |
+| 4DGS training repository | [ueoo/4d-gaussian-splatting](https://github.com/ueoo/4d-gaussian-splatting) | MIT (top level) |
+| Compressed splat format (SPZ) | Niantic Labs | MIT |
+| Training-side SSIM operator | [rahul-goel/fused-ssim](https://github.com/rahul-goel/fused-ssim) | MIT |
+| COLMAP model I/O (`Scripts/read_write_model.py`) | [colmap/colmap](https://github.com/colmap/colmap) | BSD-3-Clause |
 
-CUDA operators used for training (`pointops2`, `simple-knn`, `diff-gaussian-rasterization`) live on
-the **training** side and are not ported — the Unreal Engine side only needs forward inference,
-implemented here in C++ and HLSL.
+### Non-commercial components — read before commercial use
+
+Two parts of this repository come from the **Inria / MPII Gaussian-Splatting** code, which is
+licensed for **non-commercial research and evaluation use only**:
+
+- `Extensions/diff_gaussian_rasterization/` and `Extensions/simple_knn/` — prebuilt training-side
+  CUDA extensions that carry the original Inria copyright headers
+  ([diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization),
+  [simple-knn](https://gitlab.inria.fr/bkerbl/simple-knn)).
+- `Shaders/Private/CalcViewData.usf` — the native-4D evaluation path is a port of
+  `computeCov3D_conditional` / `computeColorFromSH_4D` from that codebase's `forward.cu`.
+
+The Inria license states: *"THE USER CANNOT USE, EXPLOIT OR DISTRIBUTE THE SOFTWARE FOR COMMERCIAL
+PURPOSES WITHOUT PRIOR AND EXPLICIT CONSENT OF LICENSORS."*
+
+**The Apache-2.0 license therefore covers OpenSplat4D's own code only.** Commercial use of the
+plugin as currently shipped requires either a commercial license from Inria
+(stip-sophia.transfert@inria.fr) or replacing the two components above with independent
+implementations — the native 4D math is fully specified in the published papers and can be
+reimplemented without transposing Inria source. See
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) for the complete statement.
+
+`teachers/` and `ThirdParty/` are local development references only; they are not part of this
+repository or of the released packages. No GPL, LGPL or AGPL code has been identified.
 
 ---
 

@@ -10,7 +10,10 @@
 - Version: 0.2
 - Type: Unreal Engine C++ plugin (runtime + editor modules)
 - Engine versions: Unreal Engine 5.5 - 6.0 (verified builds on UE 5.7, 5.8, 6.0; Windows / Win64)
-- License: Apache-2.0
+- License: Apache-2.0 for the project's own source code. Third-party components use different terms;
+  `Extensions/` and the native-4D path of `Shaders/Private/CalcViewData.usf` originate from Inria /
+  MPII Gaussian-Splatting code, which is licensed for non-commercial research and evaluation use
+  only. See THIRD-PARTY-LICENSES.md.
 - Repository: https://github.com/YuanBaoSMadLab/OpenSplat4D
 - Mirror (mainland China): https://gitee.com/YuanBaoSMadLab/OpenSplat4D
 - Releases (prebuilt per engine version): https://github.com/YuanBaoSMadLab/OpenSplat4D/releases
@@ -85,15 +88,29 @@ Key capabilities:
 
 - README (English): https://github.com/YuanBaoSMadLab/OpenSplat4D/blob/main/README.md
 - README (Chinese): https://github.com/YuanBaoSMadLab/OpenSplat4D/blob/main/README-zh.md
+- Third-party license inventory: https://github.com/YuanBaoSMadLab/OpenSplat4D/blob/main/THIRD-PARTY-LICENSES.md
 
 ## Credits
 
-- `GaussianSplattingForUnrealEngine` by Italink - 3DGS Unreal Engine rendering base.
-- `NanoGaussianSplatting` - UE cluster LOD / compute pipeline reference.
-- `4d-gaussian-splatting` (Wu et al., INRIA GraphDeco lineage) - 4DGS temporal model.
-- `4d-gaussian-splatting` by Fudan University (Yang et al., ICLR 2024) - native 4D Gaussians with
-  spherindrical harmonics.
-- Niantic SPZ - compressed splat format.
+- `GaussianSplattingForUnrealEngine` by Italink (MIT) - 3DGS Unreal Engine rendering base.
+  https://github.com/Italink/GaussianSplattingForUnrealEngine
+- `NanoGaussianSplatting` by TimChen (MIT) - UE cluster LOD / compute pipeline reference.
+  https://github.com/TimChen1383/NanoGaussianSplatting
+- `4d-gaussian-splatting` by Fudan University (MIT at top level; Yang et al., ICLR 2024) - native 4D
+  Gaussians with spherindrical harmonics. https://github.com/fudan-zvg/4d-gaussian-splatting
+- `4d-gaussian-splatting` training fork by ueoo (MIT at top level).
+  https://github.com/ueoo/4d-gaussian-splatting
+- Niantic SPZ (MIT) - compressed splat format.
+- `fused-ssim` by Rahul Goel (MIT). https://github.com/rahul-goel/fused-ssim
+- COLMAP (BSD-3-Clause) - `Scripts/read_write_model.py`. https://github.com/colmap/colmap
+- Inria / MPII Gaussian-Splatting License (NON-COMMERCIAL, research and evaluation only) -
+  `Extensions/diff_gaussian_rasterization/`, `Extensions/simple_knn/`
+  (https://github.com/graphdeco-inria/diff-gaussian-rasterization,
+  https://gitlab.inria.fr/bkerbl/simple-knn) and the native-4D path of
+  `Shaders/Private/CalcViewData.usf`, ported from `forward.cu`. Commercial use of the plugin as
+  shipped requires a commercial license from Inria or replacement of those components.
 
 Training-side CUDA operators (`pointops2`, `simple-knn`, `diff-gaussian-rasterization`) are not
-ported; the Unreal Engine side implements forward inference in C++ and HLSL.
+ported into the engine-side renderer, which implements forward inference in C++ and HLSL; prebuilt
+copies of the Inria-licensed extensions are nevertheless present under `Extensions/` for the
+in-editor training workflow.
