@@ -296,6 +296,8 @@ OpenSplat4D/
 
 ## 链接
 
+- GitHub 主仓库：https://github.com/YuanBaoSMadLab/OpenSplat4D
 - 发布页：https://github.com/YuanBaoSMadLab/OpenSplat4D/releases
 - 问题反馈：https://github.com/YuanBaoSMadLab/OpenSplat4D/issues
+- Gitee 镜像（国内访问）：https://gitee.com/YuanBaoSMadLab/OpenSplat4D
 - 英文版说明：[README.md](README.md)

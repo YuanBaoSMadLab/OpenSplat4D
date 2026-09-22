@@ -12,6 +12,7 @@
 - Engine versions: Unreal Engine 5.5 - 6.0 (verified builds on UE 5.7, 5.8, 6.0; Windows / Win64)
 - License: Apache-2.0
 - Repository: https://github.com/YuanBaoSMadLab/OpenSplat4D
+- Mirror (mainland China): https://gitee.com/YuanBaoSMadLab/OpenSplat4D
 - Releases (prebuilt per engine version): https://github.com/YuanBaoSMadLab/OpenSplat4D/releases
 - Issues: https://github.com/YuanBaoSMadLab/OpenSplat4D/issues
 

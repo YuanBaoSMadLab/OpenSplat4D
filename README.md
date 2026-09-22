@@ -324,6 +324,8 @@ implemented here in C++ and HLSL.
 
 ## Links
 
+- GitHub: https://github.com/YuanBaoSMadLab/OpenSplat4D
 - Releases: https://github.com/YuanBaoSMadLab/OpenSplat4D/releases
 - Issues: https://github.com/YuanBaoSMadLab/OpenSplat4D/issues
+- Gitee mirror (for users in mainland China): https://gitee.com/YuanBaoSMadLab/OpenSplat4D
 - Chinese README: [README-zh.md](README-zh.md)
