@@ -1,233 +1,329 @@
 # OpenSplat4D
 
-A **4D Gaussian Splatting (4DGS) + 3DGS dual-mode rendering** plugin for **Unreal Engine 5.5 ~ 6.0** (built & tested on UE 5.8).
+**Unreal Engine plugin for rendering 3D and 4D Gaussian Splatting (3DGS / 4DGS) in real time.**
 
-OpenSplat4D renders time-varying Gaussian point clouds trained by 4DGS pipelines and
-coexists with the static 3DGS mode as **switchable dual modes**, rendered by a
-self-contained billboard component (no Niagara System asset required).
+OpenSplat4D brings Gaussian Splatting into Unreal Engine 5 as a native C++ plugin. It renders
+static 3D Gaussian Splatting models (`.ply`) **and** time-varying 4D Gaussian Splatting models —
+Spacetime Gaussians, keyframe/sequence 4DGS, and Fudan native 4DGS (dual-quaternion 4D rotation
++ 4D spherindrical harmonics) — with a GPU compute pipeline, Nanite-style cluster LODs, indirect
+draw, and a dedicated 4D player editor.
 
----
-
-## Credits & License
-
-This plugin is built by fusing two reference open-source projects and is released under
-the **Apache-2.0** license.
-
-| Role | Source |
-|------|--------|
-| ① 3DGS UE rendering base (moldable C++ plugin) | `GaussianSplattingForUnrealEngine` (by Italink) |
-| ② 4DGS temporal model (training / inference) | `4d-gaussian-splatting` (Wu et al., based on INRIA GraphDeco `gaussian-splatting`) |
-
-The CUDA operators (`pointops2`, `simple-knn`, `diff-gaussian-rasterization`) live in the
-**training** side (②) and are **not** ported — UE only needs the forward *inference*
-(time-marginal evaluation), implemented here in C++/HLSL.
+- Version: **0.2**
+- Engine: **Unreal Engine 5.5 – 6.0** (built and verified on UE 5.7, 5.8, 6.0 — Windows / Win64)
+- License: **Apache-2.0**
+- Download: [GitHub Releases](https://github.com/YuanBaoSMadLab/OpenSplat4D/releases) (prebuilt per UE version)
 
 ---
 
-> # ⛔ CRITICAL — READ BEFORE FIRST RUN
->
-> > **PLEASE KEEP YOUR PROJECT AND ALL REQUIRED FILE DIRECTORIES IN ENGLISH ONLY. DO NOT INCLUDE ANY CHINESE CHARACTERS OR CHARACTERS FROM OTHER LANGUAGES.**
->
-> ⚠️ **CRITICAL: All paths and file names MUST be English-only (ASCII) !**
->
-> **Your project path, plugin directory, work directory (WorkDir), COLMAP executable path, Python path, image directories, and every other path the plugin reads or writes MUST NOT contain Chinese characters, Japanese kana, special symbols, or any non-ASCII characters.** Otherwise you may hit: asset registry crashes (`String is too long`), COLMAP command-line garbling (GBK encoding), "file not found" errors, or broken argument parsing in the Python helper script — all hard to diagnose.
->
-> ✅ Correct: `C:/Projects/MyProject/Plugins/OpenSplat4D`, `D:/Colmap/colmap.exe`
-> ❌ Wrong: `C:/项目/我的工程/插件/OpenSplat4D`, `D:/工具/colmap.exe`, `E:/OpenSplat4D_副本`
+## What is this project?
+
+Gaussian Splatting is a radiance-field representation that reconstructs photorealistic scenes from
+photos as millions of 3D Gaussian primitives. Its 4D extension (4DGS / dynamic Gaussian Splatting)
+additionally models **time**, so the scene moves: people walk, cloth deforms, flames flicker.
+
+OpenSplat4D is the Unreal Engine side of that pipeline. It solves three practical problems:
+
+1. **Rendering** — a self-contained GPU renderer for Gaussian Splatting inside UE, with LOD,
+   sorting, culling, and shading, without needing a Niagara System asset.
+2. **4D playback** — a time axis for the point cloud, evaluated on the GPU, driven by a
+   level-sequencer-style 4D player editor.
+3. **Production workflow** — import, train (capture → COLMAP → 3DGS/4DGS training), and
+   World Partition HLOD generation, all from inside the editor.
+
+### Keywords
+
+Gaussian Splatting, 3DGS, 4DGS, 4D Gaussian Splatting, dynamic Gaussian Splatting, Unreal Engine 5
+plugin, UE5 plugin, real-time rendering, Nanite cluster LOD, compute shader splatting, PLY import,
+PyTorch checkpoint import, Spacetime Gaussians, spherindrical harmonics, dual quaternion, World
+Partition HLOD, COLMAP, novel view synthesis, point cloud.
+
+---
+
+## Supported input formats
+
+The importer **auto-detects the model type from the file itself** — no manual mode selection.
+
+| Format | Extension | Detected as | Notes |
+|---|---|---|---|
+| Standard 3DGS PLY (INRIA / Postshot / most trainers) | `.ply` | Static 3D | Position, rotation, scale, opacity, SH |
+| SPZ compressed 3DGS (Niantic) | `.spz` | Static 3D | Runtime point-cloud path |
+| Spacetime Gaussians (STG) | `.ply` | **4D — temporal marginalization** | Needs `t` + `scale_t`; `motion_0..2` adds velocity extrapolation |
+| Fudan 4DGS (native 4D primitives) | `.ply` | **4D — native 4D** | Needs `rot_0..7` (dual quaternion) + `scale_3` + `f_rest` |
+| Fudan 4DGS training checkpoint | `.pth` | **4D — native 4D** | `torch.save` checkpoint, parsed directly (no export step) |
+| Keyframe / baked 4DGS (4DGaussians, Deformable-3DGS, Ex4DGS) | `.ply` sequence | **4D — keyframe** | Content Browser → *Import PLY Sequence (Keyframe 4D)* |
+| OpenSplat4D native container | `.o4d` | 3D or 4D | Bundles splats + keyframes + timeline; save/load from Blueprint |
+
+### 4D model-structure support matrix
+
+| 4DGS model / training pipeline | Runtime representation | Supported |
+|---|---|---|
+| **Spacetime Gaussians (STG)** | single PLY: `t` / `scale_t` + polynomial motion | Yes — temporal marginalization + first-order velocity extrapolation. Higher-order `motion_3..8` terms are not evaluated (declared limitation, import-time warning) |
+| **4DGaussians / Deformable-3DGS / Ex4DGS** (MLP / HexPlane deformation) | per-frame baked PLY (`export_perframe`) | Yes — via *Import PLY Sequence (Keyframe 4D)*, with GPU interpolation between frames (slerp for rotation) |
+| **Fudan 4DGS** (native 4D primitives, ICLR 2024) | single PLY or `.pth`: dual-quaternion 4D rotation + 4D spherindrical harmonics | Yes — native 4D pipeline: 4D covariance temporal conditioning + 4D SH color evaluation |
+| **Postshot 4D**, **Volinga `.nvol`** | proprietary | No — per-frame vertex counts/order do not match, and the formats are closed |
+| Other native 4D variants (e.g. non-dual-quaternion 4D rotations) | — | No — the native 4D pipeline implements the dual-quaternion variant only |
+
+---
 
 ## Requirements
 
-- **Unreal Engine 5.5+** (tested on 5.8).
-- **DirectX 12 required (DX11/SM5 NOT supported)**: the NanoGS pipeline's cluster-culling
-  compute shader uses 9 UAVs, exceeding the SM5 (feature level 11.0) limit of 8. On DX11 the
-  editor crashes while compiling `ClusterCulling.usf`
-  (`Shader is using too many UAVs: 9 (only 8 supported)`).
-  Set *Project Settings → Platforms → Windows → Default RHI* to **DirectX 12** and make sure
-  your GPU / driver supports DirectX 12 (Shader Model 6).
-- The plugin uses the **Niagara** plugin (kept as a dependency) but does **not** require you
-  to author a Niagara System — rendering is done by `UOpenSplat4DBillboardComponent`.
+- **Unreal Engine 5.5 – 6.0** (verified on 5.7, 5.8, 6.0).
+- **DirectX 12 / Shader Model 6 is required.** DX11 is not supported: the cluster-culling compute
+  shader uses 9 UAVs, above the SM5 (feature level 11.0) limit of 8, and the editor will fail while
+  compiling `ClusterCulling.usf` (`Shader is using too many UAVs: 9 (only 8 supported)`).
+  Set *Project Settings → Platforms → Windows → Default RHI* to **DirectX 12**.
+- **English-only (ASCII) paths are mandatory.** Project path, plugin path, working directory,
+  COLMAP path, Python path, and image directories must not contain Chinese characters, kana, or
+  other non-ASCII symbols. Non-ASCII paths cause asset-registry crashes (`String is too long`),
+  COLMAP command-line encoding problems, and hard-to-diagnose "file not found" errors.
+  - Correct: `C:/Projects/MyProject/Plugins/OpenSplat4D`, `D:/Colmap/colmap.exe`
+  - Wrong: `C:/项目/我的工程/插件/OpenSplat4D`, `D:/工具/colmap.exe`
+- The plugin declares the **Niagara** plugin as a dependency, but you do **not** need to author a
+  Niagara System — splatting is done by the plugin's own GPU pipeline.
+- Building from source additionally requires **Visual Studio 2022/2026** with the C++ game
+  development workload (toolset v143).
 
 ---
 
-## Install & Enable
+## Installation
 
-1. Copy (or symlink) the `OpenSplat4D` folder into your UE project's `Plugins/` directory.
-2. Restart the editor / right-click the `.uproject` → *Generate Visual Studio project files*
-   (requires **Visual Studio 2022/2026** with the C++ game-dev workload), then build.
-3. Enable **OpenSplat4D** in *Edit → Plugins → Rendering* (search "OpenSplat4D").
+### Option A — Prebuilt release (recommended)
 
-> If you build the plugin with `RunUAT BuildPlugin`, deploy the produced
-> `HostProject/Plugins/OpenSplat4D` into your project's `Plugins/` folder.
+1. Download the archive matching your engine version from
+   [Releases](https://github.com/YuanBaoSMadLab/OpenSplat4D/releases):
+   `OpenSplat4D-0.2-UE5.7.zip`, `OpenSplat4D-0.2-UE5.8.zip`, or `OpenSplat4D-0.2-UE6.0.zip`.
+2. Extract it into your project so the layout is
+   `<YourProject>/Plugins/OpenSplat4D/OpenSplat4D.uplugin`.
+3. Restart the editor, then enable **OpenSplat4D** in *Edit → Plugins → Rendering*.
 
----
+### Option B — Build from source
 
-## Quick start (3 steps)
-
-1. **Import** — drag a `.ply` (3DGS) or `.4dgs` (OpenSplat4D native) file into the
-   *Content Browser*. An `OpenSplat4D Point Cloud` asset is created under `/Game/OpenSplat4D/`.
-2. **Place** — drag that asset from the Content Browser into the level viewport. An
-   `OpenSplat4DPointCloudActor` is spawned and the cloud is wired to it automatically.
-3. **Play (4D)** — select the actor, open the **OpenSplat4D** editor mode (the Modes panel,
-   or *Settings*), click **Use Selected Actor**, then **Play**. The time axis animates
-   during *Play* / *Simulate* (PIE). In the editor you can scrub with the **Time** slider
-   and the splats update live.
-
----
-
-## Detailed usage
-
-### Importing a point cloud
-
-- **Drag & drop** a `.ply` or `.4dgs` file into the Content Browser (works because the
-  asset factory `UOpenSplat4DPointCloudAssetFactory` is registered).
-- Or use the **OpenSplat4D** editor mode panel → **Import .ply / .4dgs ...** (file dialog).
-- Re-import: right-click the asset → *Reimport* (driven by `SourceFilePath`).
-- Programmatically:
-  ```cpp
-  UOpenSplat4DPointCloud* Cloud = NewObject<UOpenSplat4DPointCloud>(Parent, ...);
-  Cloud->LoadFromFile(TEXT("path/to/model.ply"));      // 3DGS
-  // or
-  Cloud->LoadFrom4DGS(TEXT("path/to/model.4dgs"));     // native (3D or 4D)
-  ```
-
-### Placing in the level
-
-Any of these spawn an `AOpenSplat4DPointCloudActor` and assign the cloud:
-
-- Drag the asset from the Content Browser into the viewport (handled by
-  `UActorFactory_OpenSplat4DPointCloud`).
-- Right-click the asset in the Content Browser → **Create OpenSplat4D Actor**.
-- **OpenSplat4D** editor mode panel → pick the cloud → **Spawn Actor in Level**.
-- *Place Actor* panel → search `OpenSplat4DPointCloudActor` → assign its `PointCloud`.
-
-### Editing the asset
-
-Select the `OpenSplat4D Point Cloud` asset (or its actor's `PointCloud` property) and set:
-
-- **Mode** — `Static3D` (plain 3DGS) or `Dynamic4D` (time-varying 4DGS).
-- **TimeStart / TimeEnd** — the 4D time axis (matches the trained model's `time_duration`).
-
-### 4D playback
-
-On the `AOpenSplat4DPointCloudActor`:
-
-- **Details panel**: `bAutoPlay`, `bLooping`, `PlayRate`, `CurrentTime`.
-- **OpenSplat4D editor mode panel** (recommended): click **Use Selected Actor**, then
-  **Play** / **Pause**, drag **Time** to scrub, set **Speed**, toggle **Loop**.
-- In **Dynamic4D** mode the GPU applies the temporal marginal
-  `w(t) = exp(-0.5·(t−T)²/σ²)`; in **Static3D** mode weight is always 1.
-- Continuous animation requires *Play* / *Simulate* (PIE). In the editor viewport the
-  **Time** slider scrubs live (the renderer reads `Time` every frame).
-
-### Rendering notes
-
-Rendering is performed by `UOpenSplat4DBillboardComponent` (a `UPrimitiveComponent`):
-it uploads the cloud to a GPU structured buffer and draws one camera-facing quad per
-Gaussian through the global shader `OpenSplat4DBillboard.usf`, inside the base-pass render
-target (so it is actually rasterized on D3D12/Vulkan). Splats are a depth-read, alpha-blended
-translucent overlay.
-
----
-
-## HLOD (World Partition) — one-click 3DGS / 4DGS
-
-For large worlds (World Partition), OpenSplat4D ships an HLOD builder
-(`UOpenSplat4DHLODBuilder`) that automatically runs the full
-**capture → sparse reconstruction → train** pipeline on a cluster of source
-components and replaces them with a single `UOpenSplat4DBillboardComponent`.
-
-1. In the *World Partition* HLOD setup, choose the **OpenSplat4D** HLOD builder
-   for a cell / cluster layer.
-2. Its settings expose the same three step objects (Capture / Sparse /
-   Gaussian) plus a **`bTrain4D`** dual-mode switch:
-   - `bTrain4D = false` → a static **3DGS** HLOD (regular gaussian-splatting repo).
-   - `bTrain4D = true`  → a dynamic **4DGS** HLOD (4d-gaussian-splatting repo).
-3. Build HLODs (e.g. *Build → Build HLODs*). For each cluster the builder
-   captures the source geometry, runs colmap + training (honoring `bTrain4D`),
-   and emits a billboard component placed at the cluster origin, alongside a
-   `point_cloud_meta.json` recording the bounds + source asset names.
-4. Pass `-UseCache` on the command line to reuse an already-trained PLY instead
-   of re-running the whole pipeline.
-
-This is the same dual-mode switch used by the editor pipeline (see below), so
-World Partition cells can mix static and dynamic gaussian HLODs.
-
-### Dual-mode editor pipeline (Capture / Sparse / Gaussian)
-
-The **OpenSplat4D** editor mode panel has four pipeline tabs in addition to the
-Usage tab:
-
-- **Capture** — place a capture rig over selected geometry (or scan it into a
-  point cloud directly, see *Usage*).
-- **Sparse** — run COLMAP sparse reconstruction / view / edit.
-- **Gaussian** — train the model. The **`bTrain4D`** checkbox selects the
-  **4DGS** repo (dynamic, time-enabled) vs the **3DGS** repo (static). Training
-  is orchestrated by `Scripts/openplat4d_helper.py` (ported from the reference
-  plugin, extended with a `--4d` branch); mask clipping uses `clip_model.py`.
-- **Settings** — edit `UOpenSplat4DSettings` (python / colmap / repo paths).
-
----
-
-## Exporting from a trained 4DGS model
-
-Use the Python bridge to convert a trained ② checkpoint into `.4dgs`:
-
-```bash
-python Scripts/export_4dgs.py --checkpoint models/flame_7000.pth --output flame.4dgs
+```powershell
+& "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat" BuildPlugin ^
+  -Plugin="<Path>\OpenSplat4D\OpenSplat4D.uplugin" ^
+  -Package="<OutputPath>" -CreateSubFolder -TargetPlatforms=Win64
 ```
 
-Then import `flame.4dgs` as above. (The script must run inside the `4d-gaussian-splatting`
-environment that provides the model definition.)
+Alternatively, copy the `OpenSplat4D` folder into `Plugins/`, then right-click the `.uproject` →
+*Generate Visual Studio project files* and build.
 
 ---
 
-## Console variables (LOD / screen size)
+## Quick start
 
-- `r.OpenSplat4D.ScreenSizeBias` — screen-size bias for LOD culling (default `0`).
-- `r.OpenSplat4D.ScreenSizeScale` — screen-size scale for LOD culling (default `1`).
-
----
-
-## The "OpenSplat4D" editor mode
-
-Open the Modes panel and select **OpenSplat4D** (registered as editor mode
-`EM_OpenSplat4D`). Its panel provides the end-to-end workflow:
-
-1. **Import** — pick a `.ply` / `.4dgs` file.
-2. **Place in level** — choose a cloud and spawn the actor.
-3. **4D Playback** — drive the selected actor's time / speed / loop.
+1. **Import** — drag a `.ply` (or `.pth`) file into the Content Browser. An *OpenSplat4D* Gaussian
+   Splat asset is created. 4D files are detected automatically.
+2. **Place** — drag the asset into the level viewport. A Gaussian Splat actor is spawned with the
+   component already assigned.
+3. **Play** — for 4D assets, double-click the asset to open the **4D player editor** and press play;
+   or select the actor in the level and press *Play* (PIE) to see the animation.
 
 ---
 
-## Project layout
+## 4D playback
+
+Every component exposes 4D controls (Details panel, Blueprint, or the 4D player editor):
+
+| Property / Function | Description |
+|---|---|
+| `Auto Play` / `bAutoPlay` | Start playback automatically when a 4D asset is registered |
+| `Loop` / `bLooping` | Loop the time axis |
+| `Play Rate` | Playback speed multiplier |
+| `Current Time` | Read-only current time on the time axis |
+| `Play` / `Pause` / `Stop` | `Play4D()` / `Pause4D()` / `Stop4D()` (BlueprintCallable) |
+| `Set Playback Time` | `SetPlaybackTime(float)` — scrub / seek |
+| `Supports 4D Playback` | `Supports4DPlayback()` — whether the assigned asset has temporal data |
+
+Time-axis semantics depend on the model type: for temporal-marginalization models (STG) time is in
+the training time units; for keyframe models time is a frame number (`0 … N-1`).
+
+### 4D player editor
+
+4D assets open in a **dedicated player-style editor** (3D assets keep the standard editor):
+
+- Left: 3D/4D preview viewport; right: Details panel; bottom: transport bar.
+- Transport bar: step-back / play / pause / stop / step-forward, timeline scrub (drag to seek),
+  time code readout, loop toggle, and speed selector (×0.25 – ×4).
+- Preview settings (auto-play, preview play rate, preview Nanite precision, preview view distance,
+  preview fade-out distance, enable Nanite) apply live without rebuilding the preview actor.
+
+Routing is automatic: the asset editor opens the 4D player editor when `Is4D()` is true, otherwise
+the standard 3D asset editor.
+
+---
+
+## Performance tuning for large scenes
+
+Large models (tens of millions of splats) are fill-rate and sort bound. The component exposes a
+**Gaussian Splat | Performance** category, mirrored in the asset editor's preview settings and in
+Blueprint:
+
+| Setting | Effect |
+|---|---|
+| Nanite precision (LOD error threshold) | Cluster-LOD aggressiveness; lower value = fewer splats drawn |
+| Max view distance | Distance culling; whole clusters outside the distance are skipped before compaction |
+| Fade-out start distance | Soft fade of alpha between the fade distance and the max distance |
+| Sort interval (frames) | Depth sorting runs only every N frames while the camera moves — largest single win |
+| Frustum culling | Toggle view-frustum cluster culling |
+| SH order | Spherical-harmonics order used for shading |
+| Opacity scale / Splat size scale / Sharpness | Visual tuning |
+
+BlueprintCallable: `SetNanitePrecision`, `SetVisibilityRange`, `SetFadeOutStart`, `SetSortInterval`.
+
+Measured case: a 57-million-splat scene on an RTX 4090 went from ~60 FPS to roughly +60% after the
+sort interval was wired into the pipeline (a previously inert property). Recommended starting point
+for such scenes: sort interval 3, Nanite precision 0.1–0.3, max view distance ~200 m, fade-out 0.8×
+max distance — and make sure Nanite cluster LODs were actually built for the asset.
+
+---
+
+## Training pipeline (capture → COLMAP → train) and HLOD
+
+The plugin ships an editor mode (`EM_OpenSplat4D`, Modes panel → **OpenSplat4D**) with tabs for the
+whole authoring workflow:
+
+| Tab | Purpose |
+|---|---|
+| Capture | Place a capture rig over selected geometry, or scan geometry into a point cloud |
+| Sparse | Run COLMAP sparse reconstruction, view and edit the result |
+| Gaussian | Train the model; the **Train 4D** checkbox selects the 4DGS repo (dynamic) instead of 3DGS (static) |
+| Settings | Paths for Python, COLMAP, and the training repositories (`UOpenSplat4DSettings`) |
+
+Training is orchestrated by `Scripts/openplat4d_helper.py` (with a `--4d` branch) and
+`Scripts/train_enhanced.py`; mask clipping uses `Scripts/clip_model.py`.
+
+**World Partition HLOD.** `UOpenSplat4DHLODBuilder` runs capture → sparse → train on a cluster of
+source components and replaces them with a single Gaussian Splat component. Its `bTrain4D` switch
+produces either static 3DGS HLODs or dynamic 4DGS HLODs, so cells can mix both. Passing `-UseCache`
+reuses an already-trained PLY instead of re-running the pipeline.
+
+---
+
+## Architecture
+
+| Module | Type | Responsibility |
+|---|---|---|
+| `NanoGS` | Runtime | The active rendering pipeline: `UGaussianSplatAsset` (v8, 3D + three 4D modes), `UGaussianSplatComponent` (UPrimitiveComponent), `AGaussianSplatActor`, cluster builder, GPU renderer, scene proxy, global accumulator, NaNite-style LOD, view extension |
+| `NanoGSEditor` | Editor | Asset factories (PLY / `.pth` / PLY-sequence), asset type actions, 3D asset editor, 4D player editor, transport bar (Slate), thumbnail renderer |
+| `OpenSplat4DRuntime` | Runtime | Reference-derived pipeline: `UOpenSplat4DPointCloud` + `AOpenSplat4DSplatActor` (instanced static mesh rendering), SPZ compression, capture set, training dataset |
+| `OpenSplat4DEditor` | Editor | Editor mode and panel, actor/asset factories, HLOD builder, settings, commandlet, reimport, Python step integration |
+
+### Rendering pipeline (NanoGS)
+
+```
+GaussianSplatAsset (GPU buffers)
+  -> SceneProxy -> RenderData / GPUResources
+     -> ClusterCulling.usf        (cluster frustum + distance culling, indirect args)
+     -> CompactSplats.usf         (Nanite LOD compaction)
+     -> CalcDistances.usf + RadixSort.usf   (depth sort, gated by sort interval)
+     -> CalcViewData.usf          (per-splat view data; time evaluation happens here)
+     -> GaussianSplatRendering.usf / Composite (splat rasterization + resolve)
+```
+
+Time evaluation is a branch inside `CalcViewData.usf`, so all modes share one pipeline:
+
+| Mode | GPU evaluation |
+|---|---|
+| Temporal marginalization | `alpha *= exp(-0.5 * (t - T)^2 / sigma_t^2)`, with `sigma_t = exp(scale_t)`; `pos(t) = pos + v * (t - anchor)` when velocity is present |
+| Keyframe 4D | Interpolate 64 B/frame/splat records (position, quaternion, scale, opacity, color) between the two neighbouring frames; slerp for rotation |
+| Native 4D (Fudan) | Build the 4D covariance from the dual quaternion, apply Schur temporal conditioning to obtain the equivalent 3D Gaussian (`mu_x' = mu_x + Sigma_xt * dt / sigma_t^2`, `Sigma_xx' = Sigma_xx - Sigma_xt Sigma_xt^T / sigma_t^2`), then evaluate 4D spherindrical harmonics for color |
+
+Assets are serialized with a versioned format (currently **v8**); v5 – v7 assets load unchanged.
+The `.o4d` container (magic `O4D2`) bundles splat data, optional keyframes, and the timeline.
+
+---
+
+## Repository layout
 
 ```
 OpenSplat4D/
 ├── OpenSplat4D.uplugin
 ├── Source/
-│   ├── OpenSplat4DRuntime/        # data model + billboard renderer + actor + 4D math
-│   │   ├── Public/
-│   │   │   ├── OpenSplat4DPoint.h          # FOpenSplat4DPoint (4D-aware)
-│   │   │   ├── OpenSplat4DPointCloud.h     # UOpenSplat4DPointCloud (asset)
-│   │   │   ├── OpenSplat4DPointCloudActor.h
-│   │   │   └── OpenSplat4DBillboardComponent.h
-│   │   └── Private/  (implementations + zlib compression + shader/renderer)
-│   └── OpenSplat4DEditor/         # asset factory + actor factory + editor mode panel
-├── Shaders/Private/OpenSplat4DBillboard.usf  # billboard HLSL
-├── Scripts/export_4dgs.py         # ② checkpoint -> .4dgs
-├── LICENSE
-└── README.md
+│   ├── NanoGS/                 # active renderer: asset, component, cluster LOD, GPU pipeline
+│   ├── NanoGSEditor/           # importers, asset editors (3D + 4D), transport bar
+│   ├── OpenSplat4DRuntime/     # point-cloud model, splat actor, SPZ, capture set
+│   └── OpenSplat4DEditor/      # editor mode, HLOD builder, settings, commandlet
+├── Shaders/Private/            # HLSL: CalcViewData, CalcDistances, RadixSort, ClusterCulling, ...
+├── Scripts/                    # Python: COLMAP/training helpers, export_4dgs.py, clip_model.py
+├── Extensions/                 # prebuilt CUDA extensions for the training side
+├── Content/                    # Niagara templates (legacy path), docs
+├── Docs/                       # additional documentation
+├── LICENSE                     # Apache-2.0
+├── README.md                   # this file
+└── README-zh.md                # Chinese version
 ```
 
 ---
 
-## Status & roadmap
+## Limitations and known issues
 
-Working: dual-mode data model, self-contained billboard renderer, importers/exporters,
-editor-mode workflow panel, drag-to-scene actor factory, LOD console variables.
+- **DirectX 12 / SM6 only.** DX11 cannot run the pipeline (UAV limit).
+- **ASCII-only paths.** Non-ASCII paths break asset registry and COLMAP invocation.
+- **4D model coverage** — see the support matrix above. Postshot 4D and Volinga `.nvol` are not
+  supported. Spacetime Gaussians higher-order motion terms (`motion_3..8`) are not evaluated
+  (first-order linear approximation, declared with an import-time warning).
+- **`.pth` import** supports the modern `torch.save` zip format (PyTorch ≥ 1.6) with float32
+  tensors. Legacy pickle checkpoints (PyTorch < 1.6) are rejected with an explicit error.
+- **Per-splat temporal budget** is 16 B for temporal-marginalization models and 80 B for native 4D
+  models; this bounds which attributes can be evaluated at runtime.
+- Native 4D and keyframe pipelines have been validated with synthetic data and cross-checked against
+  the reference CUDA math, but not yet against a full real-world trained model produced by every
+  listed trainer.
 
-Planned / expanding (ported from the reference `GaussianSplattingForUnrealEngine`):
-- A **point-cloud asset editor** (preview viewport + size histogram + select/delete + undo).
-- The **capture → sparse reconstruction → training** pipeline (reusing the reference's
-  `GaussianSplattingStep` + `EditorLibrary` + Python helpers) for producing 3DGS/4DGS
-  assets without leaving the editor.
+---
+
+## FAQ / troubleshooting
+
+**The editor crashes while compiling `ClusterCulling.usf`.**
+DX11 is active. Switch *Default RHI* to DirectX 12 (requires SM6 hardware).
+
+**The scene renders black or nothing appears.**
+Check that the GPU supports SM6 / DX12, that the asset's Nanite clusters exist, and that the actor's
+component has the asset assigned. For very large models, raise the max view distance.
+
+**Frame rate is low with tens of millions of splats.**
+See *Performance tuning* above — start with the sort interval, then Nanite precision and max view
+distance. Verify with `stat gpu` whether the bottleneck is splat draw (fill rate) or sorting.
+
+**Importing a 2–3 GB PLY crashes or reports `stride is 0`.**
+Large-file support includes whitespace-agnostic header parsing, type-aware property reads, and a
+pre-import memory guard. Ensure you are on version 0.2; a 57 M-vertex file needs roughly 14 GB of
+available physical memory.
+
+**A 4D asset opened a normal editor / the transport bar is greyed out.**
+The asset has no temporal data (`Is4D()` is false). Confirm the source PLY actually contains the 4D
+attributes (`t`/`scale_t`, or `rot_0..7`/`scale_3`), or import per-frame PLYs through
+*Import PLY Sequence (Keyframe 4D)*.
+
+---
+
+## Credits and license
+
+Released under the **Apache-2.0** license. The project builds on these open-source works:
+
+| Role | Source |
+|---|---|
+| 3DGS Unreal Engine rendering base | `GaussianSplattingForUnrealEngine` by Italink |
+| UE-side cluster LOD / compute pipeline reference | `NanoGaussianSplatting` |
+| 4DGS temporal model (training / inference) | `4d-gaussian-splatting` (Wu et al., INRIA GraphDeco lineage) |
+| Native 4D Gaussians with spherindrical harmonics | `4d-gaussian-splatting` by Fudan University (Yang et al., ICLR 2024) |
+| Compressed splat format (SPZ) | Niantic SPZ |
+
+CUDA operators used for training (`pointops2`, `simple-knn`, `diff-gaussian-rasterization`) live on
+the **training** side and are not ported — the Unreal Engine side only needs forward inference,
+implemented here in C++ and HLSL.
+
+---
+
+## Roadmap
+
+- Broader native 4D variants beyond the dual-quaternion formulation.
+- Higher-order Spacetime Gaussians motion evaluation.
+- Validation against real trained models from each supported trainer.
+- Point-cloud asset editor (size histogram, selection, deletion, undo).
+
+## Links
+
+- Releases: https://github.com/YuanBaoSMadLab/OpenSplat4D/releases
+- Issues: https://github.com/YuanBaoSMadLab/OpenSplat4D/issues
+- Chinese README: [README-zh.md](README-zh.md)
