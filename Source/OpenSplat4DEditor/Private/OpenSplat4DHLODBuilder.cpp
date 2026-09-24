@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DHLODBuilder.h"
 #include "Misc/EngineVersionComparison.h"
 #include "OpenSplat4DPointCloud.h"

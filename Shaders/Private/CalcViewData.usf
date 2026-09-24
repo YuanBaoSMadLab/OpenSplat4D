@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 
 //Purpose: Transform 3D splat data → 2D screen-space data
 
@@ -24,14 +25,14 @@ uint UseTemporal;         // 1 = asset has temporal data
 float CurrentTime;        // Current playback time (asset time units)
 float TimeWeightMinAlpha; // Early-out threshold: splats with w below this are culled
 
-// Native 4D (fudan 4DGS): 80 bytes/splat dual-quaternion spacetime records.
-// Overrides temporal marginalization and keyframes. Splats beyond
-// Native4DSplatCount (LOD splats appended after import) fall back to static
-// 3D rendering from the base PackedSplatBuffer unpack.
+// Native 4D: 80 bytes/splat dual-quaternion spacetime records. Overrides
+// temporal marginalization and keyframes. Splats beyond Native4DSplatCount
+// (LOD splats appended after import) fall back to static 3D rendering from
+// the base PackedSplatBuffer unpack.
 ByteAddressBuffer Native4DBuffer;
 uint UseNative4D;         // 1 = asset has native 4D data
 uint Native4DSplatCount;  // splats covered by Native4DBuffer
-float TimeDuration;       // TimeEnd - TimeStart (eval_shfs_4d 'l')
+float TimeDuration;       // Animation period used by the temporal SH bands
 
 RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer; //pass calculated result to ViewDataBuffer
 
@@ -147,14 +148,23 @@ float3 LoadSH4DCoeff(ByteAddressBuffer shBuffer, uint baseOffset, uint coeffInde
 	}
 }
 
-// Native 4D view-dependent SH evaluation. Line-by-line port of fudan's
-// eval_shfs_4d (sh_utils.py) as specialized by the renderer in
-// computeColorFromSH_4D (forward.cu): spatial basis l0m0..l3p3 evaluated on
-// the view direction, then t1/t2 temporal harmonics (nested inside deg > 2)
-// reusing the same spatial basis against sh[16..31] / sh[32..47].
-// C (SHBufferCoeffs) is the 4D channel count; (deg, deg_t) derive from it:
-// 1->(0,0) 6->(1,0) 16->(2,0) 33->(3,0) 32->(3,1) 48->(3,2).
+// ---------------------------------------------------------------------------
+// Native 4D colour.
+//
+// A native 4D splat stores a spherindrical-harmonic colour field: the ordinary
+// real-SH basis evaluated on the view direction, extended by temporal bands
+// whose coefficients are modulated by cos(2*pi*n*dt / period). The spatial
+// basis is exactly the degree-3 basis that EvaluateSH() builds in
+// SphericalHarmonics.ush, so it is written here in the same band-grouped shape
+// and simply reused by the temporal bands.
+//
+// C (SHBufferCoeffs) is the channel count; the band degrees follow from it:
+//   C =  1 -> (0,0)   C = 16 -> (2,0)   C = 32 -> (3,1)
+//   C =  6 -> (1,0)   C = 33 -> (3,0)   C = 48 -> (3,2)
+// Bands that are not present must not be read: the coefficient block is only
+// C entries long, so reading past it lands in the next splat's record.
 // Returns the raw SH result; the caller adds the +0.5 display offset.
+// ---------------------------------------------------------------------------
 float3 EvaluateSH4D(ByteAddressBuffer shBuffer, uint splatIndex, uint C, float3 dir, float DirT, float TimeDur)
 {
 	uint Deg = 0u, DegT = 0u;
@@ -164,105 +174,78 @@ float3 EvaluateSH4D(ByteAddressBuffer shBuffer, uint splatIndex, uint C, float3 
 	else if (C >= 16u) { Deg = 2u; DegT = 0u; }
 	else if (C >= 6u)  { Deg = 1u; DegT = 0u; }
 
-	const uint baseOffset = splatIndex * C * 6u;
-	const float l = max(TimeDur, 1e-6); // guard single-anchor assets (l = 0)
+	const uint Base = splatIndex * C * 6u;
+	const float Period = max(TimeDur, 1e-6); // guard single-anchor assets
 
-	// Load one coefficient; only touched terms cost buffer reads (loads are
-	// dynamically uniform per splat, so no divergence concern).
-	#define NATIVE4D_LOAD(idx) LoadSH4DCoeff(shBuffer, baseOffset, (idx))
+	// Coefficient fetch; bands are gated below so only present ones are read.
+	#define N4D(idx) LoadSH4DCoeff(shBuffer, Base, (idx))
 
-	float l0m0 = SH_C0;
-	float3 result = l0m0 * NATIVE4D_LOAD(0u);
+	// Spatial basis, degree 3. Same expressions as EvaluateSH().
+	const float x = dir.x;
+	const float y = dir.y;
+	const float z = dir.z;
+	const float xx = x * x, yy = y * y, zz = z * z;
+	const float xy = x * y, yz = y * z, xz = x * z;
+
+	const float b0  = SH_C0;
+	const float b1  = SH_C1 * (-y);
+	const float b2  = SH_C1 * z;
+	const float b3  = SH_C1 * (-x);
+	const float b4  = SH_C2_0 * xy;
+	const float b5  = SH_C2_1 * yz;
+	const float b6  = SH_C2_2 * (2.0 * zz - xx - yy);
+	const float b7  = SH_C2_3 * xz;
+	const float b8  = SH_C2_4 * (xx - yy);
+	const float b9  = SH_C3_0 * y * (3.0 * xx - yy);
+	const float b10 = SH_C3_1 * xy * z;
+	const float b11 = SH_C3_2 * y * (4.0 * zz - xx - yy);
+	const float b12 = SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
+	const float b13 = SH_C3_4 * x * (4.0 * zz - xx - yy);
+	const float b14 = SH_C3_5 * z * (xx - yy);
+	const float b15 = SH_C3_6 * x * (xx - 3.0 * yy);
+
+	float3 result = b0 * N4D(0u);
 	if (Deg > 0u)
 	{
-		float x = dir.x;
-		float y = dir.y;
-		float z = dir.z;
-		float l1m1 = -1.0 * SH_C1 * y;
-		float l1m0 = SH_C1 * z;
-		float l1p1 = -1.0 * SH_C1 * x;
-		result +=
-			l1m1 * NATIVE4D_LOAD(1u) +
-			l1m0 * NATIVE4D_LOAD(2u) +
-			l1p1 * NATIVE4D_LOAD(3u);
+		result += b1 * N4D(1u) + b2 * N4D(2u) + b3 * N4D(3u);
+
 		if (Deg > 1u)
 		{
-			float xx = x * x, yy = y * y, zz = z * z;
-			float xy = x * y, yz = y * z, xz = x * z;
-			float l2m2 = SH_C2_0 * xy;
-			float l2m1 = SH_C2_1 * yz;
-			float l2m0 = SH_C2_2 * (2.0 * zz - xx - yy);
-			float l2p1 = SH_C2_3 * xz;
-			float l2p2 = SH_C2_4 * (xx - yy);
-			result +=
-				l2m2 * NATIVE4D_LOAD(4u) +
-				l2m1 * NATIVE4D_LOAD(5u) +
-				l2m0 * NATIVE4D_LOAD(6u) +
-				l2p1 * NATIVE4D_LOAD(7u) +
-				l2p2 * NATIVE4D_LOAD(8u);
+			result += b4 * N4D(4u) + b5 * N4D(5u) + b6 * N4D(6u)
+			        + b7 * N4D(7u) + b8 * N4D(8u);
+
 			if (Deg > 2u)
 			{
-				float l3m3 = SH_C3_0 * y * (3.0 * xx - yy);
-				float l3m2 = SH_C3_1 * xy * z;
-				float l3m1 = SH_C3_2 * y * (4.0 * zz - xx - yy);
-				float l3m0 = SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
-				float l3p1 = SH_C3_4 * x * (4.0 * zz - xx - yy);
-				float l3p2 = SH_C3_5 * z * (xx - yy);
-				float l3p3 = SH_C3_6 * x * (xx - 3.0 * yy);
-				result +=
-					l3m3 * NATIVE4D_LOAD(9u) +
-					l3m2 * NATIVE4D_LOAD(10u) +
-					l3m1 * NATIVE4D_LOAD(11u) +
-					l3m0 * NATIVE4D_LOAD(12u) +
-					l3p1 * NATIVE4D_LOAD(13u) +
-					l3p2 * NATIVE4D_LOAD(14u) +
-					l3p3 * NATIVE4D_LOAD(15u);
+				result += b9 * N4D(9u) + b10 * N4D(10u) + b11 * N4D(11u)
+				        + b12 * N4D(12u) + b13 * N4D(13u) + b14 * N4D(14u)
+				        + b15 * N4D(15u);
+
+				// Temporal bands: the same spatial basis against the t1/t2
+				// coefficient blocks, weighted by a cosine in time. Present
+				// only at degree 3, so all 16 basis terms are in range.
 				if (DegT > 0u)
 				{
-					float t1 = cos(2.0 * NATIVE4D_PI * DirT / l);
-					result += t1 * (
-						l0m0 * NATIVE4D_LOAD(16u) +
-						l1m1 * NATIVE4D_LOAD(17u) +
-						l1m0 * NATIVE4D_LOAD(18u) +
-						l1p1 * NATIVE4D_LOAD(19u) +
-						l2m2 * NATIVE4D_LOAD(20u) +
-						l2m1 * NATIVE4D_LOAD(21u) +
-						l2m0 * NATIVE4D_LOAD(22u) +
-						l2p1 * NATIVE4D_LOAD(23u) +
-						l2p2 * NATIVE4D_LOAD(24u) +
-						l3m3 * NATIVE4D_LOAD(25u) +
-						l3m2 * NATIVE4D_LOAD(26u) +
-						l3m1 * NATIVE4D_LOAD(27u) +
-						l3m0 * NATIVE4D_LOAD(28u) +
-						l3p1 * NATIVE4D_LOAD(29u) +
-						l3p2 * NATIVE4D_LOAD(30u) +
-						l3p3 * NATIVE4D_LOAD(31u));
+					const float T1 = cos(2.0 * NATIVE4D_PI * DirT / Period);
+					result += T1 * (
+						b0 * N4D(16u) + b1 * N4D(17u) + b2 * N4D(18u) + b3 * N4D(19u)
+						+ b4 * N4D(20u) + b5 * N4D(21u) + b6 * N4D(22u) + b7 * N4D(23u)
+						+ b8 * N4D(24u) + b9 * N4D(25u) + b10 * N4D(26u) + b11 * N4D(27u)
+						+ b12 * N4D(28u) + b13 * N4D(29u) + b14 * N4D(30u) + b15 * N4D(31u));
+
 					if (DegT > 1u)
 					{
-						float t2 = cos(2.0 * NATIVE4D_PI * DirT * 2.0 / l);
-						result += t2 * (
-							l0m0 * NATIVE4D_LOAD(32u) +
-							l1m1 * NATIVE4D_LOAD(33u) +
-							l1m0 * NATIVE4D_LOAD(34u) +
-							l1p1 * NATIVE4D_LOAD(35u) +
-							l2m2 * NATIVE4D_LOAD(36u) +
-							l2m1 * NATIVE4D_LOAD(37u) +
-							l2m0 * NATIVE4D_LOAD(38u) +
-							l2p1 * NATIVE4D_LOAD(39u) +
-							l2p2 * NATIVE4D_LOAD(40u) +
-							l3m3 * NATIVE4D_LOAD(41u) +
-							l3m2 * NATIVE4D_LOAD(42u) +
-							l3m1 * NATIVE4D_LOAD(43u) +
-							l3m0 * NATIVE4D_LOAD(44u) +
-							l3p1 * NATIVE4D_LOAD(45u) +
-							l3p2 * NATIVE4D_LOAD(46u) +
-							l3p3 * NATIVE4D_LOAD(47u));
+						const float T2 = cos(2.0 * NATIVE4D_PI * DirT * 2.0 / Period);
+						result += T2 * (
+							b0 * N4D(32u) + b1 * N4D(33u) + b2 * N4D(34u) + b3 * N4D(35u)
+							+ b4 * N4D(36u) + b5 * N4D(37u) + b6 * N4D(38u) + b7 * N4D(39u)
+							+ b8 * N4D(40u) + b9 * N4D(41u) + b10 * N4D(42u) + b11 * N4D(43u)
+							+ b12 * N4D(44u) + b13 * N4D(45u) + b14 * N4D(46u) + b15 * N4D(47u));
 					}
 				}
 			}
 		}
 	}
-	#undef NATIVE4D_LOAD
+	#undef N4D
 	return result;
 }
 
@@ -381,15 +364,32 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		}
 	}
 
-	// Native 4D (fudan 4DGS): the splat is a spacetime gaussian whose
-	// rotation is a dual quaternion q_l ⊗ q_r. Ported line-by-line from
-	// fudan's forward.cu computeCov3D_conditional: R4 = M_r·M_l, M4 = S·R4,
-	// Sigma4 = M4ᵀ·M4, then temporal marginalization (opacity *= w(t)) and
-	// covariance conditioning. All 4D math runs in PLY space (meters); the
-	// conditioned 3D covariance / mean offset are converted to UE cm after.
-	// CPU forces UseTemporal=0 and UseKeyframes=0 in this mode (mutually
-	// exclusive), so this branch fully owns the geometry.
-	float Native4DDirT = 0.0;                 // mu.t - CurrentTime (eval_shfs_4d dir_t)
+	// -----------------------------------------------------------------------
+	// Native 4D geometry.
+	//
+	// The splat is a spacetime Gaussian. Its orientation is a 4D rotation given
+	// by a unit-quaternion pair (q_l, q_r), acting as
+	//     v -> q_l (x) v (x) q_r                     ((x) = Hamilton product)
+	// Applying that to the four basis directions e_k = 1, i, j, k yields the
+	// four columns c_k of the rotation. Scaling each by its axis length and
+	// accumulating the outer products gives the 4D covariance directly:
+	//     Sigma4 = sum_k  s_k^2 * c_k (x) c_k^T ,   s = (s.xyz, s.t)
+	//
+	// Rendering then observes the splat at a time T. Treating T as a fourth
+	// coordinate, the standard Gaussian split on the temporal axis gives both
+	// the opacity weight and the equivalent 3D Gaussian:
+	//     w(T)        = exp(-0.5 * dt^2 / (prefilter + Sigma_tt))
+	//     mu_x|T      = mu_x + Sigma_xt * dt / Sigma_tt
+	//     Sigma_xx|T  = Sigma_xx - Sigma_xt (x) Sigma_xt / Sigma_tt
+	//
+	// Everything above runs in PLY space (metres); the conditioned covariance
+	// and mean offset are mapped to UE centimetres afterwards. SplatScale is
+	// deliberately not part of s: it is a user-facing resize applied to the
+	// conditioned spatial covariance only, so the temporal fade is unaffected.
+	// CPU forces UseTemporal=0 and UseKeyframes=0 in this mode, so this branch
+	// fully owns the geometry.
+	// -----------------------------------------------------------------------
+	float Native4DDirT = 0.0;                 // mu.t - CurrentTime
 	bool bNative4DSplat = false;
 	float3x3 Native4DCovLocal = float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
 	if (UseNative4D && splatIndex < Native4DSplatCount)
@@ -417,68 +417,76 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 		const float4 Qr = asfloat(N3);
 		opacity = asfloat(N4.x) * OpacityScale;
 
-		// dt = timestamp - t (forward.cu)
 		Native4DDirT = MuT - CurrentTime;
 		const float Dt4D = CurrentTime - MuT;
 
-		// Dual-quaternion left/right multiplication matrices. GLM constructs
-		// column-major, so the HLSL row-major constructor receives the
-		// transposed literal (forward.cu M_l / M_r).
+		// Quaternion components. Layout is (w, x, y, z) = (space.x, space.y,
+		// space.z, time), consistent with the covariance indices below.
 		const float a = Ql.x, b = Ql.y, c = Ql.z, d = Ql.w;
 		const float p = Qr.x, q = Qr.y, r = Qr.z, s = Qr.w;
-		const float4x4 Ml = float4x4(
-			 a, -b,  c, -d,
-			 b,  a, -d, -c,
-			-c,  d,  a,  b,
-			 d,  c,  b,  a);
-		const float4x4 Mr = float4x4(
-			 p, -q,  r,  s,
-			 q,  p, -s,  r,
-			-r,  s,  p,  q,
-			-s, -r, -q,  p);
 
-		// S = diag(s.xyz, s.t). SplatScale is deliberately NOT folded into S
-		// (CUDA folds scale_modifier here): the user-facing SplatScale resizes
-		// only the conditioned spatial covariance below, keeping the temporal
-		// fade scale-invariant.
-		const float4x4 S4 = float4x4(
-			Sp.x, 0, 0, 0,
-			0, Sp.y, 0, 0,
-			0, 0, Sp.z, 0,
-			0, 0, 0, St);
+		// c_0 = q_l (x) e_0 (x) q_r
+		const float4 C0 = float4(
+			 a * p - b * q - c * r - d * s,
+			 a * q + b * p + c * s - d * r,
+			 a * r - b * s + c * p + d * q,
+			 a * s + b * r - c * q + d * p);
+		// c_1 = q_l (x) e_1 (x) q_r
+		const float4 C1 = float4(
+			-b * p - a * q - d * r + c * s,
+			-b * q + a * p + d * s + c * r,
+			-b * r - a * s + d * p - c * q,
+			-b * s + a * r - d * q - c * p);
+		// c_2 = q_l (x) e_2 (x) q_r
+		const float4 C2 = float4(
+			-c * p + d * q - a * r - b * s,
+			-c * q - d * p + a * s - b * r,
+			-c * r + d * s + a * p + b * q,
+			-c * s - d * r - a * q + b * p);
+		// c_3 = q_l (x) e_3 (x) q_r
+		const float4 C3 = float4(
+			-d * p - c * q + b * r - a * s,
+			-d * q + c * p - b * s - a * r,
+			-d * r - c * s - b * p + a * q,
+			-d * s + c * r + b * q + a * p);
 
-		// R4 = M_r * M_l ; M = S * R4 ; Sigma4 = Mᵀ * M   (forward.cu)
-		const float4x4 R4 = mul(Mr, Ml);
-		const float4x4 M4 = mul(S4, R4);
-		const float4x4 Sigma4 = mul(transpose(M4), M4);
+		const float s20 = Sp.x * Sp.x;
+		const float s21 = Sp.y * Sp.y;
+		const float s22 = Sp.z * Sp.z;
+		const float s23 = St * St;
 
-		// Temporal marginalization (forward.cu):
-		//   marginal_t = exp(-0.5 * dt^2 / (prefilter + cov_t))
-		const float CovT = Sigma4[3][3];
+		// Row i of Sigma4, accumulated across the four columns. Sigma4 is
+		// symmetric by construction, so the columns below are not transposed.
+		const float4 G0 = s20 * C0.x * C0 + s21 * C1.x * C1 + s22 * C2.x * C2 + s23 * C3.x * C3;
+		const float4 G1 = s20 * C0.y * C0 + s21 * C1.y * C1 + s22 * C2.y * C2 + s23 * C3.y * C3;
+		const float4 G2 = s20 * C0.z * C0 + s21 * C1.z * C1 + s22 * C2.z * C2 + s23 * C3.z * C3;
+		const float4 G3 = s20 * C0.w * C0 + s21 * C1.w * C1 + s22 * C2.w * C2 + s23 * C3.w * C3;
+
+		// Temporal variance and its opacity weight.
+		const float CovT = G3.w;
 		const float PrefilterVar = asfloat(N4.y);
 		const float MarginalT = exp(-0.5 * Dt4D * Dt4D /
 			((PrefilterVar > 0.0) ? (PrefilterVar + CovT) : CovT));
-		if (MarginalT < TimeWeightMinAlpha)  // CUDA uses a fixed 0.05 mask
+		if (MarginalT < TimeWeightMinAlpha)
 		{
 			WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
 			return;
 		}
 		opacity *= MarginalT;
 
-		// Covariance conditioning (forward.cu):
-		//   cov3D = Sigma_xx - Sigma_xt · Sigma_tx / Sigma_tt
-		//   delta_mean = Sigma_xt / Sigma_tt · dt  (scale-modifier independent)
-		const float3x3 Cov11 = float3x3(
-			Sigma4[0][0], Sigma4[0][1], Sigma4[0][2],
-			Sigma4[1][0], Sigma4[1][1], Sigma4[1][2],
-			Sigma4[2][0], Sigma4[2][1], Sigma4[2][2]);
-		const float3 Cov12 = float3(Sigma4[0][3], Sigma4[1][3], Sigma4[2][3]);
-		const float3 DeltaMeanPly = Cov12 * (Dt4D / CovT);
+		// Sigma_xt = (Sigma4[0][3], Sigma4[1][3], Sigma4[2][3]).
+		const float3 CovXt = float3(G0.w, G1.w, G2.w);
+		const float InvCovT = 1.0 / CovT;
+		const float3 DeltaMeanPly = CovXt * (Dt4D * InvCovT);
 
-		float3x3 CovCond = Cov11;
-		CovCond[0] -= Cov12 * (Cov12[0] / CovT);
-		CovCond[1] -= Cov12 * (Cov12[1] / CovT);
-		CovCond[2] -= Cov12 * (Cov12[2] / CovT);
+		// Sigma_xx|T = Sigma_xx - Sigma_xt (x) Sigma_xt / Sigma_tt
+		float3x3 CovCond = float3x3(
+			G0.x, G0.y, G0.z,
+			G1.x, G1.y, G1.z,
+			G2.x, G2.y, G2.z);
+		CovCond[0] -= CovXt * (CovXt[0] * InvCovT);
+		CovCond[1] -= CovXt * (CovXt[1] * InvCovT);
+		CovCond[2] -= CovXt * (CovXt[2] * InvCovT);
 
 		// PLY(m) -> UE local (cm): ue.x = ply.z, ue.y = ply.x, ue.z = -ply.y
 		// (same mapping as the SH view-direction transform and the importer).
@@ -582,8 +590,8 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	// Compute final color
 	float3 finalColor;
 
-	// Native 4D: view- AND time-dependent SH (fudan eval_shfs_4d). SHBuffer
-	// carries the 4D coefficients (C = SHBufferCoeffs channels per splat).
+	// Native 4D: view- AND time-dependent SH. SHBuffer carries the 4D
+	// coefficients (C = SHBufferCoeffs channels per splat).
 	if (bNative4DSplat)
 	{
 		// View direction from camera to splat (SH training convention) in PLY

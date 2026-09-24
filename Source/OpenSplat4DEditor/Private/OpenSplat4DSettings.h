@@ -1,8 +1,8 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/NoExportTypes.h"
-#include "OpenSplat4DLocalization.h"
 #include "OpenSplat4DSettings.generated.h"
 
 /**
@@ -45,14 +45,6 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "OpenSplat4D", meta = (FilePathFilter = "py", RelativeToGameDir, DisplayName = "辅助脚本路径"))
 	FFilePath HelperScriptPath;
-
-	/**
-	 * UI display language for the OpenSplat4D editor. Defaults to Chinese;
-	 * set to English to switch every user-facing string in the editor to
-	 * English. The change is applied live (the editor mode panel rebuilds).
-	 */
-	UPROPERTY(Config, EditAnywhere, Category = "OpenSplat4D|界面 UI", meta = (DisplayName = "界面语言"))
-	EOpenSplat4DUILanguage UISLanguage = EOpenSplat4DUILanguage::Chinese;
 
 	UPROPERTY(Config)
 	FString PythonExecutablePathConfig;

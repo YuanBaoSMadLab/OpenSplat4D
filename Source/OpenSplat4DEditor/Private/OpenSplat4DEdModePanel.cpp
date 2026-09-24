@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DEdModePanel.h"
 #include "OpenSplat4DPointCloud.h"
 #include "OpenSplat4DPointCloudActor.h"
@@ -24,6 +25,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SSegmentedControl.h"
 #include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SHyperlink.h"
 #include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -44,13 +46,14 @@
 #include "Misc/Paths.h"
 #include "Misc/PackagePath.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformProcess.h"
 #include "UObject/SavePackage.h"
 
 #define LOCTEXT_NAMESPACE "OpenSplat4D"
 
 SOpenSplat4DEdModePanel::~SOpenSplat4DEdModePanel()
 {
-	FCoreUObjectDelegates::OnObjectPropertyChanged.RemoveAll(this);
+	OpenSplat4DLocalization::OnUILanguageChanged().RemoveAll(this);
 	if (StepCapture) { StepCapture->Deactivate(); }
 	if (StepSparseReconstruction) { StepSparseReconstruction->Deactivate(); }
 	if (StepGaussianSplatting) { StepGaussianSplatting->Deactivate(); }
@@ -125,11 +128,11 @@ void SOpenSplat4DEdModePanel::Construct(const FArguments& InArgs)
 	StepGaussianSplatting->OnTaskFinished.AddSP(this, &SOpenSplat4DEdModePanel::OnTaskFinished, (UOpenSplat4DStepBase*)StepGaussianSplatting.Get());
 
 	// ---- Layout (delegated to BuildContent so the panel can rebuild live
-	//      when the UI language (UISLanguage) setting changes) ------------
+	//      when the editor language changes) --------------------------------
 	ChildSlot[ BuildContent() ];
 
-	// Rebuild this panel if the user flips the UI language in project settings.
-	FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(this, &SOpenSplat4DEdModePanel::OnSettingsPropertyChanged);
+	// Rebuild this panel in place whenever the editor language changes.
+	OpenSplat4DLocalization::OnUILanguageChanged().AddSP(this, &SOpenSplat4DEdModePanel::Rebuild);
 
 	OnTabChanged(0);
 }
@@ -150,7 +153,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildContent()
 			.Padding(0, 0, 4, 0)
 			[
 				SNew(STextBlock)
-				.Text(FText::FromString(TEXT("捕获组:")))
+				.Text(OS4D_TEXT("Capture Set:"))
 			]
 			+ SHorizontalBox::Slot()
 			.FillWidth(100)
@@ -168,7 +171,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildContent()
 			.Padding(4, 0, 0, 0)
 			[
 				SNew(SButton)
-				.Text(FText::FromString(TEXT("新建捕获组")))
+				.Text(OS4D_TEXT("New Capture Set"))
 				.OnClicked(this, &SOpenSplat4DEdModePanel::OnNewCaptureSetClicked)
 			]
 			+ SHorizontalBox::Slot()
@@ -177,8 +180,8 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildContent()
 			.Padding(4, 0, 0, 0)
 			[
 				SNew(SButton)
-				.Text(FText::FromString(TEXT("打开索引")))
-				.ToolTipText(FText::FromString(TEXT("打开当前选中的【捕获组】索引资产，查看 / 编辑其记录的文件位置与范围。")))
+				.Text(OS4D_TEXT("Open Index"))
+				.ToolTipText(OS4D_TEXT("Open the currently selected capture-set (index) asset to view / edit the file locations and ranges it records."))
 				.OnClicked(this, &SOpenSplat4DEdModePanel::OnOpenCaptureSetClicked)
 			]
 		]
@@ -197,13 +200,13 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildContent()
 				SNew(SSegmentedControl<int32>)
 				.Value(0)
 				.OnValueChanged(this, &SOpenSplat4DEdModePanel::OnTabChanged)
-				+ SSegmentedControl<int32>::Slot(0).Text(OS4D_TEXT("捕获"))
-				+ SSegmentedControl<int32>::Slot(1).Text(OS4D_TEXT("稀疏重建"))
-				+ SSegmentedControl<int32>::Slot(2).Text(OS4D_TEXT("高斯训练"))
+				+ SSegmentedControl<int32>::Slot(0).Text(OS4D_TEXT("Capture"))
+				+ SSegmentedControl<int32>::Slot(1).Text(OS4D_TEXT("Sparse"))
+				+ SSegmentedControl<int32>::Slot(2).Text(OS4D_TEXT("Gaussian"))
 				+ SSegmentedControl<int32>::Slot(3)
 					.Icon(FAppStyle::Get().GetBrush("Icons.Settings"))
-					.Text(OS4D_TEXT("设置"))
-				+ SSegmentedControl<int32>::Slot(4).Text(OS4D_TEXT("用法"))
+					.Text(OS4D_TEXT("Settings"))
+				+ SSegmentedControl<int32>::Slot(4).Text(OS4D_TEXT("Usage"))
 			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
@@ -211,7 +214,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildContent()
 			[
 				PropertyCustomizationHelpers::MakeBrowseButton(
 					FSimpleDelegate::CreateSP(this, &SOpenSplat4DEdModePanel::OnClicked_Browse),
-					OS4D_TEXT("打开工作目录"))
+					OS4D_TEXT("Open the working directory"))
 			]
 		]
 
@@ -240,7 +243,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildContent()
 			.Padding(5, 0)
 			[
 				SNew(SButton)
-				.ToolTipText(OS4D_TEXT("取消当前任务"))
+				.ToolTipText(OS4D_TEXT("Cancel Current Task"))
 				.OnClicked(this, &SOpenSplat4DEdModePanel::OnClicked_Cancel)
 				.ContentPadding(0.0f)
 				[
@@ -271,21 +274,10 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildContent()
 
 void SOpenSplat4DEdModePanel::Rebuild()
 {
-	// Tear down the previous bindings and rebuild from scratch with the new
-	// language. Tab selection resets to 0; acceptable for a language switch.
-	FCoreUObjectDelegates::OnObjectPropertyChanged.RemoveAll(this);
+	// Rebuild from scratch with the new language. Tab selection resets to 0;
+	// acceptable for a language switch.
 	ChildSlot[ BuildContent() ];
-	FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(this, &SOpenSplat4DEdModePanel::OnSettingsPropertyChanged);
 	OnTabChanged(0);
-}
-
-void SOpenSplat4DEdModePanel::OnSettingsPropertyChanged(UObject* Object, struct FPropertyChangedEvent& Event)
-{
-	if (Object == GetDefault<UOpenSplat4DSettings>() &&
-		Event.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UOpenSplat4DSettings, UISLanguage))
-	{
-		Rebuild();
-	}
 }
 
 void SOpenSplat4DEdModePanel::AddReferencedObjects(FReferenceCollector& Collector)
@@ -329,7 +321,7 @@ bool SOpenSplat4DEdModePanel::OnRequestTaskStart(UOpenSplat4DStepBase* Step)
 {
 	if (CurrentTask != nullptr)
 	{
-		FNotificationInfo NotifyInfo(OS4D_TEXT("执行失败：当前已有任务在运行，请等待完成或取消后再试"));
+		FNotificationInfo NotifyInfo(OS4D_TEXT("Execution failed: a task is already running. Wait for it to finish, or cancel it first."));
 		NotifyInfo.ExpireDuration = 5.0f;
 		NotifyInfo.bUseSuccessFailIcons = true;
 		TSharedPtr<SNotificationItem> NotificationPtr = FSlateNotificationManager::Get().AddNotification(NotifyInfo);
@@ -341,29 +333,32 @@ bool SOpenSplat4DEdModePanel::OnRequestTaskStart(UOpenSplat4DStepBase* Step)
 	}
 
 	// Dependency pre-flight. Resolution order for every external tool / repo is
-	//   (1) user-specified path in settings  ->  (2) the plugin's bundled
-	//       ThirdParty copy  ->  (3) nothing.
+	//   (1) user-specified path in settings  ->  (2) an optional local ThirdParty
+	//       copy dropped in by the user (none of it ships with the plugin)
+	//       ->  (3) nothing.
 	// If neither (1) nor (2) resolves, remind the user to specify a path before
 	// running the step, instead of failing deep inside an external process.
 	const UOpenSplat4DSettings* S = GetDefault<UOpenSplat4DSettings>();
-	TArray<FString> Missing;
-	auto CheckPath = [&](const FString& Resolved, bool bIsDir, const TCHAR* Label)
+	TArray<FText> Missing;
+	auto CheckPath = [&](const FString& Resolved, bool bIsDir, const FText& Label)
 	{
 		if (Resolved.IsEmpty())
 		{
-			Missing.Add(FString::Printf(
-				TEXT("%s：插件 ThirdParty 中未找到，也未在【项目设置 → OpenSplat4D】中指定。请在设置里指定路径，或把对应程序/仓库放入插件 ThirdParty 目录。"),
+			Missing.Add(FText::Format(
+				OS4D_TEXT("{0}: not found in the optional local ThirdParty folder and not specified in Project Settings > OpenSplat4D. The plugin does not ship these tools: set the path in Settings, or drop your own copy into the plugin's ThirdParty folder."),
 				Label));
 		}
 		else if (bIsDir ? !FPaths::DirectoryExists(Resolved) : !FPaths::FileExists(Resolved))
 		{
-			Missing.Add(FString::Printf(TEXT("%s：已指定的路径不存在或无效：%s"), Label, *Resolved));
+			Missing.Add(FText::Format(
+				OS4D_TEXT("{0}: the specified path does not exist or is invalid: {1}"),
+				Label, FText::FromString(Resolved)));
 		}
 	};
 
 	if (Step == StepSparseReconstruction.Get() || Step == StepGaussianSplatting.Get())
 	{
-		CheckPath(S->GetColmapExecutablePath(), false, TEXT("Colmap 可执行文件"));
+		CheckPath(S->GetColmapExecutablePath(), false, OS4D_TEXT("COLMAP executable"));
 		// Require an explicit target capture set (index asset) so the step never
 		// silently reconstructs the wrong data.
 		UOpenSplat4DCaptureSet* Target = (Step == StepSparseReconstruction.Get())
@@ -371,7 +366,7 @@ bool SOpenSplat4DEdModePanel::OnRequestTaskStart(UOpenSplat4DStepBase* Step)
 			: StepGaussianSplatting->TargetCaptureSet;
 		if (!Target)
 		{
-			Missing.Add(TEXT("目标捕获组（索引资产）未选择：请先在对应步骤的【目标捕获组（索引资产）】中选择要重建 / 训练的捕获组（也可在面板顶部的【捕获组】下拉中选择，会自动同步）。未选择时不会执行，以避免重建错误的资产。"));
+			Missing.Add(OS4D_TEXT("No target capture set (index asset) selected: pick the capture set to reconstruct / train in 'Target Capture Set (Index Asset)' for this step (you can also pick it in the 'Capture Set' drop-down at the top of the panel -- the two stay in sync). The step is skipped when no target is selected, to avoid reconstructing the wrong asset."));
 		}
 	}
 	if (Step == StepGaussianSplatting.Get())
@@ -379,18 +374,17 @@ bool SOpenSplat4DEdModePanel::OnRequestTaskStart(UOpenSplat4DStepBase* Step)
 		// Only the repo matching the current train mode is required.
 		if (StepGaussianSplatting->bTrain4D)
 		{
-			CheckPath(S->Get4DGSRepoDir(), true, TEXT("4DGS 训练仓库目录"));
+			CheckPath(S->Get4DGSRepoDir(), true, OS4D_TEXT("4DGS training repository directory"));
 		}
 		else
 		{
-			CheckPath(S->Get3DGSRepoDir(), true, TEXT("3DGS 训练仓库目录"));
+			CheckPath(S->Get3DGSRepoDir(), true, OS4D_TEXT("3DGS training repository directory"));
 		}
 	}
 
 	if (Missing.Num() > 0)
 	{
-		const FString Msg = FString::Join(Missing, TEXT("\n"));
-		FNotificationInfo NotifyInfo(FText::FromString(Msg));
+		FNotificationInfo NotifyInfo(FText::Join(FText::FromString(TEXT("\n")), Missing));
 		NotifyInfo.ExpireDuration = 8.0f;
 		NotifyInfo.bUseSuccessFailIcons = true;
 		if (TSharedPtr<SNotificationItem> N = FSlateNotificationManager::Get().AddNotification(NotifyInfo))
@@ -482,7 +476,7 @@ FReply SOpenSplat4DEdModePanel::OnNewCaptureSetClicked()
 	UOpenSplat4DCaptureSet* Set = OpenSplat4DCreateCaptureSet(SetName, SetWorkDir);
 	if (!Set)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, OS4D_TEXT("Failed to create capture set asset."));
+		FMessageDialog::Open(EAppMsgType::Ok, OS4D_TEXT("Failed to create the capture-set asset."));
 		return FReply::Handled();
 	}
 	StepCapture->CaptureSetAsset = Set;
@@ -503,7 +497,7 @@ FReply SOpenSplat4DEdModePanel::OnOpenCaptureSetClicked()
 	if (!Set)
 	{
 		FMessageDialog::Open(EAppMsgType::Ok,
-			FText::FromString(TEXT("请先在顶部的【捕获组】下拉中选择一个索引资产，再点击【打开索引】。")));
+			OS4D_TEXT("Pick an index asset in the 'Capture Set' drop-down at the top of the panel first, then click 'Open Index'."));
 		return FReply::Handled();
 	}
 	if (GEditor)
@@ -518,11 +512,11 @@ FReply SOpenSplat4DEdModePanel::OnOpenCaptureSetClicked()
 // ===========================================================================
 TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 {
-	// Helper: a collapsible help section with a Chinese explanation.
-	auto MakeHelpSection = [](const FString& Title, const FString& Body) -> TSharedRef<SWidget>
+	// Helper: a collapsible help section (titles / bodies follow the editor language).
+	auto MakeHelpSection = [](const FText& Title, const FText& Body) -> TSharedRef<SWidget>
 	{
 		return SNew(SExpandableArea)
-			.AreaTitle(FText::FromString(Title))
+			.AreaTitle(Title)
 			.InitiallyCollapsed(false)
 			.HeaderPadding(FMargin(4.f, 2.f))
 			.BodyContent()
@@ -531,7 +525,31 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 				.AutoWrapText(true)
 				.Margin(FMargin(8.f, 4.f, 8.f, 8.f))
 				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-				.Text(FText::FromString(Body))
+				.Text(Body)
+			];
+	};
+
+	// Helper: a labelled external link row. Clicking opens the URL in the system browser.
+	auto MakeLinkRow = [](const FText& Label, const FString& Url) -> TSharedRef<SWidget>
+	{
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0.f, 1.f, 6.f, 1.f)
+			[
+				SNew(STextBlock).Text(Label)
+			]
+			+ SHorizontalBox::Slot()
+			.FillWidth(100)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SHyperlink)
+				.Text(FText::FromString(Url))
+				.OnNavigate(FSimpleDelegate::CreateLambda([Url]()
+				{
+					FPlatformProcess::LaunchURL(*Url, nullptr, nullptr);
+				}))
 			];
 	};
 
@@ -546,62 +564,61 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 			[
 				SNew(STextBlock)
 				.AutoWrapText(true)
-				.Text(FText::FromString(TEXT(
-					"OpenSplat4D 把真实物体 / 人物变成可在 UE 里实时渲染的高斯泼溅模型。\n"
-					"顶部三个标签页【捕获】→【稀疏重建】→【高斯训练】是按顺序执行的三步；本页是用法说明；【设置】里配置 python / colmap / 训练仓库路径。\n"
-					"先用视口选中要处理的角色，再开始。"))
-				)
+				.Text(OS4D_TEXT(
+					"OpenSplat4D turns real objects / people into gaussian splat models that render in real time inside UE.\n"
+					"The three tabs at the top -- Capture -> Sparse -> Gaussian -- are the three steps, executed in order. This page explains the workflow; the Settings tab configures the python / colmap / training-repository paths.\n"
+					"Select the actor you want to process in the viewport first, then start."))
 				.ColorAndOpacity(FSlateColor(FLinearColor(0.7f, 0.9f, 1.0f)))
 			]
 
 			// ---- Full pipeline --------------------------------------------
 			+ SVerticalBox::Slot().AutoHeight().Padding(2.f, 4.f)
 			[
-				MakeHelpSection(TEXT("完整流程：训练一个真正的高斯模型（推荐）"), TEXT(
-					"第 1 步 · 捕获：在【捕获】标签页选中要扫描的角色（视口里点选 Actor），设置相机阵列行列数、捕获距离等，点【捕获】。"
-					"引擎从多个角度自动截图，保存到工作目录的 images/（彩色图）、masks/（遮罩）、depths/（深度）、cameras.txt（相机位姿）。\n"
-					"第 2 步 · 稀疏重建：切到【稀疏重建】标签页点【稀疏重建】。COLMAP 会做特征提取→匹配→映射→对齐，把图片变成稀疏点云和相机位姿（这是训练的输入）。"
-					"可用【查看 Colmap 结果】检查质量，用【编辑 Colmap 配置】调参。\n"
-					"第 3 步 · 高斯训练：切到【高斯训练】标签页，按需调整迭代次数等，点【训练】。网络把稀疏重建拟合为大量高斯基元（默认约 7000 次迭代，耗时取决于显卡与图片数）。"
-					"完成后自动【重新加载】，视口即可看到真正的高斯模型。"))
+				MakeHelpSection(OS4D_TEXT("Full pipeline: train a real gaussian model (recommended)"), OS4D_TEXT(
+					"Step 1 - Capture: on the Capture tab, select the actor to scan (click it in the viewport), set the camera grid rows / columns and capture distance, then click Capture. "
+					"The engine screenshots the actor from many angles into the working directory: images/ (colour), masks/, depths/ and cameras.txt (camera poses).\n"
+					"Step 2 - Sparse: switch to the Sparse tab and click Sparse. COLMAP runs feature extraction -> matching -> mapping -> alignment, turning the images into a sparse point cloud plus camera poses (the input for training). "
+					"Use 'View Colmap Result' to check the quality and 'Edit Colmap Config' to tune the parameters.\n"
+					"Step 3 - Gaussian: switch to the Gaussian tab, adjust the iteration count if needed, then click Train. The network fits the sparse reconstruction with a large number of gaussian primitives (about 7000 iterations by default; the runtime depends on your GPU and image count). "
+					"On completion it automatically reloads, and the real gaussian model appears in the viewport."))
 			]
 
 			// ---- Quick scan -------------------------------------------------
 			+ SVerticalBox::Slot().AutoHeight().Padding(2.f, 4.f)
 			[
-				MakeHelpSection(TEXT("快速预览：扫描到点云（无需 python / colmap）"), TEXT(
-					"在【捕获】标签页点【扫描到点云】，或本页下方【扫描选中对象 → 点云】：直接把选中几何体采样成点云，立刻能在视口渲染，用来快速看形状。\n"
-					"注意：它【不生成图片】，也不能拿去训练，只是编辑器内的即时预览。想要可训练 / 可导出的最终模型，请走上面的完整流程（捕获→稀疏重建→高斯训练）。"))
+				MakeHelpSection(OS4D_TEXT("Quick preview: scan to a point cloud (no python / colmap needed)"), OS4D_TEXT(
+					"On the Capture tab click 'Scan to Point Cloud', or use 'Scan Selected -> Point Cloud' further down this page: the selected geometry is sampled straight into a point cloud that can be rendered in the viewport immediately, for a quick shape check.\n"
+					"Note: it does NOT produce images and cannot be used for training -- it is an in-editor instant preview only. For a trainable / exportable final model, follow the full pipeline above (Capture -> Sparse -> Gaussian)."))
 			]
 
 			// ---- Where are the images -------------------------------------
 			+ SVerticalBox::Slot().AutoHeight().Padding(2.f, 4.f)
 			[
-				MakeHelpSection(TEXT("我捕获的图片去哪了？"), TEXT(
-					"全部保存在插件工作目录：\n"
-					"  <你的项目>/Intermediate/OpenSplat4D/OpenSplat4DEditor/\n"
-					"其下包含 images、masks、depths、cameras.txt。\n"
-					"打开方式：点【捕获】标签页顶部的文件夹图标（浏览工作目录）即可一键打开；或在文件管理器地址栏粘贴该路径。\n"
-					"也可在 Output Log 搜索 \"Capture Finished\"，日志会打印每张图片的确切完整路径。"))
+				MakeHelpSection(OS4D_TEXT("Where did my captured images go?"), OS4D_TEXT(
+					"Everything is stored in the plugin working directory:\n"
+					"  <your project>/Intermediate/OpenSplat4D/OpenSplat4DEditor/\n"
+					"containing images, masks, depths and cameras.txt.\n"
+					"To open it: click the folder icon at the top of the Capture tab (browse working directory), or paste that path into your file manager.\n"
+					"You can also search the Output Log for \"Capture Finished\" -- the log prints the exact full path of every image."))
 			]
 
 			// ---- Dependencies ----------------------------------------------
 			+ SVerticalBox::Slot().AutoHeight().Padding(2.f, 4.f)
 			[
-				MakeHelpSection(TEXT("前置依赖（必须先在【设置】配置）"), TEXT(
-					"· Python：需安装 Python 3，并在【设置】指定 python 可执行文件路径（留空则用系统 PATH 里的 python）。\n"
-					"· COLMAP：需安装 COLMAP，并在【设置】指定 colmap 可执行文件（用于稀疏重建与查看结果）。\n"
-					"· 训练仓库：需填写 3DGS（以及可选的 4DGS）仓库路径，指向你本地的 gaussian-splatting / 4d-gaussian-splatting 代码目录（【训练】会调用其中的训练脚本）。\n"
-					"未配置或路径错误时，对应步骤会在 Output Log 报错。"))
+				MakeHelpSection(OS4D_TEXT("Dependencies (configure these in Settings first)"), OS4D_TEXT(
+					"- Python: install Python 3 and set the python executable path in Settings (leave it empty to use the python on your PATH).\n"
+					"- COLMAP: install COLMAP and set the colmap executable in Settings (used for the sparse reconstruction and for viewing its result).\n"
+					"- Training repositories: set the 3DGS (and optionally 4DGS) repository path to your local gaussian-splatting / 4d-gaussian-splatting source folder (Train calls the training script inside it).\n"
+					"When a path is missing or wrong the corresponding step reports an error in the Output Log."))
 			]
 
 			// ---- FAQ --------------------------------------------------------
 			+ SVerticalBox::Slot().AutoHeight().Padding(2.f, 4.f)
 			[
-				MakeHelpSection(TEXT("常见问题"), TEXT(
-					"· 第二步（稀疏重建 / 训练）报错或没反应：通常是外部命令路径含空格（如装在 \"C:/Program Files\"、项目在 \"Unreal Projects\" 下）或 python / colmap 未安装。空格问题现已自动处理，请确保依赖已安装且【设置】路径正确。\n"
-					"· 模型是一坨巨大透明的东西 / 帧率极低：这是扫描点云尺寸过大（每个点被画成巨大面片，满屏重复绘制）。在视口选中该点云 Actor → Details → OpenSplat4D → 把 \"Splat Scale\" 调到 0.05~0.1 即可缩小；或重新扫描（默认点尺寸已调小）。真正训练出的高斯模型尺度较小，不会出现此问题。\n"
-					"· 【编辑 Colmap 配置】/【查看 Colmap 结果】点了没反应：同外部命令问题，现已修复；若仍无反应请检查 Output Log。"))
+				MakeHelpSection(OS4D_TEXT("FAQ"), OS4D_TEXT(
+					"- Step 2 (sparse reconstruction / training) errors out or does nothing: this is usually an external command path containing spaces (e.g. installed under \"C:/Program Files\", project under \"Unreal Projects\") or python / colmap not being installed. Spaces are now handled automatically -- make sure the dependencies are installed and the Settings paths are correct.\n"
+					"- The model is a huge transparent blob / the frame rate is terrible: the scanned point cloud is oversized (every point is drawn as an enormous quad, redrawn over the whole screen). Select the point-cloud actor in the viewport -> Details -> OpenSplat4D -> lower \"Splat Scale\" to 0.05~0.1, or rescan (the default point size is now smaller). Real trained gaussian models have a much smaller scale and do not show this problem.\n"
+					"- 'Edit Colmap Config' / 'View Colmap Result' do nothing: same external-command issue, now fixed; if it still does nothing, check the Output Log."))
 			]
 
 			// ---- Create from scene (scan) ----------------------------------
@@ -614,7 +631,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 					SNew(SVerticalBox)
 					+ SVerticalBox::Slot().AutoHeight()
 					[
-						SNew(STextBlock).Text(OS4D_TEXT("0. 从场景创建（扫描）"))
+						SNew(STextBlock).Text(OS4D_TEXT("0. Create from Scene (Scan)"))
 					]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
@@ -627,14 +644,14 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 					]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
-						SNew(STextBlock).Text(OS4D_TEXT("相机深度扫描（关闭=网格表面采样）"))
+						SNew(STextBlock).Text(OS4D_TEXT("Camera Depth Scan (off = Mesh Surface)"))
 					]
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 2.f)
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
-					[ SNew(STextBlock).Text(OS4D_TEXT("密度")) ]
+					[ SNew(STextBlock).Text(OS4D_TEXT("Density")) ]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
 						SNew(SNumericEntryBox<int32>)
@@ -643,7 +660,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 						.MinValue(1).MaxValue(64)
 					]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
-					[ SNew(STextBlock).Text(OS4D_TEXT("点尺寸")) ]
+					[ SNew(STextBlock).Text(OS4D_TEXT("Point Size")) ]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
 						SNew(SNumericEntryBox<float>)
@@ -655,14 +672,14 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
 					SNew(SButton)
-					.Text(OS4D_TEXT("扫描选中对象 → 点云"))
+					.Text(OS4D_TEXT("Scan Selected -> Point Cloud"))
 					.OnClicked(this, &SOpenSplat4DEdModePanel::OnScanClicked)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 2.f)
 				[
 					SNew(STextBlock)
 					.AutoWrapText(true)
-					.Text(OS4D_TEXT("在视口中选中一个或多个 Actor 后点击扫描。网格表面模式直接采样静态网格几何体；相机深度模式放置相机阵列并重建深度。无需 colmap / python，可立即生成点云并测试渲染。"))
+					.Text(OS4D_TEXT("Select one or more actors in the viewport, then scan. Mesh Surface samples static-mesh geometry directly; Camera Depth places a camera rig and reconstructs depth. No colmap / python needed -- you can create a point cloud and test rendering immediately."))
 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 				]
 			]
@@ -678,19 +695,19 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot().AutoHeight()
 				[
-					SNew(STextBlock).Text(OS4D_TEXT("1. 导入"))
+					SNew(STextBlock).Text(OS4D_TEXT("1. Import"))
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
 					SNew(SButton)
-					.Text(OS4D_TEXT("导入 .ply / .4dgs ..."))
+					.Text(OS4D_TEXT("Import .ply / .4dgs ..."))
 					.OnClicked(this, &SOpenSplat4DEdModePanel::OnImportClicked)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 2.f)
 				[
 					SNew(STextBlock)
 					.AutoWrapText(true)
-					.Text(OS4D_TEXT("也可将 .ply / .4dgs 文件拖入内容浏览器。资产会创建在 /Game/OpenSplat4D/ 下。"))
+					.Text(OS4D_TEXT("Or drag a .ply / .4dgs file into the Content Browser. The asset is created under /Game/OpenSplat4D/."))
 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 				]
 			]
@@ -706,7 +723,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot().AutoHeight()
 				[
-					SNew(STextBlock).Text(OS4D_TEXT("2. 放入关卡"))
+					SNew(STextBlock).Text(OS4D_TEXT("2. Place in level"))
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
@@ -717,14 +734,14 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
 					SNew(SButton)
-					.Text(OS4D_TEXT("在关卡中生成 Actor"))
+					.Text(OS4D_TEXT("Spawn Actor in Level"))
 					.OnClicked(this, &SOpenSplat4DEdModePanel::OnAddToSceneClicked)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 2.f)
 				[
 					SNew(STextBlock)
 					.AutoWrapText(true)
-					.Text(OS4D_TEXT("也可将资产从内容浏览器拖入视口。或右键资产 → '创建 OpenSplat4D Actor'。"))
+					.Text(OS4D_TEXT("Or drag the asset from the Content Browser into the viewport. You can also right-click the asset -> 'Create OpenSplat4D Actor'."))
 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 				]
 			]
@@ -740,12 +757,12 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot().AutoHeight()
 				[
-					SNew(STextBlock).Text(OS4D_TEXT("3. 4D 回放"))
+					SNew(STextBlock).Text(OS4D_TEXT("3. 4D Playback"))
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
 				[
 					SNew(SButton)
-					.Text(OS4D_TEXT("使用选中 Actor"))
+					.Text(OS4D_TEXT("Use Selected Actor"))
 					.OnClicked(this, &SOpenSplat4DEdModePanel::OnUseSelectedClicked)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
@@ -753,18 +770,18 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
-						SNew(SButton).Text(OS4D_TEXT("播放")).OnClicked(this, &SOpenSplat4DEdModePanel::OnPlayClicked)
+						SNew(SButton).Text(OS4D_TEXT("Play")).OnClicked(this, &SOpenSplat4DEdModePanel::OnPlayClicked)
 					]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
-						SNew(SButton).Text(OS4D_TEXT("暂停")).OnClicked(this, &SOpenSplat4DEdModePanel::OnPauseClicked)
+						SNew(SButton).Text(OS4D_TEXT("Pause")).OnClicked(this, &SOpenSplat4DEdModePanel::OnPauseClicked)
 					]
 					+ SHorizontalBox::Slot().AutoWidth().Padding(2.f)
 					[
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot().AutoHeight()
 						[
-							SNew(STextBlock).Text(OS4D_TEXT("时间")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
+							SNew(STextBlock).Text(OS4D_TEXT("Time")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
 						]
 						+ SVerticalBox::Slot().AutoHeight()
 						[
@@ -779,7 +796,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot().AutoHeight()
 						[
-							SNew(STextBlock).Text(OS4D_TEXT("速度")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
+							SNew(STextBlock).Text(OS4D_TEXT("Speed")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
 						]
 						+ SVerticalBox::Slot().AutoHeight()
 						[
@@ -794,7 +811,7 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot().AutoHeight()
 						[
-							SNew(STextBlock).Text(OS4D_TEXT("循环")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
+							SNew(STextBlock).Text(OS4D_TEXT("Loop")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
 						]
 						+ SVerticalBox::Slot().AutoHeight()
 						[
@@ -803,6 +820,40 @@ TSharedRef<SWidget> SOpenSplat4DEdModePanel::BuildUsageTab()
 							.OnCheckStateChanged(this, &SOpenSplat4DEdModePanel::OnLoopingChanged)
 						]
 					]
+				]
+			]
+		]
+
+		// ---- About / Support -----------------------------------------------
+		+ SVerticalBox::Slot().AutoHeight().Padding(8.f, 8.f, 8.f, 4.f)
+		[
+			SNew(SBorder)
+			.BorderBackgroundColor(FSlateColor(FLinearColor(0.14f, 0.12f, 0.18f)))
+			.Padding(8.f)
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight()
+				[
+					SNew(STextBlock).Text(OS4D_TEXT("About / Support Us"))
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 4.f)
+				[
+					SNew(STextBlock)
+					.AutoWrapText(true)
+					.Text(OS4D_TEXT("OpenSplat4D is developed and open-sourced by YuanBaoSMadLab under Apache-2.0. If it helps you, please consider supporting future development:"))
+					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 2.f)
+				[
+					MakeLinkRow(OS4D_TEXT("Afdian (China)"), TEXT("https://afdian.com/a/YuanBaoSMadLab"))
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 2.f)
+				[
+					MakeLinkRow(OS4D_TEXT("Quark Drive (China mirror, code UZ2J)"), TEXT("https://pan.quark.cn/s/e85b7b7660f1?pwd=UZ2J"))
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 2.f)
+				[
+					MakeLinkRow(OS4D_TEXT("Project home"), TEXT("https://github.com/YuanBaoSMadLab/OpenSplat4D"))
 				]
 			]
 		]
@@ -827,7 +878,7 @@ FReply SOpenSplat4DEdModePanel::OnImportClicked()
 	TArray<FString> OutFiles;
 	const bool bOpened = DesktopPlatform->OpenFileDialog(
 		nullptr,
-		TEXT("Import OpenSplat4D Point Cloud"),
+		OS4D_TEXT("Import OpenSplat4D Point Cloud").ToString(),
 		TEXT(""),
 		TEXT(""),
 		TEXT("PLY / 4DGS (*.ply;*.4dgs)|*.ply;*.4dgs"),
@@ -855,7 +906,7 @@ FReply SOpenSplat4DEdModePanel::OnImportClicked()
 	if (!bOk)
 	{
 		FMessageDialog::Open(EAppMsgType::Ok,
-			FText::Format(OpenSplat4DLocalization::GetText(TEXT("导入失败：'{0}' 不是有效的 .ply / .4dgs 文件。")), FText::FromString(File)));
+			FText::Format(OS4D_TEXT("Failed to import '{0}'. Not a valid .ply / .4dgs."), FText::FromString(File)));
 		return FReply::Handled();
 	}
 
@@ -888,7 +939,7 @@ FReply SOpenSplat4DEdModePanel::OnAddToSceneClicked()
 	UOpenSplat4DPointCloud* Cloud = PickedCloud.Get();
 	if (!Cloud)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, OS4D_TEXT("请先选择一个点云资产。"));
+		FMessageDialog::Open(EAppMsgType::Ok, OS4D_TEXT("Pick a point cloud asset first."));
 		return FReply::Handled();
 	}
 

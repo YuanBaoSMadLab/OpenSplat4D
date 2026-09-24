@@ -1,0 +1,96 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright OpenSplat4D 2026 All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "MeshDescription.h"
+
+class UGaussianSplatAsset;
+class UStaticMesh;
+
+/**
+ * Tunables for the blocky voxel proxy mesh.
+ *
+ * The proxy mesh is the fracture source of a Gaussian Splat asset: a closed,
+ * manifold, axis-aligned block hull that a user cuts in the Chaos Fracture
+ * Mode to author a UGeometryCollection. It is deliberately coarse -- its only
+ * job is to give Chaos a watertight solid to cut.
+ *
+ * All coordinates are asset-local centimetres, i.e. exactly the space the
+ * splat positions live in, so the mesh lines up with the splat actor with no
+ * extra transform and can later be bound to the collection bones directly.
+ */
+struct FGaussianSplatProxyMeshParams
+{
+	/** Edge length of one voxel (cm). <= 0 => auto = max(trimmed diagonal / 192, 1 cm). */
+	float VoxelSize = 0.0f;
+
+	/** Per-axis trimming quantile (0.01 => drop the lowest/highest 1%) so stray
+	 *  floaters cannot inflate the grid and destroy the effective resolution. */
+	float TrimPercentile = 0.01f;
+
+	/** A voxel becomes solid only when it holds at least this many splats. This
+	 *  is the second half of the floater defence: a sparse outlier shell is
+	 *  rejected even when it falls inside the trimmed bounds. */
+	int32 MinSplatsPerVoxel = 3;
+
+	/** One 6-neighbour dilation pass. Cells that touch only along an edge or a
+	 *  corner produce non-manifold edges, which PlanarCut cannot handle. */
+	bool bDilate = true;
+
+	/** Guardrails. The voxel size is doubled (up to a fixed attempt count) until
+	 *  the grid fits; exceeding MaxTriangles is a hard failure. */
+	int32 MaxCellsPerAxis = 256;
+	int64 MaxOccupiedVoxels = 4ll * 1024 * 1024;
+	int64 MaxTriangles = 4ll * 1024 * 1024;
+};
+
+/** Outcome of a proxy mesh build (also used to fill the result dialog). */
+struct FGaussianSplatProxyMeshResult
+{
+	bool bSuccess = false;
+	FString Error;
+	FString Summary;
+
+	float EffectiveVoxelSize = 0.0f;
+	FVector GridOrigin = FVector::ZeroVector;
+	FIntVector GridSize = FIntVector::ZeroValue;
+	int64 OccupiedVoxels = 0;
+	int32 QuadCount = 0;
+	int32 TriangleCount = 0;
+	/** Edges referenced by a number of faces other than 2 (should be 0). */
+	int32 NonManifoldEdgeCount = 0;
+};
+
+/**
+ * Builds a closed blocky proxy mesh out of the splat positions of an asset.
+ *
+ * Pipeline: trimmed bounds (quantile) -> occupancy grid (density threshold) ->
+ * dilation -> face extraction with greedy rectangle merge -> welded manifold
+ * mesh in a FMeshDescription. Nothing here touches the render path.
+ */
+class FGaussianSplatProxyMeshBuilder
+{
+public:
+	/**
+	 * Fill OutMesh with the proxy mesh. OutMesh is emptied first.
+	 * On failure OutMesh must be discarded by the caller (it is left partial).
+	 * Only reads positions through the zero-copy LockPositionDataReadOnly().
+	 */
+	static FGaussianSplatProxyMeshResult BuildMeshDescription(
+		const UGaussianSplatAsset* Asset,
+		const FGaussianSplatProxyMeshParams& Params,
+		FMeshDescription& OutMesh);
+
+	/**
+	 * Build the proxy mesh and create + save a UStaticMesh asset in the same
+	 * content folder as the source asset, named "<Asset>_Proxy".
+	 * @return The new asset, or nullptr (OutError holds the reason).
+	 */
+	static UStaticMesh* CreateProxyMeshAsset(
+		const UGaussianSplatAsset* Asset,
+		const FGaussianSplatProxyMeshParams& Params,
+		FString& OutError,
+		FGaussianSplatProxyMeshResult* OutResult = nullptr);
+};

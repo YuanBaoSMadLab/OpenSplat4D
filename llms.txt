@@ -7,16 +7,17 @@
 ## Facts
 
 - Name: OpenSplat4D
-- Version: 0.2
+- Version: 0.3
 - Type: Unreal Engine C++ plugin (runtime + editor modules)
 - Engine versions: Unreal Engine 5.5 - 6.0 (verified builds on UE 5.7, 5.8, 6.0; Windows / Win64)
-- License: Apache-2.0 for the project's own source code. Third-party components use different terms;
-  `Extensions/` and the native-4D path of `Shaders/Private/CalcViewData.usf` originate from Inria /
-  MPII Gaussian-Splatting code, which is licensed for non-commercial research and evaluation use
-  only. See THIRD-PARTY-LICENSES.md.
+- License: Apache-2.0 for the project's own source code. Every third-party component that ships in
+  this repository is under a permissive license (MIT / BSD-3-Clause), so the plugin is cleared for
+  commercial use. See THIRD-PARTY-LICENSES.md.
 - Repository: https://github.com/YuanBaoSMadLab/OpenSplat4D
 - Mirror (mainland China): https://gitee.com/YuanBaoSMadLab/OpenSplat4D
 - Releases (prebuilt per engine version): https://github.com/YuanBaoSMadLab/OpenSplat4D/releases
+- Download mirror (mainland China, prebuilt packages): https://pan.quark.cn/s/e85b7b7660f1?pwd=UZ2J (code UZ2J)
+- Sponsor (mainland China, Afdian): https://afdian.com/a/YuanBaoSMadLab
 - Issues: https://github.com/YuanBaoSMadLab/OpenSplat4D/issues
 
 ## What it does
@@ -81,8 +82,8 @@ Key capabilities:
   commandlet, reimport, Python step integration.
 - Shaders (HLSL) in `Shaders/Private`: `ClusterCulling.usf`, `CompactSplats.usf`, `CalcDistances.usf`,
   `RadixSort.usf`, `CalcViewData.usf` (time evaluation happens here), `GaussianSplatRendering.usf`.
-- Python helpers in `Scripts/`: `openplat4d_helper.py`, `train_enhanced.py`, `clip_model.py`,
-  `export_4dgs.py`, `read_write_model.py`.
+- Python helpers in `Content/Python/OpenSplat4D/`: `openplat4d_helper.py`, `train_enhanced.py`,
+  `clip_model.py`, `export_4dgs.py`; plus `Content/Python/Lib/site-packages/read_write_model.py`.
 
 ## Documentation
 
@@ -92,25 +93,49 @@ Key capabilities:
 
 ## Credits
 
-- `GaussianSplattingForUnrealEngine` by Italink (MIT) - 3DGS Unreal Engine rendering base.
+- `GaussianSplattingForUnrealEngine` by Italink (MIT) - editor-mode layer plus helper scripts and
+  binary UE assets derived from it.
   https://github.com/Italink/GaussianSplattingForUnrealEngine
-- `NanoGaussianSplatting` by TimChen (MIT) - UE cluster LOD / compute pipeline reference.
+- `NanoGaussianSplatting` by TimChen (MIT) - the renderer core (`Source/NanoGS/`,
+  `Source/NanoGSEditor/`, `Shaders/Private/`) is a fork of this project; several files remain
+  byte-identical to upstream.
   https://github.com/TimChen1383/NanoGaussianSplatting
-- `4d-gaussian-splatting` by Fudan University (MIT at top level; Yang et al., ICLR 2024) - native 4D
-  Gaussians with spherindrical harmonics. https://github.com/fudan-zvg/4d-gaussian-splatting
+- `Splatshop` by Markus Schuetz (MIT) - edit-tool interface design only, no code taken.
+  https://github.com/m-schuetz/Splatshop
+- `4d-gaussian-splatting` by Fudan University (MIT at top level; Yang et al., ICLR 2024) - published
+  reference for native 4D Gaussians with spherindrical harmonics. The engine-side implementation is
+  written from those papers' equations; no upstream code was transposed.
+  https://github.com/fudan-zvg/4d-gaussian-splatting
 - `4d-gaussian-splatting` training fork by ueoo (MIT at top level).
   https://github.com/ueoo/4d-gaussian-splatting
 - Niantic SPZ (MIT) - compressed splat format.
-- `fused-ssim` by Rahul Goel (MIT). https://github.com/rahul-goel/fused-ssim
-- COLMAP (BSD-3-Clause) - `Scripts/read_write_model.py`. https://github.com/colmap/colmap
-- Inria / MPII Gaussian-Splatting License (NON-COMMERCIAL, research and evaluation only) -
-  `Extensions/diff_gaussian_rasterization/`, `Extensions/simple_knn/`
+- `fused-ssim` by Rahul Goel (MIT) - optional training-side operator, not bundled.
+  https://github.com/rahul-goel/fused-ssim
+- COLMAP (BSD-3-Clause) - `Content/Python/Lib/site-packages/read_write_model.py`.
+  https://github.com/colmap/colmap
+
+No non-commercial component ships in this repository. Two Inria-derived items an earlier revision
+carried are gone:
+
+- The prebuilt training-side CUDA extensions (`diff_gaussian_rasterization`, `simple_knn`) that used
+  to live under `Extensions/` were moved to the Fab-prescribed `Content/Python/Lib/site-packages/`
+  and then dropped from the distribution entirely - they are no longer in the repository and are
+  excluded from the release packages
   (https://github.com/graphdeco-inria/diff-gaussian-rasterization,
-  https://gitlab.inria.fr/bkerbl/simple-knn) and the native-4D path of
-  `Shaders/Private/CalcViewData.usf`, ported from `forward.cu`. Commercial use of the plugin as
-  shipped requires a commercial license from Inria or replacement of those components.
+  https://gitlab.inria.fr/bkerbl/simple-knn). That folder is now a local-only build output
+  (git-ignored and excluded by `Config/FilterPlugin.ini`), so no compiled extension binary is ever
+  redistributed. They were only used by the optional in-editor training
+  workflow, never by the runtime renderer. `Content/Python/OpenSplat4D/openplat4d_helper.py` probes
+  for them and, when absent, either builds them from your own 3DGS checkout or skips them with an
+  explicit message.
+- The native-4D path of `Shaders/Private/CalcViewData.usf` was previously transposed from that
+  codebase's `forward.cu`; it has been independently reimplemented from the published equations and
+  verified behaviour-preserving (`TestAssets/verify_native4d_rewrite.py`: `0.000e+00` in double
+  precision, `9.3e-08` in float32).
 
 Training-side CUDA operators (`pointops2`, `simple-knn`, `diff-gaussian-rasterization`) are not
-ported into the engine-side renderer, which implements forward inference in C++ and HLSL; prebuilt
-copies of the Inria-licensed extensions are nevertheless present under `Extensions/` for the
-in-editor training workflow.
+ported into the engine-side renderer, which implements forward inference in C++ and HLSL.
+
+No Python runtime, no COLMAP and no training repository ships with the plugin either; only the
+plugin's own orchestrator scripts under `Content/Python/OpenSplat4D/` do. Point *Project Settings >
+OpenSplat4D* at your own installs. Rendering, importing and playback need none of them.

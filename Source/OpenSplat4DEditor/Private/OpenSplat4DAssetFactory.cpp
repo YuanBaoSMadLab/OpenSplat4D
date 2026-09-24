@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DAssetFactory.h"
 #include "OpenSplat4DEditorModule.h"
 #include "OpenSplat4DPointCloud.h"
@@ -86,7 +87,7 @@ UObject* UOpenSplat4DPointCloudAssetFactory::FactoryCreateFile(
 
 FText UAssetDefinition_OpenSplat4DPointCloud::GetAssetDisplayName() const
 {
-	return OS4D_TEXT("OpenSplat4D 资产");
+	return OS4D_TEXT("OpenSplat4D Asset");
 }
 
 TSoftClassPtr<UObject> UAssetDefinition_OpenSplat4DPointCloud::GetAssetClass() const

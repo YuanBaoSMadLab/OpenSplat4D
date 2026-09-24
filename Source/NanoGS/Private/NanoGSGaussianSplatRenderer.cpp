@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 
 #include "NanoGSGaussianSplatRenderer.h"
 #include "GaussianSplatShaders.h"
@@ -178,7 +179,7 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D && !GPUResources->bIsNative4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
-	// Native 4D (fudan): overrides temporal marginalization and keyframes
+	// Native 4D: overrides temporal marginalization and keyframes
 	Parameters.Native4DBuffer = GPUResources->Native4DBufferSRV;
 	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
 	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;
@@ -857,7 +858,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D && !GPUResources->bIsNative4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
-	// Native 4D (fudan): overrides temporal marginalization and keyframes
+	// Native 4D: overrides temporal marginalization and keyframes
 	Parameters.Native4DBuffer = GPUResources->Native4DBufferSRV;
 	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
 	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;
@@ -1021,7 +1022,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D && !GPUResources->bIsNative4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
-	// Native 4D (fudan): overrides temporal marginalization and keyframes
+	// Native 4D: overrides temporal marginalization and keyframes
 	Parameters.Native4DBuffer = GPUResources->Native4DBufferSRV;
 	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
 	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;
@@ -1503,7 +1504,7 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	Parameters.UseTemporal = (GPUResources->bIs4D && !GPUResources->bIsKeyframe4D && !GPUResources->bIsNative4D) ? 1u : 0u;
 	Parameters.CurrentTime = GPUResources->CurrentTime;
 	Parameters.TimeWeightMinAlpha = 0.003f;
-	// Native 4D (fudan): overrides temporal marginalization and keyframes
+	// Native 4D: overrides temporal marginalization and keyframes
 	Parameters.Native4DBuffer = GPUResources->Native4DBufferSRV;
 	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
 	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;

@@ -1,3 +1,4 @@
+# Copyright OpenSplat4D 2026 All Rights Reserved.
 #!/usr/bin/env python3
 # export_4dgs.py  (OpenSplat4D enhanced edition)
 #

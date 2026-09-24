@@ -1,10 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 
 #include "GaussianSplatAssetTypeActions.h"
 #include "GaussianSplatAsset.h"
 #include "GaussianSplatAssetEditor.h"
 #include "GaussianSplat4DEditor.h"
 #include "GaussianSplatAssetFactory.h"
+#include "GaussianSplatProxyMeshBuilder.h"
+#include "Engine/StaticMesh.h"
 #include "EditorReimportHandler.h"
 #include "ToolMenuSection.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -85,6 +88,25 @@ void FAssetTypeActions_GaussianSplatAsset::GetActions(const TArray<UObject*>& In
 			FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteImportPLYSequence, GaussianSplatAssets),
 			FCanExecuteAction()
 		)
+	);
+
+	// 破裂 (fracture) submenu: builds the blocky proxy mesh that Chaos Fracture
+	// Mode cuts into a UGeometryCollection.
+	Section.AddSubMenu(
+		"GaussianSplatAsset_Fracture",
+		LOCTEXT("FractureSubMenuLabel", "破裂"),
+		LOCTEXT("FractureSubMenuTooltip", "Chaos 破裂工具"),
+		FNewMenuDelegate::CreateLambda([this, GaussianSplatAssets](FMenuBuilder& SubMenuBuilder)
+		{
+			SubMenuBuilder.AddMenuEntry(
+				LOCTEXT("GenerateProxyMeshLabel", "生成破裂代理网格"),
+				LOCTEXT("GenerateProxyMeshTooltip", "按 splat 位置生成封闭的体素代理网格（StaticMesh），供 Chaos 破裂模式切割成 GeometryCollection"),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteGenerateProxyMesh, GaussianSplatAssets))
+			);
+		}),
+		false,
+		FSlateIcon()
 	);
 
 	// Nanite submenu (similar to UE's native Nanite menu for Static Meshes)
@@ -376,6 +398,41 @@ void FAssetTypeActions_GaussianSplatAsset::ExecuteImportPLYSequence(TArray<TWeak
 	NewAsset->MarkPackageDirty();
 
 	UE_LOG(LogTemp, Log, TEXT("Created keyframe 4D asset '%s' from %d PLY frames"), *NewAsset->GetName(), SelectedFiles.Num());
+}
+
+void FAssetTypeActions_GaussianSplatAsset::ExecuteGenerateProxyMesh(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects)
+{
+	for (const TWeakObjectPtr<UGaussianSplatAsset>& AssetPtr : Objects)
+	{
+		UGaussianSplatAsset* Asset = AssetPtr.Get();
+		if (!Asset)
+		{
+			continue;
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("Generating fracture proxy mesh for asset: %s"), *Asset->GetName());
+
+		FString Error;
+		FGaussianSplatProxyMeshResult Result;
+		UStaticMesh* ProxyMesh = FGaussianSplatProxyMeshBuilder::CreateProxyMeshAsset(
+			Asset, FGaussianSplatProxyMeshParams(), Error, &Result);
+
+		if (!ProxyMesh)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::Format(
+				LOCTEXT("ProxyMeshFailed", "无法为 {0} 生成破裂代理网格:\n{1}"),
+				FText::FromString(Asset->GetName()),
+				FText::FromString(Error.IsEmpty() ? TEXT("未知错误，请查看输出日志。") : Error)));
+			continue;
+		}
+
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(
+			TEXT("已生成破裂代理网格: %s\n\n%s\n\n下一步:\n")
+			TEXT("1. 把该 StaticMesh 拖入关卡\n")
+			TEXT("2. 选中它，进入「破裂」模式(Fracture Mode)\n")
+			TEXT("3. 切割后生成 GeometryCollection 资产"),
+			*ProxyMesh->GetName(), *Result.Summary)));
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #pragma once
 
 #include "WorldPartition/HLOD/HLODBuilder.h"

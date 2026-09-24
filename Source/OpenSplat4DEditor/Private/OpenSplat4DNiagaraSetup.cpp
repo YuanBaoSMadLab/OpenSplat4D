@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DNiagaraSetup.h"
 #include "Misc/EngineVersionComparison.h"
 #include "OpenSplat4DEditorModule.h"

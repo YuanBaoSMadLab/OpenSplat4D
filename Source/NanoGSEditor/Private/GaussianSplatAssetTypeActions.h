@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 
 #pragma once
 
@@ -39,6 +40,9 @@ private:
 
 	/** Handler for importing a multi-file PLY sequence as a keyframe 4D asset */
 	void ExecuteImportPLYSequence(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
+
+	/** Handler for generating the blocky voxel proxy mesh used as a fracture source */
+	void ExecuteGenerateProxyMesh(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
 
 	/** Check if all selected assets have Nanite enabled */
 	bool AreAllNaniteEnabled(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects) const;

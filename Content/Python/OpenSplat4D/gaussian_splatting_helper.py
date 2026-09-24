@@ -1,4 +1,5 @@
-﻿#-*- coding: utf-8 -*-
+# Copyright OpenSplat4D 2026 All Rights Reserved.
+#-*- coding: utf-8 -*-
 
 from ast import arg
 import subprocess

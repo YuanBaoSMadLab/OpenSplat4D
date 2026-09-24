@@ -1,3 +1,4 @@
+# Copyright OpenSplat4D 2026 All Rights Reserved.
 #-*- coding: utf-8 -*-
 #
 # openplat4d_helper.py  (OpenSplat4D enhanced edition)
@@ -30,12 +31,13 @@
 #  [E3] runCommand() now PROPAGATES non-zero exit codes (sys.exit) so the UE
 #       orchestrator sees a real failure instead of a silent success. The
 #       reference only printed the code and kept going.
-#  [E4] Python resolution is conda-FREE and distribution-safe: the training /
-#       clip subprocesses are launched with the plugin's OWN bundled Python
-#       (<Plugin>/ThirdParty/Python/python.exe) by default, with override via
-#       --python <path> or the OPENSPLAT4D_PYTHON env var. We never assume the
-#       end user has conda or a compatible system Python (the CUDA extensions
-#       _C.pyd are ABI-locked to the bundled interpreter).
+#  [E4] Python resolution is conda-FREE: the training / clip subprocesses are
+#       launched with the interpreter the user points the plugin at (--python
+#       <path> / OPENSPLAT4D_PYTHON / Project Settings > OpenSplat4D >
+#       PythonExecutablePath). The plugin does NOT ship a Python runtime, so an
+#       optional local drop-in at <Plugin>/ThirdParty/Python/python.exe is used
+#       when present, otherwise we fall back to sys.executable. We never assume
+#       the end user has conda.
 #  [E5] Timestamped, tagged logging so multiple pipeline steps are easy to
 #       follow in the UE output log.
 #  [E6] `--hlod_clip` convenience: recursively clip every produced point cloud
@@ -156,7 +158,7 @@ class OpenSplat4DHelper:
         parser.add_argument('-a', '--aligner', help='extra model_aligner params')
         parser.add_argument('-t', '--train', help='extra train params')
         parser.add_argument('--4d', dest='fourd', action='store_true', help='train a 4D (spatio-temporal) gaussian model')
-        # [Enhanced] 使用 OpenSplat4D/Scripts/train_enhanced.py 替代 teachers/train.py，
+        # [Enhanced] 使用 Content/Python/OpenSplat4D/train_enhanced.py 替代 teachers/train.py，
         # 启用 depth loss / 过曝降权 / mask-aware L1 / Coarse-to-Fine 等增强项。
         # 详见 train_enhanced.py 顶部文档。开启后 --gaussian 仍指向 teachers 目录
         # (用于 import GaussianModel/Scene)，但实际执行的是 overlay 脚本。
@@ -181,7 +183,10 @@ class OpenSplat4DHelper:
         parser.add_argument('--ply', help='')
 
         self.args = parser.parse_args()
+        # This file ships in <plugin>/Content/Python/OpenSplat4D/, so the plugin
+        # root is three levels up (OpenSplat4D -> Python -> Content -> <plugin>).
         self.scriptDir = os.path.dirname(os.path.abspath(__file__))
+        self.pluginRoot = os.path.normpath(os.path.join(self.scriptDir, "..", "..", ".."))
 
         # [E2] Validate work dir up-front.
         if not os.path.isdir(self.args.workDir):
@@ -368,13 +373,13 @@ class OpenSplat4DHelper:
         self.runCommand(command, env)
 
     # [E9] Resolve the Python interpreter used to launch the actual training /
-    # clip subprocesses. We do NOT use `conda activate X && python`: a shipped
-    # plugin must not assume the end user has conda, nor that PATH's `python` is
-    # ABI-compatible with the CUDA extensions (_C.pyd) we compiled. Resolution
-    # order:
+    # clip subprocesses. We do NOT use `conda activate X && python`: the plugin
+    # does not ship an interpreter, so we must not assume the end user has conda
+    # either. The user's configured interpreter always wins. Resolution order:
     #   1) --python <path>        (explicit override from the C++ / CLI caller)
     #   2) OPENSPLAT4D_PYTHON     (env var for power users)
-    #   3) <Plugin>/ThirdParty/Python/python.exe   (bundled with the plugin)
+    #   3) <Plugin>/ThirdParty/Python/python.exe  (optional local drop-in only —
+    #        NOT shipped; present if the developer built one locally)
     #   4) sys.executable         (the interpreter UE launched THIS helper with)
     #   5) "python"               (last-resort PATH lookup)
     # Every candidate is checked for existence before being used.
@@ -385,10 +390,8 @@ class OpenSplat4DHelper:
         env_var = os.environ.get("OPENSPLAT4D_PYTHON")
         if env_var:
             candidates.append(env_var)
-        # Bundled python lives at <Plugin>/ThirdParty/Python/python.exe.
-        # scriptDir = <Plugin>/Scripts, so go up one level then into ThirdParty/Python.
-        plugin_root = os.path.dirname(self.scriptDir)
-        candidates.append(os.path.join(plugin_root, "ThirdParty", "Python", "python.exe"))
+        # Optional local drop-in at <Plugin>/ThirdParty/Python/python.exe.
+        candidates.append(os.path.join(self.pluginRoot, "ThirdParty", "Python", "python.exe"))
         candidates.append(sys.executable)
         candidates.append("python")
         for cand in candidates:
@@ -398,7 +401,7 @@ class OpenSplat4DHelper:
         return candidates[-1]
 
     # [E9] Prepend the selected python's native runtime dirs (Library/bin, etc.)
-    # to PATH so torch's CUDA runtime DLLs and any shipped native deps are found
+    # to PATH so torch's CUDA runtime DLLs and any native deps are found
     # when the compiled extension modules (_C.pyd, _C.cp310...) are loaded.
     def _env_path_ext(self):
         exe = self._python_executable()
@@ -415,13 +418,11 @@ class OpenSplat4DHelper:
         return {"PATH": os.pathsep.join(extra + [cur])}
 
     def executeGaussianSplatting(self):
-        # [E10/E11] Ensure the CUDA extensions are available. Preferred path:
-        # the plugin was built WITH precompiled extensions (build_plugin.bat
-        # ships the _C.pyd in the dedicated <plugin>/Extensions folder, OUTSIDE
-        # ThirdParty), so the end user needs NO compiler. Only if a .pyd is
-        # genuinely missing AND a toolchain is present do we self-build it here.
-        # Either way, make sure the Extension folder is on PYTHONPATH for the
-        # train.py child process.
+        # [E10/E11] Ensure the CUDA extensions are available. The plugin does
+        # NOT ship them (the Inria/MPII extensions are non-commercial), so if a
+        # .pyd is missing AND a toolchain is present we self-build it here and
+        # deploy it into Content/Python/Lib/site-packages. Either way, make
+        # sure that folder is on PYTHONPATH for the train.py child process.
         self.ensure_extensions_built()
 
         # [E9] Use the resolved interpreter directly instead of
@@ -439,7 +440,7 @@ class OpenSplat4DHelper:
             # [Enhanced] 走 train_enhanced.py overlay —— 在 teachers 之上添加
             # depth loss / 过曝降权 / mask-aware L1 / Coarse-to-Fine。
             # --gaussian 仍指向 teachers 目录（用于 import GaussianModel/Scene/render），
-            # 但实际入口是 OpenSplat4D/Scripts/train_enhanced.py。
+            # 但实际入口是 Content/Python/OpenSplat4D/train_enhanced.py。
             enhanced_script = _quote_path(os.path.join(self.scriptDir, "train_enhanced.py"))
             cmd_parts = [f'{python_exe} {enhanced_script} -s . -m ./output',
                          f'--lambda_depth {self.args.lambda_depth}',
@@ -500,23 +501,23 @@ class OpenSplat4DHelper:
         self.runCommand(command, self._env_path_ext())
 
     # ---------------------------------------------------------------------------
-    # [E10/E11] CUDA EXTENSION AVAILABILITY (prebuilt preferred, self-build fallback)
+    # [E10/E11] CUDA EXTENSION AVAILABILITY (self-build only — nothing is shipped)
     # ---------------------------------------------------------------------------
-    # Preferred (distribution): the plugin is built WITH precompiled extensions
-    # by build_plugin.bat, which compiles diff_gaussian_rasterization/_C,
-    # simple_knn/_C, fused_ssim_cuda and copies the built packages into a
-    # DEDICATED, lightweight folder: <plugin>/Extensions/ (at the plugin ROOT,
-    # OUTSIDE ThirdParty). This keeps the compiled binaries OUT of the huge
-    # ThirdParty tree (esp. ThirdParty/Python) so an end user can update just
-    # the small Extensions/ folder without re-copying the heavy Python. The
-    # .pyd is a FATBIN covering RTX 30/40/50 (sm_86/90/120 + PTX), so a single
-    # build runs on every target GPU. At runtime we add <plugin>/Extensions to
-    # sys.path/PYTHONPATH so the shipped .pyd imports with NO compiler on the
-    # user's machine (no editable .pth required).
+    # The plugin ships NO Python runtime, NO COLMAP and NO training repository,
+    # and it ships NO precompiled CUDA extension either: diff_gaussian_rasterization,
+    # simple_knn and fused_ssim are Inria/MPII non-commercial code, so they must
+    # never be redistributed inside the plugin package.
     #
-    # Fallback (developer only): if a .pyd is genuinely missing AND a toolchain
-    # is present, we self-build it in-place with the same toolchain as
-    # build_ext.bat, then COPY it into <plugin>/Extensions:
+    # Instead, extensions are built ON THE END USER'S MACHINE and the result is
+    # kept OUTSIDE the distributed set: <plugin>/Content/Python/Lib/site-packages/.
+    # That folder is the location the Fab Technical Review Checklist prescribes
+    # for third-party Python libraries, and it is excluded from the packaged
+    # plugin (Config/FilterPlugin.ini) and from git (.gitignore). It is added to
+    # sys.path/PYTHONPATH at runtime so the locally built .pyd imports without an
+    # editable .pth. Recommended: build a FATBIN covering RTX 30/40/50
+    # (sm_86/90/120 + PTX) so one build runs on every target GPU.
+    #
+    # Self-build requirements (developer machine):
     #   - Visual Studio 2026 x64 native tools (vcvars64, MSVC 14.38 toolset,
     #     because CUDA 12.8 rejects the VS2026 default 14.51 toolset)
     #   - CUDA 12.8 on PATH
@@ -577,29 +578,31 @@ class OpenSplat4DHelper:
         return os.path.dirname(origin)
 
     # ---------------------------------------------------------------------------
-    # [E11] DISTRIBUTION-SAFE EXTENSION RESOLUTION (no editable .pth needed)
+    # [E11] LOCAL EXTENSION RESOLUTION (no editable .pth needed)
     # ---------------------------------------------------------------------------
-    # The compiled _C.pyd / fused_ssim_cuda.pyd are SHIPPED in a DEDICATED,
-    # lightweight folder: <plugin>/Extensions/ (plugin ROOT, OUTSIDE ThirdParty),
-    # built ahead of time by build_plugin.bat and packaged with the plugin. This
-    # means an end user does NOT need a C++ compiler / CUDA toolkit to train:
-    # the .pyd is already in the plugin. We only have to make sure <plugin>/
-    # Extensions is on sys.path / PYTHONPATH so `import diff_gaussian_rasterization`
-    # (and the others) find the in-place .pyd WITHOUT relying on the editable
-    # `pip install -e` .pth file. <gaussian>/submodules is kept ONLY as a
-    # fallback (e.g. a developer self-build); at runtime Extensions wins.
+    # The compiled _C.pyd / fused_ssim_cuda.pyd are NOT shipped with the plugin:
+    # they are produced by a local self-build and placed in
+    # <plugin>/Content/Python/Lib/site-packages/ — the location the Fab Technical
+    # Review Checklist prescribes for third-party Python libraries, excluded from
+    # the package and from git. We only have to make sure that folder is on
+    # sys.path / PYTHONPATH so `import diff_gaussian_rasterization` (and the
+    # others) find the in-place .pyd WITHOUT relying on the editable
+    # `pip install -e` .pth file.
+    # <gaussian>/submodules is kept as a fallback (e.g. a developer who built the
+    # extensions but has not deployed them yet).
     # ---------------------------------------------------------------------------
     def _ext_deploy_dir(self):
-        """Dedicated prebuilt-extensions folder at the plugin ROOT, OUTSIDE
-        ThirdParty (e.g. <plugin>/Extensions). This is the PRIMARY location the
-        shipped plugin imports the compiled CUDA extensions from."""
-        return os.path.join(os.path.dirname(self.scriptDir), "Extensions")
+        """Local self-build output folder for third-party Python libraries
+        (e.g. <plugin>/Content/Python/Lib/site-packages). Never shipped — see
+        Config/FilterPlugin.ini and .gitignore."""
+        return os.path.join(self.pluginRoot, "Content", "Python", "Lib", "site-packages")
 
     def _ext_search_dirs(self):
         """Directories that must be on sys.path/PYTHONPATH so the compiled
         CUDA extension packages can be imported without an editable .pth.
-        The plugin-bundled <plugin>/Extensions is PRIMARY; the requested repo's
-        `submodules` and the bundled 3DGS `submodules` are fallbacks only."""
+        The local self-build folder is tried first; the requested repo's
+        `submodules` and (for developer setups) the local 3DGS `submodules`
+        are fallbacks only. The plugin itself ships none of them."""
         dirs = []
         ext = self._ext_deploy_dir()
         if os.path.isdir(ext) and ext not in dirs:
@@ -608,15 +611,14 @@ class OpenSplat4DHelper:
             d = os.path.join(self.args.gaussian, "submodules")
             if os.path.isdir(d) and d not in dirs:
                 dirs.append(d)
-        plugin_root = os.path.dirname(self.scriptDir)
-        bundled = os.path.join(plugin_root, "ThirdParty", "gaussian-splatting", "submodules")
+        bundled = os.path.join(self.pluginRoot, "ThirdParty", "gaussian-splatting", "submodules")
         if os.path.isdir(bundled) and bundled not in dirs:
             dirs.append(bundled)
         return dirs
 
     def _ensure_ext_on_path(self):
         """Prepend the extension search dirs to THIS process's sys.path so the
-        in-process import probe (_package_built) can find the shipped .pyd
+        in-process import probe (_package_built) can find the locally built .pyd
         without an editable .pth. Idempotent."""
         for d in self._ext_search_dirs():
             if d not in sys.path:
@@ -624,7 +626,7 @@ class OpenSplat4DHelper:
 
     def _ext_pypath_env(self):
         """Env dict that extends PYTHONPATH with the extension search dirs so
-        child processes (train.py) can import the shipped extensions too."""
+        child processes (train.py) can import the locally built extensions too."""
         dirs = self._ext_search_dirs()
         if not dirs:
             return {}
@@ -650,9 +652,9 @@ class OpenSplat4DHelper:
 
     def _copy_ext_pkg(self, src_pkg_dir, deploy_pkg_dir):
         """Copy a built extension package dir (e.g. diff_gaussian_rasterization,
-        which contains __init__.py + _C.pyd) into the deploy Extensions folder,
-        replacing any previous copy. Falls back to merge-copy if replacement
-        fails (e.g. a file is locked by a running editor)."""
+        which contains __init__.py + _C.pyd) into the deploy site-packages
+        folder, replacing any previous copy. Falls back to merge-copy if
+        replacement fails (e.g. a file is locked by a running editor)."""
         if not os.path.isdir(src_pkg_dir):
             return False
         try:
@@ -678,10 +680,10 @@ class OpenSplat4DHelper:
 
     def _deploy_built_extensions(self):
         """Copy the freshly built extension packages from the gaussian repo's
-        submodules into the plugin's dedicated Extensions/ folder (plugin ROOT,
-        OUTSIDE ThirdParty). Idempotent; only copies when a built .pyd exists.
-        This is what makes the shipped plugin import the prebuilt extensions
-        from the lightweight Extensions/ folder with no compiler."""
+        submodules into the plugin's Content/Python/Lib/site-packages folder
+        (a local-only drop point — never packaged, never committed). Idempotent;
+        only copies when a built .pyd exists. This is what lets the helper import
+        the freshly built extensions from that single folder."""
         src_root = None
         if self.args.gaussian:
             cand = os.path.join(self.args.gaussian, "submodules")
@@ -710,7 +712,7 @@ class OpenSplat4DHelper:
                 os.path.join(deploy, "fused_ssim"))
 
     def _ensure_py_runtime_on_path(self):
-        """Prepend the bundled python's native runtime dirs (Library/bin, which
+        """Prepend the selected python's native runtime dirs (Library/bin, which
         holds torch's CUDA runtime DLLs) to PATH for the in-process import probe
         AND register them as a DLL search dir, so `import diff_gaussian_rasterization`
         can actually load torch/cu128 instead of failing with a DLL-not-found
@@ -730,15 +732,14 @@ class OpenSplat4DHelper:
     def ensure_extensions_built(self):
         if not (self.args.gaussian or self.args.fourd):
             return
-        # [E11] Make the shipped in-place .pyd discoverable BEFORE probing, so a
-        # plugin that was built WITH precompiled extensions (build_plugin.bat)
-        # works for the end user with no compiler at all. Only if the probe
-        # still fails do we fall back to self-building (which needs VS+CUDA).
+        # [E11] Make a previously self-built .pyd discoverable BEFORE probing, so
+        # a machine that already compiled the extensions once needs no compiler
+        # this time. Only if the probe still fails do we build (needs VS+CUDA).
         self._ensure_ext_on_path()
-        # Make sure the bundled python's native runtime dirs (torch CUDA DLLs,
+        # Make sure the selected python's native runtime dirs (torch CUDA DLLs,
         # etc.) are on PATH for the in-process import probe and the build.
         self._ensure_py_runtime_on_path()
-        printImmediately("checking CUDA extensions (prebuilt if shipped, self-build if missing) ...")
+        printImmediately("checking CUDA extensions (locally built if present, self-build if missing) ...")
         python = self._python_executable()
         built_any = False
         for pkg in self._EXT_PACKAGES:
@@ -758,10 +759,10 @@ class OpenSplat4DHelper:
                 continue
             printImmediately(f"  [build] {pkg} import failed -> compiling in {build_dir}")
             self._build_extension(python, build_dir)
-            # Ship the freshly built package into the dedicated Extensions/
-            # folder (outside ThirdParty) so the running plugin imports it from
-            # there; this also keeps the self-build result consistent with the
-            # prebuilt distribution layout.
+            # Move the freshly built package into the local
+            # Content/Python/Lib/site-packages folder so the running plugin
+            # imports it from there (that folder is local-only: not packaged,
+            # not committed).
             self._deploy_built_extensions()
             built_any = True
         if built_any:
@@ -775,24 +776,20 @@ class OpenSplat4DHelper:
         cuda = self._locate_cuda()
         if not vs:
             _fail("Visual Studio (MSVC) not found via vswhere, and the CUDA "
-                  "extensions are not prebuilt in this plugin. The shipped plugin "
-                  "should already contain the compiled _C.pyd files (built by "
-                  "build_plugin.bat). If you are an end user, please obtain a plugin "
-                  "build that includes the precompiled extensions; if you are the "
-                  "developer, run build_plugin.bat (or install the 'Desktop "
-                  "development with C++' workload for Visual Studio 2026).")
+                  "extensions (diff_gaussian_rasterization, simple_knn, fused_ssim) "
+                  "must be compiled on this machine — the plugin does not ship them "
+                  "(they are Inria/MPII non-commercial code). Install the 'Desktop "
+                  "development with C++' workload for Visual Studio 2026, then retry.")
         if not cuda:
-            _fail("CUDA toolkit (nvcc) not found, and the CUDA extensions are not "
-                  "prebuilt in this plugin. The shipped plugin should already contain "
-                  "the compiled _C.pyd files (built by build_plugin.bat against "
-                  "CUDA 12.8). If you are an end user, please obtain a plugin build "
-                  "that includes the precompiled extensions; if you are the developer, "
-                  "install CUDA 12.8 and re-run build_plugin.bat.")
+            _fail("CUDA toolkit (nvcc) not found, and the CUDA extensions "
+                  "(diff_gaussian_rasterization, simple_knn, fused_ssim) must be "
+                  "compiled on this machine against CUDA 12.8 (torch cu128) — the "
+                  "plugin does not ship them. Install the CUDA Toolkit 12.8 and retry.")
         vcvars = os.path.join(vs, "VC", "Auxiliary", "Build", "vcvars64.bat")
         # Build for RTX 20/30/40 (8.6/9.0) plus PTX for RTX 50 (12.0). Override
         # with OPENSPLAT4D_CUDA_ARCHS if a different mix is needed.
         archs = os.environ.get("OPENSPLAT4D_CUDA_ARCHS", "8.6;9.0;12.0+PTX")
-        # IMPORTANT: write a MULTI-LINE build script (mirroring build_ext.bat).
+        # IMPORTANT: write a MULTI-LINE build script.
         # A single-line `cmd /c "call vcvars && set PATH=x;%PATH% && ..."` expands
         # %PATH% UP FRONT (before vcvars runs), which clobbers the MSVC bin that
         # vcvars adds -> `cl.exe` disappears from PATH -> ninja fails with

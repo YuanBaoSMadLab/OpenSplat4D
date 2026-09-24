@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DEdMode.h"
 #include "EditorModeManager.h"
 #include "Toolkits/ToolkitManager.h"

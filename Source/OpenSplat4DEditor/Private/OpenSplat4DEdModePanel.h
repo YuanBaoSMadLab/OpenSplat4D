@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -51,11 +52,10 @@ protected:
 	FReply OnClicked_Cancel();
 	TSharedRef<SWidget> BuildUsageTab();
 
-	// ---- UI language (live switch) -----------------------------------------
-	/** Rebuild the whole panel from scratch (used when the UI language changes). */
+	// ---- UI language (follows the editor language) --------------------------
+	/** Rebuild the whole panel from scratch (bound to
+	 *  OpenSplat4DLocalization::OnUILanguageChanged). */
 	void Rebuild();
-	/** Listens for UOpenSplat4DSettings::UISLanguage changes and rebuilds. */
-	void OnSettingsPropertyChanged(UObject* Object, struct FPropertyChangedEvent& Event);
 	/** Builds the main vertical-box content of the panel (without ChildSlot assignment). */
 	TSharedRef<SWidget> BuildContent();
 

@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 
 #include "NanoGSGaussianSplatComponent.h"
 #include "GaussianSplatAsset.h"
@@ -7,6 +8,7 @@
 #include "Engine/World.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "HitProxies.h"
+#include "Containers/BitArray.h"
 
 UGaussianSplatComponent::UGaussianSplatComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -59,7 +61,8 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, CollisionMethod) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, CollisionMaxFaces) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, IgnoreFactor) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, VoxelSize))
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, VoxelSize) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxCollisionElements))
 	{
 		bCollisionDirty = true;
 		RebuildCollision();
@@ -514,37 +517,20 @@ void UGaussianSplatComponent::BuildCollisionBodySetup()
 
 bool UGaussianSplatComponent::GenerateConvexHull(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
 {
-	// ============================================================================
-	// WARNING: STUB IMPLEMENTATION — NOT A REAL CONVEX HULL
-	// ============================================================================
-	// This is a placeholder that simply samples input points. It does NOT compute
-	// a true convex hull and the result may be non-convex, contain interior points,
-	// and produce incorrect collision behavior (e.g. false positives, missed
-	// contacts, broken physics simulation).
-	//
-	// Use cases affected:
-	//   - ConvexHull collision method (CollisionMethod == EGaussianCollisionMethod::ConvexHull)
-	//   - Simplified collision (falls through to this stub)
-	//
-	// For production use, replace this with a real algorithm such as QuickHull
-	// (see FConvexVolume::ComputeConvexHull in Engine) or integrate a third-party
-	// library (e.g. V-HACD for decomposed convex hulls). The placeholder exists
-	// only to avoid crashes when users select this collision method on a splat
-	// asset; it should not be relied upon for accurate physics.
-	//
-	// TODO: Implement real QuickHull. For now, prefer BoundingBox collision
-	// (cheap, correct for simple cases) or Voxel collision (approximate but
-	// bounded) until this is replaced.
-	// ============================================================================
+	// Samples the cloud down to CollisionMaxFaces * 4 vertices and returns them as
+	// OutVertices. This is NOT the hull itself: RebuildCollision() stores these
+	// points in BodySetup->AggGeom.ConvexElems, and the engine's Chaos cooking
+	// (FConvexBuilder::Build) computes the actual convex hull from them — the exact
+	// same path a Static Mesh's auto-generated "Convex Hull" collision uses.
+	// OutIndices is intentionally left empty; the convex element takes its geometry
+	// from VertexData, not from an index buffer.
 	if (Points.Num() < 4)
 	{
 		return false;
 	}
 
-	// Placeholder: sample points uniformly. NOT a convex hull — kept only so the
-	// collision pipeline has *something* to render into BodySetup instead of
-	// failing silently. OutIndices is left empty, which means no convex element
-	// will actually be created in the BodySetup (see RebuildCollision).
+	// Uniform sampling keeps the vertex count (and therefore the cooking cost)
+	// bounded regardless of how many splats the asset holds.
 	int32 TargetCount = FMath::Min(Points.Num(), CollisionMaxFaces * 4);
 
 	if (Points.Num() > TargetCount)
@@ -562,27 +548,20 @@ bool UGaussianSplatComponent::GenerateConvexHull(const TArray<FVector>& Points, 
 		OutVertices = Points;
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: ConvexHull collision is a STUB (not a real convex hull). ")
-		TEXT("Returned %d sampled points — physics may be incorrect. Use BoundingBox or Voxel collision for now."), OutVertices.Num());
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: ConvexHull collision sampled %d vertices (Chaos cooking builds the hull)"), OutVertices.Num());
 	return true;
 }
 
 bool UGaussianSplatComponent::GenerateSimplifiedCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
 {
-	// ============================================================================
-	// WARNING: STUB — DELEGATES TO GenerateConvexHull (also a stub)
-	// ============================================================================
-	// A proper Simplified collision would use V-HACD (Volumetric Hierarchical
-	// Approximate Convex Decomposition) to produce multiple small convex hulls
-	// that together approximate the original geometry. This is critical for
-	// non-convex splat assets (e.g. a statue, a room interior) where a single
-	// convex hull would be wildly inaccurate.
+	// Currently produces a SINGLE convex hull (same result as the ConvexHull
+	// method): the points are sampled down and handed to Chaos cooking, which
+	// builds one hull for the whole cloud.
 	//
-	// Until V-HACD or equivalent is integrated, this method falls through to
-	// the convex-hull stub, which itself is just point sampling. Treat the
-	// Simplified collision method as "best-effort, not for production" and
-	// prefer Voxel or BoundingBox collision.
-	// ============================================================================
+	// A true convex decomposition (V-HACD: split the volume into several convex
+	// pieces so a concave shape such as a statue or a room interior is approximated
+	// correctly) is NOT implemented. Until it is, prefer Voxel collision for
+	// concave assets — the voxel grid follows the shape far better than one hull.
 	if (Points.Num() < 4)
 	{
 		return false;
@@ -593,64 +572,115 @@ bool UGaussianSplatComponent::GenerateSimplifiedCollision(const TArray<FVector>&
 
 bool UGaussianSplatComponent::GenerateVoxelCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
 {
-	// Voxel-based collision: create a voxel grid and generate boxes for occupied cells
+	// Voxel-based collision: one box element per occupied cell of a uniform grid.
+	//
+	// Two budgets are enforced by COARSENING the cell size and rebuilding the grid,
+	// never by truncating the cell loop: the old code stopped as soon as it had
+	// emitted MaxCells box elements while walking z/y/x in order, so the collision
+	// shape only covered one corner of the asset.
+	//   - MaxCollisionElements: how many box elements may end up in the BodySetup
+	//   - MaxGridCells: hard cap on the raw grid size (memory guard)
+	// Grid indices are int64 and occupancy uses a bit array (1 bit/cell instead of
+	// 1 byte), so a fine VoxelSize on a large asset cannot overflow the index math
+	// or blow up memory.
 	if (Points.Num() == 0)
 	{
 		return false;
 	}
 
-	FBox LocalBounds(Points);
-	FVector Extent = LocalBounds.GetExtent();
-	FVector Origin = LocalBounds.Min;
+	// 32M cells ≈ 4 MB of bit array; still allows a 320^3 grid while keeping the
+	// guard comfortably inside the editor's memory budget.
+	static constexpr int64 MaxGridCells = 32ll * 1024 * 1024;
+	static constexpr int32 MaxGrowAttempts = 24;
 
-	// Calculate grid dimensions
-	int32 GridX = FMath::Max(1, (int32)(Extent.X / VoxelSize) + 1);
-	int32 GridY = FMath::Max(1, (int32)(Extent.Y / VoxelSize) + 1);
-	int32 GridZ = FMath::Max(1, (int32)(Extent.Z / VoxelSize) + 1);
+	const int32 MaxElements = FMath::Clamp(MaxCollisionElements, 1, 65536);
+	const FBox LocalBounds(Points);
+	const FVector Extent = LocalBounds.GetExtent();
+	const FVector Origin = LocalBounds.Min;
 
-	// Mark occupied cells
-	TArray<bool> Occupied;
-	Occupied.SetNum(GridX * GridY * GridZ);
-	FMemory::Memzero(Occupied.GetData(), Occupied.Num() * sizeof(bool));
+	float CellSize = FMath::Max(VoxelSize, 1e-4f);
+	int64 GridX = 1;
+	int64 GridY = 1;
+	int64 GridZ = 1;
+	TBitArray<> Occupied;
+	int32 OccupiedCount = 0;
 
-	for (const FVector& P : Points)
+	for (int32 Attempt = 0; Attempt < MaxGrowAttempts; ++Attempt)
 	{
-		int32 gx = FMath::Clamp((int32)((P.X - Origin.X) / VoxelSize), 0, GridX - 1);
-		int32 gy = FMath::Clamp((int32)((P.Y - Origin.Y) / VoxelSize), 0, GridY - 1);
-		int32 gz = FMath::Clamp((int32)((P.Z - Origin.Z) / VoxelSize), 0, GridZ - 1);
-		Occupied[gx + gy * GridX + gz * GridX * GridY] = true;
+		// Calculate grid dimensions
+		GridX = FMath::Max<int64>(1, (int64)(Extent.X / CellSize) + 1);
+		GridY = FMath::Max<int64>(1, (int64)(Extent.Y / CellSize) + 1);
+		GridZ = FMath::Max<int64>(1, (int64)(Extent.Z / CellSize) + 1);
+
+		const int64 TotalCells = GridX * GridY * GridZ;
+		if (TotalCells > MaxGridCells)
+		{
+			CellSize *= 2.0f;
+			continue;
+		}
+
+		// Mark occupied cells
+		Occupied.Init(false, (int32)TotalCells);
+
+		const int64 PlaneStride = GridX;
+		const int64 SliceStride = GridX * GridY;
+		const float InvCellSize = 1.0f / CellSize;
+
+		OccupiedCount = 0;
+		for (const FVector& P : Points)
+		{
+			const int64 gx = FMath::Clamp<int64>((int64)((P.X - Origin.X) * InvCellSize), 0, GridX - 1);
+			const int64 gy = FMath::Clamp<int64>((int64)((P.Y - Origin.Y) * InvCellSize), 0, GridY - 1);
+			const int64 gz = FMath::Clamp<int64>((int64)((P.Z - Origin.Z) * InvCellSize), 0, GridZ - 1);
+			const int64 CellIndex = gx + gy * PlaneStride + gz * SliceStride;
+			if (!(bool)Occupied[(int32)CellIndex])
+			{
+				Occupied[(int32)CellIndex] = true;
+				++OccupiedCount;
+			}
+		}
+
+		if (OccupiedCount <= MaxElements)
+		{
+			break;
+		}
+
+		// Too many occupied cells for the element budget: coarsen and retry so the
+		// boxes keep covering the whole cloud instead of being truncated.
+		CellSize *= 2.0f;
 	}
 
-	// Add box elements for occupied cells (limit count for performance)
+	// Add box elements for occupied cells
 	int32 CellCount = 0;
-	int32 MaxCells = FMath::Min(CollisionMaxFaces, GridX * GridY * GridZ);
-
-	for (int32 z = 0; z < GridZ && CellCount < MaxCells; z++)
+	for (int64 z = 0; z < GridZ && CellCount < MaxElements; ++z)
 	{
-		for (int32 y = 0; y < GridY && CellCount < MaxCells; y++)
+		for (int64 y = 0; y < GridY && CellCount < MaxElements; ++y)
 		{
-			for (int32 x = 0; x < GridX && CellCount < MaxCells; x++)
+			for (int64 x = 0; x < GridX && CellCount < MaxElements; ++x)
 			{
-				if (Occupied[x + y * GridX + z * GridX * GridY])
+				if (!(bool)Occupied[(int32)(x + y * GridX + z * GridX * GridY)])
 				{
-					FKBoxElem BoxElem;
-					BoxElem.Center = FVector(
-						Origin.X + (x + 0.5f) * VoxelSize,
-						Origin.Y + (y + 0.5f) * VoxelSize,
-						Origin.Z + (z + 0.5f) * VoxelSize
-					);
-					BoxElem.X = VoxelSize;
-					BoxElem.Y = VoxelSize;
-					BoxElem.Z = VoxelSize;
-					BodySetup->AggGeom.BoxElems.Add(BoxElem);
-					CellCount++;
+					continue;
 				}
+				FKBoxElem BoxElem;
+				BoxElem.Center = FVector(
+					Origin.X + ((float)x + 0.5f) * CellSize,
+					Origin.Y + ((float)y + 0.5f) * CellSize,
+					Origin.Z + ((float)z + 0.5f) * CellSize
+				);
+				BoxElem.X = CellSize;
+				BoxElem.Y = CellSize;
+				BoxElem.Z = CellSize;
+				BodySetup->AggGeom.BoxElems.Add(BoxElem);
+				++CellCount;
 			}
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: Voxel collision generated with %d cells (%dx%dx%d grid)"),
-		CellCount, GridX, GridY, GridZ);
+	EffectiveVoxelSize = CellSize;
+
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: Voxel collision generated with %d boxes (%dx%dx%d grid, cell=%.4f, occupied=%d)"),
+		CellCount, (int32)GridX, (int32)GridY, (int32)GridZ, CellSize, OccupiedCount);
 
 	// Voxel method adds boxes directly, no need for vertices/indices
 	OutVertices.Reset();

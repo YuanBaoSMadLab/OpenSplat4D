@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 
 #include "GaussianSplat4DEditor.h"
 #include "GaussianSplatAsset.h"

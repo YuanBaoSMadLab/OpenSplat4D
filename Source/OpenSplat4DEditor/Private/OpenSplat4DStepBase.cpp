@@ -1,5 +1,7 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DStep.h"
 #include "OpenSplat4DSettings.h"
+#include "OpenSplat4DLocalization.h"
 
 #include <string>
 
@@ -359,7 +361,7 @@ public:
 		if (!FPlatformProcess::CreatePipe(PipeStdOutRead, PipeStdOutWrite))
 		{
 			UE_LOG(LogOpenSplat4DStep, Error, TEXT("CreatePipe failed - cannot launch subprocess"));
-			Step->ReceiveMessage(TEXT("[ERROR] 管道创建失败，无法启动子进程"));
+			Step->ReceiveMessage(OS4D_TEXT("[ERROR] Failed to create the pipe; cannot launch the subprocess.").ToString());
 			ExitReason.store(3);
 			return 0;
 		}
@@ -385,7 +387,7 @@ public:
 		if (!ProcessHandle.IsValid())
 		{
 			UE_LOG(LogOpenSplat4DStep, Error, TEXT("CreateProc failed for: %s"), *ResolvedExecutePath);
-			Step->ReceiveMessage(TEXT("[ERROR] 子进程启动失败，请检查可执行文件路径"));
+			Step->ReceiveMessage(OS4D_TEXT("[ERROR] Failed to start the subprocess; check the executable path.").ToString());
 			FPlatformProcess::ClosePipe(PipeStdOutRead, PipeStdOutWrite);
 			ExitReason.store(3);
 			return 0;
@@ -409,7 +411,7 @@ public:
 			{
 				FPlatformProcess::TerminateProc(ProcessHandle, true);
 				ExitReason.store(2);
-				Step->ReceiveMessage(TEXT("[CANCELLED] 用户已取消任务"));
+				Step->ReceiveMessage(OS4D_TEXT("[CANCELLED] The task was cancelled by the user.").ToString());
 				break;
 			}
 			if (TimeoutSeconds > 0.0f)
@@ -420,7 +422,8 @@ public:
 					bTimedOut = true;
 					ExitReason.store(4);
 					FPlatformProcess::TerminateProc(ProcessHandle, true);
-					Step->ReceiveMessage(FString::Printf(TEXT("[TIMEOUT] 任务超过 %.0f 秒被终止"), TimeoutSeconds));
+					Step->ReceiveMessage(FText::Format(OS4D_TEXT("[TIMEOUT] The task was terminated after {0} seconds."),
+						FText::FromString(FString::Printf(TEXT("%.0f"), TimeoutSeconds))).ToString());
 					break;
 				}
 			}
@@ -481,22 +484,22 @@ void UOpenSplat4DStepBase::ExecuteCommand(FString ExecutePath, FString Command, 
 	ExecutePath = OpenSplat4DUnquoteArg(ExecutePath);
 
 	// EARLY FALLBACK: If the executable path resolves to empty / whitespace,
-	// the caller forgot to check it (or the bundled python/colmap is missing
-	// and the user has not configured a path). Fail gracefully with a clear
+	// the caller forgot to check it (or the user has not configured the Python /
+	// COLMAP paths — the plugin ships neither). Fail gracefully with a clear
 	// log + UI notification instead of letting FPlatformProcess::CreateProc
 	// return an invalid handle that the runnable would then spin on.
 	if (ExecutePath.TrimStartAndEnd().IsEmpty())
 	{
 		UE_LOG(LogOpenSplat4DStep, Error,
 			TEXT("ExecuteCommand 收到空的可执行路径，已跳过。命令字符串为: %s\n")
-			TEXT("这通常意味着插件自带的 Python / COLMAP 未安装，且用户未在【设置】→ OpenSplat4D 中配置路径。"),
+			TEXT("这通常意味着用户尚未在【设置】→ OpenSplat4D 中配置 Python / COLMAP 路径（插件不随包携带这两者）。"),
 			*Command);
 
 		// Surface the failure in the editor UI (not just the log) so users
 		// who don't have the output log open still see what went wrong.
 		if (FSlateApplication::IsInitialized())
 		{
-			FNotificationInfo NotifyInfo(FText::FromString(TEXT("可执行文件路径为空：请在【设置】→ OpenSplat4D 中配置 Python / COLMAP 路径")));
+			FNotificationInfo NotifyInfo(OS4D_TEXT("Empty executable path: configure the Python / COLMAP paths under Settings > OpenSplat4D"));
 			NotifyInfo.ExpireDuration = 6.0f;
 			NotifyInfo.bUseSuccessFailIcons = true;
 			if (TSharedPtr<SNotificationItem> Notification = FSlateNotificationManager::Get().AddNotification(NotifyInfo))

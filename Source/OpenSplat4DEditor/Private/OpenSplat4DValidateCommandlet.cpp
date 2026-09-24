@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DValidateCommandlet.h"
 #include "OpenSplat4DNiagaraSetup.h"
 #include "Misc/Paths.h"

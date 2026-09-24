@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DStep.h"
 #include "OpenSplat4DSettings.h"
 #include "OpenSplat4DEditorLibrary.h"
@@ -138,7 +139,7 @@ void UOpenSplat4DStep_GaussianSplatting::Train(bool bAsync, TFunction<void()> Fi
 	const FString Colmap = Settings->GetColmapExecutablePath();
 	if (!OpenSplat4DIsExecutableResolvable(Python))
 	{
-		UE_LOG(LogOpenSplat4DStep, Error, TEXT("Python 可执行文件未找到: \"%s\"。插件默认使用自带的 ThirdParty/Python/python.exe，请先运行 ThirdParty/Python/install_env.bat 打包训练环境；或在【设置】→ OpenSplat4D → PythonExecutablePath 填写一个可用的 python 完整路径（如 C:/Python310/python.exe，需含 torch+cu128 及已编译的 CUDA 扩展）。"), *Python);
+		UE_LOG(LogOpenSplat4DStep, Error, TEXT("Python 可执行文件未找到: \"%s\"。本插件不随包携带 Python 运行环境，请在【设置】→ OpenSplat4D → PythonExecutablePath 填写你本机可用的 python 完整路径（如 C:/Python310/python.exe，需含 torch+cu128 以及在本机编译好的 CUDA 扩展）。"), *Python);
 		if (FinishedCallback) FinishedCallback();
 		return;
 	}

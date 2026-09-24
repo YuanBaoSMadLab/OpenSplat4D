@@ -7,10 +7,12 @@ OpenSplat4D 把高斯泼溅带入 Unreal Engine 5：以原生 C++ 插件的形�
 以及复旦原生 4DGS（双四元数 4D 旋转 + 4D 球柱谐）。渲染走 GPU compute 管线，具备 Nanite 式簇级 LOD、
 间接绘制，并提供专属的 4D 播放器编辑器。
 
-- 版本：**0.2**
+- 版本：**0.3**
 - 引擎：**Unreal Engine 5.5 – 6.0**（已在 UE 5.7 / 5.8 / 6.0 上编译验证，Windows / Win64）
 - 许可：**Apache-2.0**
 - 下载：[GitHub Releases](https://github.com/YuanBaoSMadLab/OpenSplat4D/releases)（按引擎版本预编译）
+- 国内下载加速：夸克网盘 https://pan.quark.cn/s/e85b7b7660f1?pwd=UZ2J （提取码 `UZ2J`）
+- 赞助支持：[爱发电](https://afdian.com/a/YuanBaoSMadLab)
 
 ---
 
@@ -81,7 +83,8 @@ Nanite 簇级 LOD、compute shader 泼溅、PLY 导入、PyTorch checkpoint 导�
 ### 方式 A —— 使用预编译包（推荐）
 
 1. 到 [Releases](https://github.com/YuanBaoSMadLab/OpenSplat4D/releases) 下载与引擎版本对应的压缩包：
-   `OpenSplat4D-0.2-UE5.7.zip`、`OpenSplat4D-0.2-UE5.8.zip` 或 `OpenSplat4D-0.2-UE6.0.zip`。
+   `OpenSplat4D-0.3-UE5.7.zip`、`OpenSplat4D-0.3-UE5.8.zip` 或 `OpenSplat4D-0.3-UE6.0.zip`。
+   国内加速镜像（更快）：夸克网盘 https://pan.quark.cn/s/e85b7b7660f1?pwd=UZ2J ，提取码 `UZ2J`。
 2. 解压到你的工程中，使目录结构为
    `<你的工程>/Plugins/OpenSplat4D/OpenSplat4D.uplugin`。
 3. 重启编辑器，在 *编辑 → 插件 → 渲染* 中勾选启用 **OpenSplat4D**。
@@ -169,8 +172,10 @@ Nanite 簇级 LOD、compute shader 泼溅、PLY 导入、PyTorch checkpoint 导�
 | Gaussian（高斯） | 训练模型；**Train 4D** 勾选框选择 4DGS 仓库（动态）而非 3DGS 仓库（静态） |
 | Settings（设置） | 配置 Python、COLMAP 与训练仓库路径（`UOpenSplat4DSettings`） |
 
-训练由 `Scripts/openplat4d_helper.py`（含 `--4d` 分支）与 `Scripts/train_enhanced.py` 编排，
-遮罩裁剪使用 `Scripts/clip_model.py`。
+训练由 `Content/Python/OpenSplat4D/openplat4d_helper.py`（含 `--4d` 分支）与
+`Content/Python/OpenSplat4D/train_enhanced.py` 编排，遮罩裁剪使用
+`Content/Python/OpenSplat4D/clip_model.py`。插件随包发布这些脚本，但**不**随包提供 Python
+运行环境、COLMAP 与训练仓库 —— 请在设置中指向你自己的安装位置。
 
 **World Partition HLOD。** `UOpenSplat4DHLODBuilder` 对一组源组件执行 采集 → 稀疏 → 训练，
 并用单个高斯泼溅组件替换它们。其 `bTrain4D` 开关可生成静态 3DGS HLOD 或动态 4DGS HLOD，
@@ -223,9 +228,10 @@ OpenSplat4D/
 │   ├── OpenSplat4DRuntime/     # 点云模型、泼溅 Actor、SPZ、采集集
 │   └── OpenSplat4DEditor/      # 编辑器模式、HLOD 构建器、设置、Commandlet
 ├── Shaders/Private/            # HLSL：CalcViewData、CalcDistances、RadixSort、ClusterCulling 等
-├── Scripts/                    # Python：COLMAP/训练辅助、export_4dgs.py、clip_model.py
-├── Extensions/                 # 训练侧预编译 CUDA 扩展
 ├── Content/                    # Niagara 模板（历史路径）与文档
+│   └── Python/
+│       ├── OpenSplat4D/        # 编排与训练脚本（随包）
+│       └── Lib/site-packages/  # CUDA 扩展的本地构建产物（不随包）
 ├── Docs/                       # 补充文档
 ├── LICENSE                     # Apache-2.0
 ├── README.md                   # 英文版
@@ -261,7 +267,7 @@ OpenSplat4D/
 用 `stat gpu` 判断瓶颈在 splat 绘制（填充率）还是排序。
 
 **导入 2–3 GB PLY 崩溃，或报 `stride is 0`。**
-大文件支持已包含表头空白无关解析、类型感知属性读取与导入前内存守卫。请确认版本为 0.2；
+大文件支持已包含表头空白无关解析、类型感知属性读取与导入前内存守卫。请确认版本为 0.3；
 5700 万顶点的文件约需 14 GB 可用物理内存。
 
 **4D 资产打开的是普通编辑器 / 播放器条灰显。**
@@ -278,36 +284,42 @@ OpenSplat4D **自身的源码**以 **Apache-2.0** 许可证发布（见 [LICENSE
 
 | 角色 | 来源 | 许可证 |
 |---|---|---|
-| 3DGS 的 Unreal Engine 渲染基础 | [Italink/GaussianSplattingForUnrealEngine](https://github.com/Italink/GaussianSplattingForUnrealEngine) | MIT |
-| UE 侧簇级 LOD / compute 管线参考 | [TimChen1383/NanoGaussianSplatting](https://github.com/TimChen1383/NanoGaussianSplatting) | MIT |
-| 原生 4D 高斯与球柱谐（ICLR 2024） | [fudan-zvg/4d-gaussian-splatting](https://github.com/fudan-zvg/4d-gaussian-splatting) | MIT（顶层） |
+| 编辑器模式层与相关 UE 资产（fork / 移植） | [Italink/GaussianSplattingForUnrealEngine](https://github.com/Italink/GaussianSplattingForUnrealEngine) | MIT |
+| 渲染器主体 —— `Source/NanoGS/`、`Source/NanoGSEditor/`、`Shaders/Private/` 是上游的 fork（多个文件仍与上游逐字节相同） | [TimChen1383/NanoGaussianSplatting](https://github.com/TimChen1383/NanoGaussianSplatting) | MIT |
+| 编辑工具交互设计（未取用代码） | [m-schuetz/Splatshop](https://github.com/m-schuetz/Splatshop) | MIT |
+| 原生 4D 高斯与球柱谐（ICLR 2024）—— 仅参考已发表公式，实现依论文重写，未转写上游代码 | [fudan-zvg/4d-gaussian-splatting](https://github.com/fudan-zvg/4d-gaussian-splatting) | MIT（顶层） |
 | 4DGS 训练仓库 | [ueoo/4d-gaussian-splatting](https://github.com/ueoo/4d-gaussian-splatting) | MIT（顶层） |
 | 压缩 splat 格式（SPZ） | Niantic Labs | MIT |
-| 训练侧 SSIM 算子 | [rahul-goel/fused-ssim](https://github.com/rahul-goel/fused-ssim) | MIT |
-| COLMAP 模型读写（`Scripts/read_write_model.py`） | [colmap/colmap](https://github.com/colmap/colmap) | BSD-3-Clause |
+| 训练侧 SSIM 算子（可选，不随包分发 —— 由 `openplat4d_helper.py` 按需构建） | [rahul-goel/fused-ssim](https://github.com/rahul-goel/fused-ssim) | MIT |
+| COLMAP 模型读写（`Content/Python/Lib/site-packages/read_write_model.py`） | [colmap/colmap](https://github.com/colmap/colmap) | BSD-3-Clause |
 
-### 非商业组件 —— 商业使用前必读
+上述 MIT 组件要求保留其版权声明。派生的源文件里并没有内联这些声明（只保留了 UE 的样板头），
+因此 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) 会随每个发行包一起分发来满足该要求
+—— 若你要二次分发，请保留该文件。
 
-仓库中有两部分来自 **Inria / MPII 的 Gaussian-Splatting** 代码，该许可证**仅允许非商业的研究与评估用途**：
+### 商业使用
 
-- `Extensions/diff_gaussian_rasterization/` 与 `Extensions/simple_knn/` —— 训练侧预编译 CUDA 扩展，
-  文件内保留了原始的 Inria 版权头
+**本仓库随包分发的所有组件均为宽松许可证（MIT / BSD-3-Clause），插件可用于商业用途。**
+Apache-2.0 覆盖 OpenSplat4D 自身的代码；MIT 与 BSD 组件与之兼容，只要求保留其声明，
+这一点由 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) 满足。
+
+早期版本曾包含的两处 Inria 派生内容，现在**都不在本仓库中**：
+
+- 训练侧预编译 CUDA 扩展（`diff_gaussian_rasterization`、`simple_knn`）原先放在 `Extensions/`，
+  随后迁至 Fab 规定的 `Content/Python/Lib/site-packages/`，最终整体不再随包分发。该目录现在是
+  **纯本地构建产物**：已被 gitignore，并由 `Config/FilterPlugin.ini` 显式排除，因此不会有任何
+  编译后的扩展二进制被再分发。它们从不参与运行时渲染，只被可选的编辑器内训练流程使用。
+  若你要跑该训练流程，请自行从上游获取
   （[diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)、
-  [simple-knn](https://gitlab.inria.fr/bkerbl/simple-knn)）。
-- `Shaders/Private/CalcViewData.usf` —— 原生 4D 求值路径移植自该代码库 `forward.cu` 的
-  `computeCov3D_conditional` / `computeColorFromSH_4D`。
+  [simple-knn](https://gitlab.inria.fr/bkerbl/simple-knn)）并自行接受 Inria 的非商业条款，
+  然后在本机编译。`Content/Python/OpenSplat4D/openplat4d_helper.py` 会探测它们并在缺失时给出明确提示。
+- `Shaders/Private/CalcViewData.usf` 的原生 4D 路径此前转写自该代码库的 `forward.cu`，
+  现已**依已发表公式独立重写**，并已对拍验证与旧公式行为一致
+  （`TestAssets/verify_native4d_rewrite.py`：双精度偏差 `0.000e+00`，float32 偏差 `9.3e-08`）。
 
-Inria 许可原文写道：*"THE USER CANNOT USE, EXPLOIT OR DISTRIBUTE THE SOFTWARE FOR COMMERCIAL
-PURPOSES WITHOUT PRIOR AND EXPLICIT CONSENT OF LICENSORS."*（未经许可方事先明确同意，用户不得将本软件
-用于商业目的使用、利用或分发。）
-
-**因此上面的 Apache-2.0 仅覆盖 OpenSplat4D 自身的代码。** 按当前形态将插件用于商业用途，
-需要以下二选一：向 Inria 取得商业授权（联系 stip-sophia.transfert@inria.fr），或把上述两处组件替换为
-独立实现 —— 原生 4D 的数学在已发表论文中有完整公式，可以在不转写 Inria 源码的前提下重新实现。
-完整声明见 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)。
-
-`teachers/` 与 `ThirdParty/` 仅为本地开发参考，不属于本仓库、也不在发行包中。
-仓库中**未发现** GPL / LGPL / AGPL 代码。
+`teachers/`、`ThirdParty/` 与 `Content/Python/Lib/site-packages/` 仅为本地开发 / 构建产物，
+不属于本仓库、也不在发行包中。插件不随包携带 Python 运行环境、COLMAP 与训练仓库 —— 请在
+【项目设置 → OpenSplat4D】中配置你自己的安装。仓库中**未发现** GPL / LGPL / AGPL 代码。
 
 ---
 
@@ -318,10 +330,22 @@ PURPOSES WITHOUT PRIOR AND EXPLICIT CONSENT OF LICENSORS."*（未经许可方事
 - 针对每个受支持训练器的真实模型做验证。
 - 点云资产编辑器（尺寸直方图、选择、删除、撤销）。
 
+## 赞助支持
+
+OpenSplat4D 由 **YuanBaoSMadLab** 开发维护，以 Apache-2.0 免费开源发布。如果它帮你的项目省下了时间，
+欢迎赞助支持后续开发：
+
+- **爱发电**（国内）—— https://afdian.com/a/YuanBaoSMadLab
+
+赞助完全自愿，不影响许可证，也不改变你对插件的任何权利。
+给仓库点 Star、提 Issue、向朋友推荐，同样是对项目的支持。
+
 ## 链接
 
 - GitHub 主仓库：https://github.com/YuanBaoSMadLab/OpenSplat4D
 - 发布页：https://github.com/YuanBaoSMadLab/OpenSplat4D/releases
 - 问题反馈：https://github.com/YuanBaoSMadLab/OpenSplat4D/issues
 - Gitee 镜像（国内访问）：https://gitee.com/YuanBaoSMadLab/OpenSplat4D
+- 夸克网盘镜像（预编译包）：https://pan.quark.cn/s/e85b7b7660f1?pwd=UZ2J （提取码 `UZ2J`）
+- 赞助：https://afdian.com/a/YuanBaoSMadLab
 - 英文版说明：[README.md](README.md)

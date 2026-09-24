@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "SOpenSplat4DPointCloudEditorViewportClient.h"
 #include "SOpenSplat4DPointCloudEditorViewport.h"
 #include "OpenSplat4DPointCloudEditor.h"

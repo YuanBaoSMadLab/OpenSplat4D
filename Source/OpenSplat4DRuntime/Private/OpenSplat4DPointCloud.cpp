@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DPointCloud.h"
 
 UOpenSplat4DPointCloud::UOpenSplat4DPointCloud(const FObjectInitializer& ObjectInitializer)

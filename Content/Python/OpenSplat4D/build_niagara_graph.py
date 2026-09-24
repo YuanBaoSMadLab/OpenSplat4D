@@ -1,3 +1,4 @@
+# Copyright OpenSplat4D 2026 All Rights Reserved.
 """
 Programmatically build the complete NS_OpenSplat4D GPU Compute Script graph
 with DI function nodes (GetPointCount, GetPointData) and Map Set nodes.

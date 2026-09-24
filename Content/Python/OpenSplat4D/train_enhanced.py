@@ -1,3 +1,4 @@
+# Copyright OpenSplat4D 2026 All Rights Reserved.
 #-*- coding: utf-8 -*-
 """
 train_enhanced.py — OpenSplat4D 增强训练入口
@@ -70,10 +71,19 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 
 # --- 把 teachers 路径加到 sys.path，复用其模块 ---
-# 本文件位于 OpenSplat4D/Scripts/，teachers 在 OpenSplat4D/../teachers/4d-gaussian-splatting/
+# 本文件随插件发布在 <plugin>/Content/Python/OpenSplat4D/，所以插件根目录上溯三层
+# (OpenSplat4D -> Python -> Content -> <plugin>)。
+# teachers 是仓库根的开发用参考目录（不随插件发布），故优先找 <repo>/teachers/4d-gaussian-splatting，
+# 其次兼容直接放在插件根下的 <plugin>/teachers/4d-gaussian-splatting。
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-TEACHERS_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "teachers", "4d-gaussian-splatting"))
-if TEACHERS_DIR not in sys.path:
+PLUGIN_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
+TEACHERS_DIR = None
+for _cand in (os.path.normpath(os.path.join(PLUGIN_ROOT, "..", "teachers", "4d-gaussian-splatting")),
+              os.path.join(PLUGIN_ROOT, "teachers", "4d-gaussian-splatting")):
+    if os.path.isdir(_cand):
+        TEACHERS_DIR = _cand
+        break
+if TEACHERS_DIR and TEACHERS_DIR not in sys.path:
     sys.path.insert(0, TEACHERS_DIR)
 
 # 现在可以 import teachers 的模块

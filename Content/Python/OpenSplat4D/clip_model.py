@@ -1,3 +1,4 @@
+# Copyright OpenSplat4D 2026 All Rights Reserved.
 #-*- coding: utf-8 -*-
 #
 # clip_model.py  (OpenSplat4D enhanced edition)
@@ -37,12 +38,21 @@
 # ---------------------------------------------------------------------------
 
 import os
+import sys
 import numpy as np
 import argparse
 import cv2
 import math
 import json
 from plyfile import PlyData, PlyElement
+
+# COLMAP's read_write_model.py is third-party Python code, so (per the Fab
+# Technical Review Checklist) it is vendored under
+# Content/Python/Lib/site-packages/ instead of living next to these scripts.
+_SITE_PACKAGES = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "Lib", "site-packages"))
+if _SITE_PACKAGES not in sys.path:
+    sys.path.insert(0, _SITE_PACKAGES)
 from read_write_model import *
 from PIL import Image
 from scipy.ndimage import binary_dilation

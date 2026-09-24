@@ -26,7 +26,7 @@
   <ItemGroup>
     <Compile Include="gaussian_splatting_helper.py" />
     <Compile Include="make_depth_scale.py" />
-    <Compile Include="read_write_model.py" />
+    <Compile Include="..\Lib\site-packages\read_write_model.py" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in

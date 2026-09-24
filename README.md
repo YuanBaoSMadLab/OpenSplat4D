@@ -8,10 +8,12 @@ Spacetime Gaussians, keyframe/sequence 4DGS, and Fudan native 4DGS (dual-quatern
 + 4D spherindrical harmonics) — with a GPU compute pipeline, Nanite-style cluster LODs, indirect
 draw, and a dedicated 4D player editor.
 
-- Version: **0.2**
+- Version: **0.3**
 - Engine: **Unreal Engine 5.5 – 6.0** (built and verified on UE 5.7, 5.8, 6.0 — Windows / Win64)
 - License: **Apache-2.0**
 - Download: [GitHub Releases](https://github.com/YuanBaoSMadLab/OpenSplat4D/releases) (prebuilt per UE version)
+- Download mirror (mainland China): [Quark Drive](https://pan.quark.cn/s/e85b7b7660f1?pwd=UZ2J), extraction code `UZ2J`
+- Support the project: [Afdian / 爱发电](https://afdian.com/a/YuanBaoSMadLab)
 
 ---
 
@@ -91,7 +93,9 @@ The importer **auto-detects the model type from the file itself** — no manual 
 
 1. Download the archive matching your engine version from
    [Releases](https://github.com/YuanBaoSMadLab/OpenSplat4D/releases):
-   `OpenSplat4D-0.2-UE5.7.zip`, `OpenSplat4D-0.2-UE5.8.zip`, or `OpenSplat4D-0.2-UE6.0.zip`.
+   `OpenSplat4D-0.3-UE5.7.zip`, `OpenSplat4D-0.3-UE5.8.zip`, or `OpenSplat4D-0.3-UE6.0.zip`.
+   Mainland-China mirror (faster): [Quark Drive](https://pan.quark.cn/s/e85b7b7660f1?pwd=UZ2J),
+   extraction code `UZ2J`.
 2. Extract it into your project so the layout is
    `<YourProject>/Plugins/OpenSplat4D/OpenSplat4D.uplugin`.
 3. Restart the editor, then enable **OpenSplat4D** in *Edit → Plugins → Rendering*.
@@ -189,8 +193,10 @@ whole authoring workflow:
 | Gaussian | Train the model; the **Train 4D** checkbox selects the 4DGS repo (dynamic) instead of 3DGS (static) |
 | Settings | Paths for Python, COLMAP, and the training repositories (`UOpenSplat4DSettings`) |
 
-Training is orchestrated by `Scripts/openplat4d_helper.py` (with a `--4d` branch) and
-`Scripts/train_enhanced.py`; mask clipping uses `Scripts/clip_model.py`.
+Training is orchestrated by `Content/Python/OpenSplat4D/openplat4d_helper.py` (with a `--4d` branch)
+and `Content/Python/OpenSplat4D/train_enhanced.py`; mask clipping uses
+`Content/Python/OpenSplat4D/clip_model.py`. The plugin ships these scripts but **not** the Python
+runtime, COLMAP or the training repositories — point the settings at your own installs.
 
 **World Partition HLOD.** `UOpenSplat4DHLODBuilder` runs capture → sparse → train on a cluster of
 source components and replaces them with a single Gaussian Splat component. Its `bTrain4D` switch
@@ -244,9 +250,10 @@ OpenSplat4D/
 │   ├── OpenSplat4DRuntime/     # point-cloud model, splat actor, SPZ, capture set
 │   └── OpenSplat4DEditor/      # editor mode, HLOD builder, settings, commandlet
 ├── Shaders/Private/            # HLSL: CalcViewData, CalcDistances, RadixSort, ClusterCulling, ...
-├── Scripts/                    # Python: COLMAP/training helpers, export_4dgs.py, clip_model.py
-├── Extensions/                 # prebuilt CUDA extensions for the training side
 ├── Content/                    # Niagara templates (legacy path), docs
+│   └── Python/
+│       ├── OpenSplat4D/        # orchestrator + training scripts (shipped)
+│       └── Lib/site-packages/  # local CUDA-extension build output (NOT shipped)
 ├── Docs/                       # additional documentation
 ├── LICENSE                     # Apache-2.0
 ├── README.md                   # this file
@@ -267,8 +274,8 @@ OpenSplat4D/
 - **Per-splat temporal budget** is 16 B for temporal-marginalization models and 80 B for native 4D
   models; this bounds which attributes can be evaluated at runtime.
 - Native 4D and keyframe pipelines have been validated with synthetic data and cross-checked against
-  the reference CUDA math, but not yet against a full real-world trained model produced by every
-  listed trainer.
+  the published formulation (see `TestAssets/verify_native4d_rewrite.py`), but not yet against a full
+  real-world trained model produced by every listed trainer.
 
 ---
 
@@ -287,7 +294,7 @@ distance. Verify with `stat gpu` whether the bottleneck is splat draw (fill rate
 
 **Importing a 2–3 GB PLY crashes or reports `stride is 0`.**
 Large-file support includes whitespace-agnostic header parsing, type-aware property reads, and a
-pre-import memory guard. Ensure you are on version 0.2; a 57 M-vertex file needs roughly 14 GB of
+pre-import memory guard. Ensure you are on version 0.3; a 57 M-vertex file needs roughly 14 GB of
 available physical memory.
 
 **A 4D asset opened a normal editor / the transport bar is greyed out.**
@@ -305,38 +312,46 @@ The project integrates third-party components whose terms differ; the full inven
 
 | Role | Source | License |
 |---|---|---|
-| 3DGS Unreal Engine rendering base | [Italink/GaussianSplattingForUnrealEngine](https://github.com/Italink/GaussianSplattingForUnrealEngine) | MIT |
-| UE-side cluster LOD / compute pipeline reference | [TimChen1383/NanoGaussianSplatting](https://github.com/TimChen1383/NanoGaussianSplatting) | MIT |
-| Native 4D Gaussians with spherindrical harmonics (ICLR 2024) | [fudan-zvg/4d-gaussian-splatting](https://github.com/fudan-zvg/4d-gaussian-splatting) | MIT (top level) |
+| Editor-mode layer and Niagara/Niagara-adjacent assets (forked / ported) | [Italink/GaussianSplattingForUnrealEngine](https://github.com/Italink/GaussianSplattingForUnrealEngine) | MIT |
+| Renderer core — `Source/NanoGS/`, `Source/NanoGSEditor/` and `Shaders/Private/` are a fork of upstream (several files still byte-identical) | [TimChen1383/NanoGaussianSplatting](https://github.com/TimChen1383/NanoGaussianSplatting) | MIT |
+| Edit-tool interface design (no code taken) | [m-schuetz/Splatshop](https://github.com/m-schuetz/Splatshop) | MIT |
+| Native 4D Gaussians with spherindrical harmonics (ICLR 2024) — published equations used as reference; implementation written from the papers, no upstream code transposed | [fudan-zvg/4d-gaussian-splatting](https://github.com/fudan-zvg/4d-gaussian-splatting) | MIT (top level) |
 | 4DGS training repository | [ueoo/4d-gaussian-splatting](https://github.com/ueoo/4d-gaussian-splatting) | MIT (top level) |
 | Compressed splat format (SPZ) | Niantic Labs | MIT |
-| Training-side SSIM operator | [rahul-goel/fused-ssim](https://github.com/rahul-goel/fused-ssim) | MIT |
-| COLMAP model I/O (`Scripts/read_write_model.py`) | [colmap/colmap](https://github.com/colmap/colmap) | BSD-3-Clause |
+| Training-side SSIM operator (optional, not bundled — built on demand by `openplat4d_helper.py`) | [rahul-goel/fused-ssim](https://github.com/rahul-goel/fused-ssim) | MIT |
+| COLMAP model I/O (`Content/Python/Lib/site-packages/read_write_model.py`) | [colmap/colmap](https://github.com/colmap/colmap) | BSD-3-Clause |
 
-### Non-commercial components — read before commercial use
+The MIT components above require their copyright notices to be retained. The derived source files
+do not carry them inline (they keep only the Unreal Engine boilerplate header), so
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) is bundled with every release package to satisfy
+that requirement — keep it there if you redistribute.
 
-Two parts of this repository come from the **Inria / MPII Gaussian-Splatting** code, which is
-licensed for **non-commercial research and evaluation use only**:
+### Commercial use
 
-- `Extensions/diff_gaussian_rasterization/` and `Extensions/simple_knn/` — prebuilt training-side
-  CUDA extensions that carry the original Inria copyright headers
+**Every component shipped in this repository is under a permissive license (MIT / BSD-3-Clause),
+so the plugin is cleared for commercial use.** Apache-2.0 covers OpenSplat4D's own code; the MIT and
+BSD components are compatible with it and only require that their notices be retained, which
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) does.
+
+Two Inria-derived items an earlier revision carried are **not** here:
+
+- The prebuilt training-side CUDA extensions (`diff_gaussian_rasterization`, `simple_knn`) that used
+  to sit in `Extensions/` have been removed from the repository and from the release packages. They
+  were never used at runtime — only by the optional in-editor training workflow. If you want to run
+  that workflow, obtain them yourself from their upstream projects
   ([diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization),
-  [simple-knn](https://gitlab.inria.fr/bkerbl/simple-knn)).
-- `Shaders/Private/CalcViewData.usf` — the native-4D evaluation path is a port of
-  `computeCov3D_conditional` / `computeColorFromSH_4D` from that codebase's `forward.cu`.
+  [simple-knn](https://gitlab.inria.fr/bkerbl/simple-knn)) and accept Inria's
+  non-commercial terms directly; `Content/Python/OpenSplat4D/openplat4d_helper.py` will probe for
+  them and say so.
+- The native-4D path in `Shaders/Private/CalcViewData.usf` was previously transposed from that
+  codebase's `forward.cu`. It has been **independently reimplemented** from the published equations,
+  and verified behaviour-preserving against the old formulation (`TestAssets/verify_native4d_rewrite.py`,
+  agreement `0.000e+00` in double precision, `9.3e-08` in float32).
 
-The Inria license states: *"THE USER CANNOT USE, EXPLOIT OR DISTRIBUTE THE SOFTWARE FOR COMMERCIAL
-PURPOSES WITHOUT PRIOR AND EXPLICIT CONSENT OF LICENSORS."*
-
-**The Apache-2.0 license therefore covers OpenSplat4D's own code only.** Commercial use of the
-plugin as currently shipped requires either a commercial license from Inria
-(stip-sophia.transfert@inria.fr) or replacing the two components above with independent
-implementations — the native 4D math is fully specified in the published papers and can be
-reimplemented without transposing Inria source. See
-[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) for the complete statement.
-
-`teachers/` and `ThirdParty/` are local development references only; they are not part of this
-repository or of the released packages. No GPL, LGPL or AGPL code has been identified.
+`teachers/`, `ThirdParty/` and `Content/Python/Lib/site-packages/` are local development / build
+outputs only; they are not part of this repository or of the released packages. The plugin ships no
+Python runtime, no COLMAP and no training repository — configure your own under
+*Project Settings > OpenSplat4D*. No GPL, LGPL or AGPL code has been identified.
 
 ---
 
@@ -347,10 +362,22 @@ repository or of the released packages. No GPL, LGPL or AGPL code has been ident
 - Validation against real trained models from each supported trainer.
 - Point-cloud asset editor (size histogram, selection, deletion, undo).
 
+## Support the project
+
+OpenSplat4D is developed and maintained by **YuanBaoSMadLab** and released for free under
+Apache-2.0. If it saves you time on a project, a sponsorship keeps development going:
+
+- **Afdian / 爱发电** (mainland China) — https://afdian.com/a/YuanBaoSMadLab
+
+Sponsoring is entirely optional: it does not change the license or your rights to the plugin.
+Starring the repository, filing issues and sharing the project help just as much.
+
 ## Links
 
 - GitHub: https://github.com/YuanBaoSMadLab/OpenSplat4D
 - Releases: https://github.com/YuanBaoSMadLab/OpenSplat4D/releases
 - Issues: https://github.com/YuanBaoSMadLab/OpenSplat4D/issues
 - Gitee mirror (for users in mainland China): https://gitee.com/YuanBaoSMadLab/OpenSplat4D
+- Quark Drive mirror (prebuilt packages): https://pan.quark.cn/s/e85b7b7660f1?pwd=UZ2J (code `UZ2J`)
+- Sponsor: https://afdian.com/a/YuanBaoSMadLab
 - Chinese README: [README-zh.md](README-zh.md)

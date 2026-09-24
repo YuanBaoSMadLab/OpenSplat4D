@@ -1,7 +1,14 @@
+# Copyright OpenSplat4D 2026 All Rights Reserved.
 #!/usr/bin/env python3
 """
 Patch reference plugin .uasset files for OpenSplat4D.
 Replaces class paths, module names, and asset paths (same-length via NUL padding).
+
+Provenance: the source assets are taken from
+  teachers/GaussianSplattingForUnrealEngine/Content/Niagara/*.uasset
+i.e. Italink's GaussianSplattingForUnrealEngine (MIT, Copyright (c) 2023 Italink).
+The patched output under OpenSplat4D/Content/ is a derivative of those files, so the
+upstream MIT notice applies to it - see THIRD-PARTY-LICENSES.md.
 """
 import sys
 from pathlib import Path

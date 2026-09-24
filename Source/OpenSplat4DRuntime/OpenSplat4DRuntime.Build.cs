@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 using System.IO;
 using UnrealBuildTool;
 
@@ -54,6 +55,13 @@ public class OpenSplat4DRuntime : ModuleRules
 
 		// Shader 源码路径：UE 自动从 Plugins/<Name>/Shaders 查找 .usf 文件。
 		// 这里同时把 Private 目录加入 include 路径，方便 Shader 头文件引用。
-		PrivateIncludePaths.AddRange(new string[] { "OpenSplat4DRuntime/Private" });
+		// ThirdParty 是第三方 C++ 源码目录（Fab Technical Review Checklist 要求
+		// 第三方 C++ 代码放在 Source 下的 ThirdParty 里），加入 include 路径后
+		// `#include "Compression/Spz.h"` 依旧可解析。
+		PrivateIncludePaths.AddRange(new string[]
+		{
+			"OpenSplat4DRuntime/Private",
+			"OpenSplat4DRuntime/ThirdParty"
+		});
 	}
 }

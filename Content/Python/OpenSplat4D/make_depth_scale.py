@@ -1,3 +1,4 @@
+# Copyright OpenSplat4D 2026 All Rights Reserved.
 #-*- coding: utf-8 -*-
 #
 # make_depth_scale.py  (OpenSplat4D enhanced edition)
@@ -39,6 +40,13 @@ import json
 import time
 from joblib import delayed, Parallel
 
+# COLMAP's read_write_model.py is third-party Python code, so (per the Fab
+# Technical Review Checklist) it is vendored under
+# Content/Python/Lib/site-packages/ instead of living next to these scripts.
+_SITE_PACKAGES = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "Lib", "site-packages"))
+if _SITE_PACKAGES not in sys.path:
+    sys.path.insert(0, _SITE_PACKAGES)
 # Keep the reference COLMAP model reader (unchanged, standard ETH utility).
 from read_write_model import *
 

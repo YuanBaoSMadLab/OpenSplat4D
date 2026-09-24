@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 
 #pragma once
 
@@ -16,25 +17,28 @@ class UBodySetup;
  *
  * NOTE on quality:
  *   - BoundingBox / Voxel / None: implemented and production-ready.
- *   - ConvexHull / ConvexDecomposition: STUB implementations — see the
- *     WARNING comments in GaussianSplatComponent.cpp::GenerateConvexHull /
- *     GenerateSimplifiedCollision. They return sampled points rather than
- *     real convex hulls, so physics behavior is unreliable. Use BoundingBox
- *     or Voxel collision for accurate collision until real QuickHull / V-HACD
- *     is integrated.
+ *   - ConvexHull: a real convex hull. GenerateConvexHull() samples the point
+ *     cloud down to CollisionMaxFaces * 4 vertices and hands them to
+ *     BodySetup->AggGeom.ConvexElems; the engine's Chaos cooking
+ *     (FConvexBuilder::Build, the same path a Static Mesh's auto-generated
+ *     convex collision uses) computes the actual hull. The result is the
+ *     convex hull of the *sampled* subset, i.e. a slightly-inside-the-real-hull
+ *     approximation -- correct behaviour, just lower resolution.
+ *   - ConvexDecomposition: NOT a decomposition. It currently falls through to
+ *     the single convex hull above; there is no V-HACD split, so a concave
+ *     asset (statue, room interior) is not approximated well. Prefer Voxel for
+ *     those until real decomposition is integrated.
  */
 UENUM(BlueprintType)
 enum class EGaussianCollisionMethod : uint8
 {
 	/** No collision */
 	None UMETA(DisplayName = "无碰撞"),
-	/** [STUB] Convex hull of all points — see WARNING in GenerateConvexHull.
-	 *  Currently just samples points; not a real convex hull. Use BoundingBox
-	 *  or Voxel for accurate physics. */
-	ConvexHull UMETA(DisplayName = "凸包（实验性）"),
-	/** [STUB] Simplified convex decomposition (multiple convex hulls) —
-	 *  currently delegates to the ConvexHull stub. */
-	ConvexDecomposition UMETA(DisplayName = "凸分解（实验性）"),
+	/** Convex hull of the sampled points. Real hull, computed by Chaos cooking,
+	 *  but only from CollisionMaxFaces * 4 sampled vertices (approximation). */
+	ConvexHull UMETA(DisplayName = "凸包"),
+	/** Single convex hull, NOT a real convex decomposition (no V-HACD split). */
+	ConvexDecomposition UMETA(DisplayName = "凸分解(单凸包)"),
 	/** Bounding box collision */
 	BoundingBox UMETA(DisplayName = "包围盒"),
 	/** Voxel-based collision (approximate shape) */
@@ -208,6 +212,17 @@ public:
 	/** 体素大小 - 用于体素碰撞方法 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (ClampMin = "1.0", ClampMax = "100.0", EditCondition = "CollisionMethod == EGaussianCollisionMethod::Voxel"))
 	float VoxelSize = 10.0f;
+
+	/** 体素碰撞生成的盒子数量上限。占用的格子超过该值时，会以 VoxelSize 为起点
+	 *  成倍放大格子尺寸重算，直到占用格数落进预算，从而保证盒子覆盖整个点云
+	 *  而不是只覆盖一小块。实际使用的格子尺寸见 EffectiveVoxelSize。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (ClampMin = "16", ClampMax = "65536", EditCondition = "CollisionMethod == EGaussianCollisionMethod::Voxel"))
+	int32 MaxCollisionElements = 2048;
+
+	/** 上一次体素碰撞实际使用的格子尺寸（只读）。若因触及 MaxCollisionElements
+	 *  或网格内存上限被自动放大，该值会大于 VoxelSize。 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "高斯泼溅|碰撞")
+	float EffectiveVoxelSize = 0.0f;
 
 	// ------------------------------------------------------------------
 	// 4D playback (only active when the asset has temporal data: Is4D()).

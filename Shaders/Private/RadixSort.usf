@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 // GPU Radix Sort - 8-bit LSD, SM5 compatible
 // 4 passes processing bits 0-7, 8-15, 16-23, 24-31
 // Each pass: CountCS -> PrefixSumCS -> DigitPrefixSumCS -> ScatterCS

@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DSettings.h"
 
 #include "Misc/Paths.h"
@@ -16,27 +17,32 @@ namespace
 		return FString();
 	}
 
-	// Resolve the plugin's bundled ThirdParty directory, e.g.
+	// Resolve the optional local ThirdParty drop-in directory, e.g.
 	//   <Project>/Plugins/OpenSplat4D/ThirdParty/
+	// This folder is NOT shipped with the plugin: it is only used as a fallback
+	// when the user drops their own COLMAP / Python / training repo copies there
+	// instead of pointing the settings at them explicitly.
 	static FString GetPluginThirdPartyDir()
 	{
 		const FString Base = GetPluginBaseDir();
 		return Base.IsEmpty() ? FString() : (Base / TEXT("ThirdParty"));
 	}
 
-	// Resolve the plugin's bundled Scripts directory, e.g.
-	//   <Project>/Plugins/OpenSplat4D/Scripts/
-	static FString GetPluginScriptsDir()
+	// Resolve the plugin's Python directory (the orchestrator scripts that DO
+	// ship with the plugin), e.g.
+	//   <Project>/Plugins/OpenSplat4D/Content/Python/OpenSplat4D/
+	static FString GetPluginPythonDir()
 	{
 		const FString Base = GetPluginBaseDir();
-		return Base.IsEmpty() ? FString() : (Base / TEXT("Scripts"));
+		return Base.IsEmpty() ? FString() : (Base / TEXT("Content/Python/OpenSplat4D"));
 	}
 
-	// The plugin's own bundled copies (so the pipeline works out-of-the-box once
-	// the user drops the official binaries / repos into ThirdParty/):
-	//   <Plugin>/ThirdParty/colmap/colmap.exe
-	//   <Plugin>/ThirdParty/gaussian-splatting/        (Inria 3DGS)
-	//   <Plugin>/ThirdParty/4d-gaussian-splatting/     (4DGS)
+	// Optional local drop-in locations, used ONLY when the user did not point the
+	// corresponding setting at their own copy. None of these ship with the plugin
+	// (the training pipeline and its runtime are the user's own responsibility):
+	//   <Plugin>/ThirdParty/colmap/colmap.exe        (optional local COLMAP)
+	//   <Plugin>/ThirdParty/gaussian-splatting/      (optional local Inria 3DGS)
+	//   <Plugin>/ThirdParty/4d-gaussian-splatting/   (optional local 4DGS)
 	static FString GetBundledColmapPath()
 	{
 		const FString TP = GetPluginThirdPartyDir();
@@ -62,10 +68,9 @@ namespace
 		return FString();
 	}
 
-	// The plugin's own bundled Python interpreter, shipped inside ThirdParty/Python
-	// and built once via install_env.bat / build_ext.bat. We ship a fixed Python
-	// so the CUDA extensions (_C.pyd) are always ABI-compatible with it, and the
-	// end user is never required to have conda / a compatible system Python.
+	// Optional local Python interpreter drop-in. The plugin does NOT ship a Python
+	// runtime: training needs the user's own interpreter (system Python, venv or
+	// conda env) with torch+cu128 and the locally compiled CUDA extensions.
 	//   <Plugin>/ThirdParty/Python/python.exe
 	static FString GetBundledPythonPath()
 	{
@@ -92,9 +97,6 @@ void UOpenSplat4DSettings::PostInitProperties()
 	GaussianSplattingRepoDirConfig = GaussianSplattingRepoDir.Path;
 	GaussianSplatting4DRepoDirConfig = GaussianSplatting4DRepoDir.Path;
 	HelperScriptPathConfig = HelperScriptPath.FilePath;
-
-	// Apply the persisted UI language (defaults to Chinese) to the global state.
-	OpenSplat4DLocalization::SetUILanguage(UISLanguage);
 }
 
 void UOpenSplat4DSettings::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
@@ -105,11 +107,6 @@ void UOpenSplat4DSettings::PostEditChangeProperty(struct FPropertyChangedEvent& 
 	GaussianSplattingRepoDirConfig = GaussianSplattingRepoDir.Path;
 	GaussianSplatting4DRepoDirConfig = GaussianSplatting4DRepoDir.Path;
 	HelperScriptPathConfig = HelperScriptPath.FilePath;
-
-	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UOpenSplat4DSettings, UISLanguage))
-	{
-		OpenSplat4DLocalization::SetUILanguage(UISLanguage);
-	}
 }
 
 FString UOpenSplat4DSettings::GetPythonExecutablePath() const
@@ -120,39 +117,38 @@ FString UOpenSplat4DSettings::GetPythonExecutablePath() const
 	{
 		return PythonExecutablePathConfig;
 	}
-	// 2) Default to the plugin's OWN bundled Python, shipped inside
-	//    ThirdParty/Python. We deliberately do NOT rely on "conda activate <env>"
-	//    or a bare "python" from PATH: a distributed plugin must not assume the
-	//    end user has conda installed, nor that PATH's python is ABI-compatible
-	//    with the CUDA extensions (_C.pyd) compiled against the bundled torch.
-	//    The bundled copy is built once by install_env.bat / build_ext.bat and
-	//    travels with the plugin.
+	// 2) Fall back to an optional local drop-in (<Plugin>/ThirdParty/Python).
+	//    Nothing ships with the plugin, so this only resolves when the developer
+	//    placed an interpreter there themselves. We deliberately do NOT rely on
+	//    "conda activate <env>" or a bare "python" from PATH here: the settings
+	//    value is what the pipeline is told to use, so it must be an explicit
+	//    path the user chose (step 1) or a file we can see exists.
 	const FString Bundled = GetBundledPythonPath();
 	if (FPaths::FileExists(Bundled))
 	{
 		return Bundled;
 	}
 	// 3) Neither exists: return empty so the editor shows an actionable error
-	//    telling the user to either set PythonExecutablePath or run
-	//    install_env.bat to populate ThirdParty/Python.
+	//    telling the user to set PythonExecutablePath in
+	//    Project Settings > OpenSplat4D.
 	return FString();
 }
 
 FString UOpenSplat4DSettings::GetColmapExecutablePath() const
 {
-	// 1) A user-specified path always wins over the bundled copy.
+	// 1) A user-specified path always wins over the optional local drop-in.
 	if (!ColmapExecutablePathConfig.IsEmpty())
 	{
 		return ColmapExecutablePathConfig;
 	}
-	// 2) Otherwise default to the plugin's own bundled colmap.exe.
+	// 2) Otherwise use an optional local COLMAP under <Plugin>/ThirdParty/colmap.
 	const FString Bundled = GetBundledColmapPath();
 	if (FPaths::FileExists(Bundled))
 	{
 		return Bundled;
 	}
 	// 3) Neither exists: return empty so the editor can remind the user to
-	//    either specify a path in settings or drop colmap into ThirdParty/colmap/.
+	//    specify ColmapExecutablePath in Project Settings > OpenSplat4D.
 	return FString();
 }
 
@@ -162,14 +158,14 @@ FString UOpenSplat4DSettings::GetHelperScriptPath() const
 	{
 		return HelperScriptPathConfig;
 	}
-	// Default to the plugin's bundled helper script.
-	const FString ScriptsDir = GetPluginScriptsDir();
-	return ScriptsDir.IsEmpty() ? FString() : (ScriptsDir / TEXT("openplat4d_helper.py"));
+	// Default to the orchestrator script that ships inside Content/Python.
+	const FString PythonDir = GetPluginPythonDir();
+	return PythonDir.IsEmpty() ? FString() : (PythonDir / TEXT("openplat4d_helper.py"));
 }
 
 FString UOpenSplat4DSettings::Get3DGSRepoDir() const
 {
-	// 1) User-specified repo wins. 2) Fall back to the bundled 3DGS repo.
+	// 1) User-specified repo wins. 2) Fall back to an optional local drop-in.
 	if (!GaussianSplattingRepoDirConfig.IsEmpty())
 	{
 		return GaussianSplattingRepoDirConfig;
@@ -184,7 +180,7 @@ FString UOpenSplat4DSettings::Get3DGSRepoDir() const
 
 FString UOpenSplat4DSettings::Get4DGSRepoDir() const
 {
-	// 1) User-specified repo wins. 2) Fall back to the bundled 4DGS repo.
+	// 1) User-specified repo wins. 2) Fall back to an optional local drop-in.
 	if (!GaussianSplatting4DRepoDirConfig.IsEmpty())
 	{
 		return GaussianSplatting4DRepoDirConfig;

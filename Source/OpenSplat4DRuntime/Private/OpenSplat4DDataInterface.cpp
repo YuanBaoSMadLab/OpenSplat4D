@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DDataInterface.h"
 #include "NiagaraCompileHashVisitor.h"
 #include "NiagaraShaderParametersBuilder.h"

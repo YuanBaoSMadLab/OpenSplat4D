@@ -1,3 +1,4 @@
+# Copyright OpenSplat4D 2026 All Rights Reserved.
 """
 在 GPU Compute Script 图中添加 DI 函数调用节点。
 """

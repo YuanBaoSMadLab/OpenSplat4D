@@ -1,3 +1,4 @@
+# Copyright OpenSplat4D 2026 All Rights Reserved.
 """
 Create NS_OpenSplat4D Niagara System from scratch using UE Python API.
 Called from OpenSplat4DNiagaraSetup when the bundled template is incompatible.

@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DStep.h"
 #include "OpenSplat4DSettings.h"
 #include "OpenSplat4DEditorLibrary.h"
@@ -393,7 +394,7 @@ void UOpenSplat4DStep_Capture::ScanToPointCloud()
 
 	if (Actors.Num() == 0)
 	{
-		FNotificationInfo Info(OS4D_TEXT("ScanSelectFirst"));
+		FNotificationInfo Info(OS4D_TEXT("Select one or more actors in the viewport first, then click 'Scan to Point Cloud'."));
 		Info.ExpireDuration = 6.f;
 		Info.bUseSuccessFailIcons = true;
 		if (TSharedPtr<SNotificationItem> N = FSlateNotificationManager::Get().AddNotification(Info))
@@ -407,7 +408,7 @@ void UOpenSplat4DStep_Capture::ScanToPointCloud()
 		World, Actors, ScanMode, ScanDensity, ScanPointScale, ScanSaveDir);
 	if (!Cloud)
 	{
-		FNotificationInfo Info(OS4D_TEXT("ScanNoPoints"));
+		FNotificationInfo Info(OS4D_TEXT("The scan produced no points. Mesh Surface needs static-mesh actors selected; for characters / terrain / blueprints switch to 'Camera Depth Scan'."));
 		Info.ExpireDuration = 8.f;
 		Info.bUseSuccessFailIcons = true;
 		if (TSharedPtr<SNotificationItem> N = FSlateNotificationManager::Get().AddNotification(Info))
@@ -443,7 +444,7 @@ void UOpenSplat4DStep_Capture::ScanToPointCloud()
 	const FString AbsFile = FPackageName::LongPackageNameToFilename(
 		ScanSaveDir / Cloud->GetName(), FPackageName::GetAssetPackageExtension());
 	const FText Msg = FText::Format(
-		OpenSplat4DLocalization::GetText(TEXT("ScanDone {0} {1}")),
+		OpenSplat4DLocalization::GetText(TEXT("Scan finished: {0} points, saved as a UE asset to {1} (the Content Browser has been synced; note this is a .uasset asset, not the captured-images folder).")),
 		FText::AsNumber(Cloud->GetPointCount()),
 		FText::FromString(AbsFile));
 	FNotificationInfo Info(Msg);

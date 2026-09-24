@@ -1,3 +1,4 @@
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 #include "OpenSplat4DSplatActor.h"
 #include "Misc/EngineVersionComparison.h"
 #include "Engine/StaticMesh.h"

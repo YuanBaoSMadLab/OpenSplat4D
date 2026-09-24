@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright OpenSplat4D 2026 All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -25,7 +26,9 @@ public class NanoGSEditor : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"NanoGS",
-				"OpenSplat4DRuntime"
+				"OpenSplat4DRuntime",
+				// FMeshDescription is part of the proxy mesh builder's interface.
+				"MeshDescription"
 			}
 		);
 
@@ -46,7 +49,12 @@ public class NanoGSEditor : ModuleRules
 					"AdvancedPreviewScene",
 					"EditorStyle",
 					"ComponentVisualizers",
-					"WorkspaceMenuStructure"
+					"WorkspaceMenuStructure",
+					// FStaticMeshAttributes lives in StaticMeshDescription.
+					"StaticMeshDescription",
+					// Editor-only Chaos fracture support (proxy mesh -> GeometryCollection).
+					// NanoGS (Runtime) must never depend on this.
+					"GeometryCollectionEngine"
 				}
 			);
 
