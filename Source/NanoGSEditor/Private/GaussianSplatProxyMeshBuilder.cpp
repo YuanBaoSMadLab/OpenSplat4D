@@ -722,6 +722,10 @@ FGaussianSplatProxyMeshResult FGaussianSplatProxyMeshBuilder::BuildMeshDescripti
 	return Result;
 }
 
+// [废弃管线 · 已停用] 旧做法：把代理网格存成独立 UStaticMesh 资产，再由碰撞组件去引用。
+// 现行管线：体素壳以 FByteBulkData 直接内嵌在 UGaussianSplatFractureAsset 里（BuildVoxelShell）。
+// 该函数已无调用点，保留代码仅作参考，请勿启用。
+#if 0
 UStaticMesh* FGaussianSplatProxyMeshBuilder::CreateProxyMeshAsset(
 	const UGaussianSplatAsset* Asset,
 	const FGaussianSplatProxyMeshParams& Params,
@@ -807,6 +811,7 @@ UStaticMesh* FGaussianSplatProxyMeshBuilder::CreateProxyMeshAsset(
 	OutError.Reset();
 	return Mesh;
 }
+#endif // 0 — 废弃管线（CreateProxyMeshAsset）
 
 bool FGaussianSplatProxyMeshBuilder::ExtractTriangleSoup(
 	const FMeshDescription& Mesh,

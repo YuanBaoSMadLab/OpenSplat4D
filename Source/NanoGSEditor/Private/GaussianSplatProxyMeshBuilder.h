@@ -84,16 +84,14 @@ public:
 		const FGaussianSplatProxyMeshParams& Params,
 		FMeshDescription& OutMesh);
 
-	/**
-	 * Build the proxy mesh and create + save a UStaticMesh asset in the same
-	 * content folder as the source asset, named "<Asset>_Proxy".
-	 * @return The new asset, or nullptr (OutError holds the reason).
-	 */
-	static UStaticMesh* CreateProxyMeshAsset(
-		const UGaussianSplatAsset* Asset,
-		const FGaussianSplatProxyMeshParams& Params,
-		FString& OutError,
-		FGaussianSplatProxyMeshResult* OutResult = nullptr);
+	// [废弃管线 · 已停用] 旧做法是把代理网格存成独立 UStaticMesh 资产（"<Asset>_Proxy"）。
+	// 现行管线：体素壳直接内嵌进 UGaussianSplatFractureAsset（见 BuildVoxelShell），
+	// 不再产生任何 StaticMesh 资产。此入口已无调用点，仅注释保留以防误用。
+	// static UStaticMesh* CreateProxyMeshAsset(
+	// 	const UGaussianSplatAsset* Asset,
+	// 	const FGaussianSplatProxyMeshParams& Params,
+	// 	FString& OutError,
+	// 	FGaussianSplatProxyMeshResult* OutResult = nullptr);
 
 	/**
 	 * Extract a raw triangle soup out of a built proxy mesh: welded vertex
