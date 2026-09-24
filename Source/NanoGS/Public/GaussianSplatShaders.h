@@ -62,6 +62,10 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, UseClusterCulling)
 		SHADER_PARAMETER(uint32, UseLODRendering)  // 1 = enable LOD rendering (unified approach)
 		SHADER_PARAMETER(uint32, OriginalSplatCount)  // Count of original splats (LOD splats start after)
+		// Fracture cap splats are appended after the LOD splats, i.e. they live
+		// in [CapSplatStartIndex, SplatCount). CapSplatStartIndex == SplatCount
+		// when the asset has no caps, so the tests below are always false then.
+		SHADER_PARAMETER(uint32, CapSplatStartIndex)
 		// Compaction mode: process only visible splats from CompactedSplatIndices
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, CompactedSplatIndices)
 		SHADER_PARAMETER(uint32, UseCompaction)  // 1 = use compacted indices
@@ -132,6 +136,11 @@ class FCompactSplatsCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, TotalSplatCount)
 		SHADER_PARAMETER(uint32, OriginalSplatCount)
 		SHADER_PARAMETER(uint32, UseLODRendering)
+		// Fracture caps live in [CapSplatStartIndex, TotalSplatCount). They never
+		// consult the cluster buffers, so they only enter the compacted list when
+		// the fracture is actually displaced (FractureCapsVisible != 0).
+		SHADER_PARAMETER(uint32, CapSplatStartIndex)
+		SHADER_PARAMETER(uint32, FractureCapsVisible)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

@@ -4,11 +4,13 @@
 #include "GaussianSplatBoneBinder.h"
 
 #include "GaussianSplatAsset.h"
+#include "GaussianDataTypes.h"
 
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "GeometryCollection/GeometryCollectionObject.h"
 
+#include "Math/RandomStream.h"
 #include "Misc/ScopeExit.h"
 
 namespace
@@ -16,13 +18,26 @@ namespace
 	/** 3 floats per splat position, same packing the renderer uploads. */
 	constexpr int32 BindPositionStride = 12;
 
+	/** 7 floats per splat in the rotation/scale block (quat XYZW + scale XYZ). */
+	constexpr int32 BindOtherStride = 28;
+	constexpr int32 BindOtherFloats = BindOtherStride / (int32)sizeof(float);
+
 	/** Hard cap on the uniform lookup grid per axis. */
 	constexpr int32 BindMaxCellsPerAxis = 512;
+
+	/** Caps must not be more transparent than this, otherwise the freshly
+	 *  exposed section reads as a hole again. */
+	constexpr float BindMinCapOpacity = 0.5f;
 
 	/** The attribute the engine writes for every fracturable bone; it is a
 	 *  private literal in GeometryCollectionPhysicsProxy.cpp, so it has to be
 	 *  repeated here. Missing on hand built collections, hence optional. */
 	const FName MassToLocalAttributeName(TEXT("MassToLocal"));
+
+	/** Set by the planar cut tools on every triangle they create, so a piece's
+	 *  exposed section is exactly its "Internal" face set. Also a private
+	 *  literal in the engine, see GeometryCollectionSelectionNodes.cpp. */
+	const FName InternalAttributeName(TEXT("Internal"));
 
 	FORCEINLINE bool IsFinitePosition(const float* P)
 	{
@@ -214,6 +229,26 @@ namespace
 
 		return true;
 	}
+
+	/**
+	 * Cut surface census of one piece, built from the "Internal" faces of the
+	 * geometry it owns. Faces are already the triangle soup the renderer needs,
+	 * so they are kept as an area weighted CDF to sample caps from.
+	 */
+	struct FPieceCapSource
+	{
+		/** Component space area of the piece's visible cut faces. */
+		double InternalArea = 0.0;
+
+		/** Component space area of the piece's visible external faces. */
+		double ExternalArea = 0.0;
+
+		/** Cut face indices, ascending, one CDF step per entry. */
+		TArray<int32> InternalFaces;
+
+		/** Area weighted CDF over InternalFaces, ascending in (0, 1]. */
+		TArray<double> InternalCdf;
+	};
 }
 
 FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
@@ -315,6 +350,10 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 	TArray<FPieceObb> Pieces;
 	Pieces.Reserve(GeometryCount);
 
+	/** Geometry index -> piece index, INDEX_NONE for skipped geometries. */
+	TArray<int32> GeometryToPiece;
+	GeometryToPiece.Init(INDEX_NONE, GeometryCount);
+
 	const float MinHalfExtent = FMath::Max(Params.MinExtentCm, 0.0f);
 	for (int32 GeomIdx = 0; GeomIdx < GeometryCount; ++GeomIdx)
 	{
@@ -360,6 +399,7 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 		FBox Aabb(Piece.Center - AabbExtent, Piece.Center + AabbExtent);
 		Piece.ComponentAabb = Aabb;
 
+		GeometryToPiece[GeomIdx] = Pieces.Num();
 		Pieces.Add(Piece);
 	}
 
@@ -384,20 +424,148 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 		TransformCount, Pieces.Num(), Grid.Size.X, Grid.Size.Y, Grid.Size.Z, Grid.CellSize);
 
 	// ------------------------------------------------------------------------
+	// Cut surface census. Every triangle the planar cut tools create is flagged
+	// "Internal", so the exposed section of a piece is exactly its internal face
+	// set. Areas are measured in component space so the splat density below has
+	// the same units as the piece's own surface.
+	// ------------------------------------------------------------------------
+	const TManagedArray<bool>* InternalFaceAttr =
+		GC.FindAttribute<bool>(InternalAttributeName, FGeometryCollection::FacesGroup);
+	const bool bHasInternalFaceAttr = (InternalFaceAttr != nullptr);
+
+	// Vertex positions live in bone local space (see GeometryCollection.h); the
+	// BoneMap indirection maps them to the transform that places them in
+	// component space, i.e. the same space the piece OBBs use above.
+	auto ComponentSpaceVertex = [&GC, &ComponentSpaceTransforms](int32 VertexIdx) -> FVector
+	{
+		const FVector3f& Local = GC.Vertex[VertexIdx];
+		const int32 VertexBone = GC.BoneMap.IsValidIndex(VertexIdx) ? GC.BoneMap[VertexIdx] : INDEX_NONE;
+		if (!ComponentSpaceTransforms.IsValidIndex(VertexBone))
+		{
+			return FVector(Local.X, Local.Y, Local.Z);
+		}
+		return ComponentSpaceTransforms[VertexBone].TransformPosition(FVector(Local.X, Local.Y, Local.Z));
+	};
+
+	TArray<FPieceCapSource> CapSources;
+	CapSources.SetNum(Pieces.Num());
+
+	int32 InternalFaceTotal = 0;
+	for (int32 GeomIdx = 0; GeomIdx < GeometryCount; ++GeomIdx)
+	{
+		const int32 PieceIdx = GeometryToPiece[GeomIdx];
+		if (PieceIdx == INDEX_NONE || GC.FaceCount[GeomIdx] <= 0)
+		{
+			continue;
+		}
+
+		const int32 FaceBegin = GC.FaceStart[GeomIdx];
+		const int32 FaceEnd = FaceBegin + GC.FaceCount[GeomIdx];
+		FPieceCapSource& Source = CapSources[PieceIdx];
+
+		for (int32 FaceIdx = FMath::Max(FaceBegin, 0); FaceIdx < FaceEnd; ++FaceIdx)
+		{
+			// Hidden faces (cut away by a previous boolean step) cannot show a
+			// section, so they neither carry area nor contribute samples.
+			if (!GC.Indices.IsValidIndex(FaceIdx) || !GC.Visible[FaceIdx])
+			{
+				continue;
+			}
+
+			// "Internal" is authoritative; the odd MaterialID encoding is the
+			// legacy convention and is only consulted when the attribute is
+			// absent (see GeometryCollectionEngineConversion.cpp).
+			const bool bInternalFace = bHasInternalFaceAttr
+				? (*InternalFaceAttr)[FaceIdx]
+				: ((GC.MaterialID[FaceIdx] & 1) != 0);
+
+			const FIntVector& Tri = GC.Indices[FaceIdx];
+			if (!GC.Vertex.IsValidIndex(Tri.X) || !GC.Vertex.IsValidIndex(Tri.Y) || !GC.Vertex.IsValidIndex(Tri.Z))
+			{
+				continue;
+			}
+
+			const FVector V0 = ComponentSpaceVertex(Tri.X);
+			const FVector V1 = ComponentSpaceVertex(Tri.Y);
+			const FVector V2 = ComponentSpaceVertex(Tri.Z);
+			const double Area = FVector::CrossProduct(V1 - V0, V2 - V0).Size() * 0.5;
+
+			if (bInternalFace)
+			{
+				Source.InternalArea += Area;
+				Source.InternalFaces.Add(FaceIdx);
+			}
+			else
+			{
+				Source.ExternalArea += Area;
+			}
+		}
+
+		if (Source.InternalFaces.Num() == 0)
+		{
+			continue;
+		}
+
+		// Area weighted sampling CDF, normalised to (0, 1].
+		Source.InternalCdf.SetNumUninitialized(Source.InternalFaces.Num());
+		double Running = 0.0;
+		for (int32 FaceStep = 0; FaceStep < Source.InternalFaces.Num(); ++FaceStep)
+		{
+			const FIntVector& Tri = GC.Indices[Source.InternalFaces[FaceStep]];
+			const FVector V0 = ComponentSpaceVertex(Tri.X);
+			const FVector V1 = ComponentSpaceVertex(Tri.Y);
+			const FVector V2 = ComponentSpaceVertex(Tri.Z);
+			Running += FVector::CrossProduct(V1 - V0, V2 - V0).Size() * 0.5;
+			Source.InternalCdf[FaceStep] = Running;
+		}
+
+		if (Running > UE_DOUBLE_SMALL_NUMBER)
+		{
+			Source.InternalArea = Running;
+			for (double& Cdf : Source.InternalCdf)
+			{
+				Cdf /= Running;
+			}
+		}
+		else
+		{
+			// Sliver cut faces with no measurable area: sample them uniformly so
+			// the piece still gets its minimum number of caps.
+			Source.InternalArea = 0.0;
+			for (int32 FaceStep = 0; FaceStep < Source.InternalCdf.Num(); ++FaceStep)
+			{
+				Source.InternalCdf[FaceStep] = (double)(FaceStep + 1) / (double)Source.InternalCdf.Num();
+			}
+		}
+
+		InternalFaceTotal += Source.InternalFaces.Num();
+	}
+
+	// ------------------------------------------------------------------------
 	// Per splat assignment. Zero copy streaming read of the position block: a
 	// 100M splat asset must never materialise a TArray<FVector>.
 	// ------------------------------------------------------------------------
 	int64 DataSize = 0;
 	const uint8* Data = static_cast<const uint8*>(Asset->LockPositionDataReadOnly(&DataSize));
+	// Rotation/scale and colour are only read to give the cut surface splats a
+	// plausible look; a missing or truncated block only means caps fall back to
+	// defaults, so neither lock is fatal.
+	int64 OtherDataSize = 0;
+	const uint8* OtherData = static_cast<const uint8*>(Asset->LockOtherDataReadOnly(&OtherDataSize));
+	int64 ColorDataSize = 0;
+	const uint8* ColorData = static_cast<const uint8*>(Asset->LockColorTextureDataReadOnly(&ColorDataSize));
+	ON_SCOPE_EXIT
+	{
+		Asset->UnlockPositionData();
+		Asset->UnlockOtherData();
+		Asset->UnlockColorTextureData();
+	};
+
 	if (!Data)
 	{
 		Result.Error = TEXT("无法锁定位置数据（bulk data 为空或已被占用）。");
 		return Result;
 	}
-	ON_SCOPE_EXIT
-	{
-		Asset->UnlockPositionData();
-	};
 
 	const int64 ExpectedSize = (int64)SplatCount * BindPositionStride;
 	if (DataSize < ExpectedSize)
@@ -408,6 +576,16 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 	}
 
 	const float* PositionData = reinterpret_cast<const float*>(Data);
+
+	const float* OtherFloats = (OtherData && OtherDataSize >= (int64)SplatCount * BindOtherStride)
+		? reinterpret_cast<const float*>(OtherData)
+		: nullptr;
+
+	const int32 ColorTexWidth = Asset->ColorTextureWidth;
+	const int32 ColorTexHeight = Asset->ColorTextureHeight;
+	const FFloat16Color* ColorPixels = (ColorData && ColorDataSize > 0 && ColorTexWidth > 0 && ColorTexHeight > 0)
+		? reinterpret_cast<const FFloat16Color*>(ColorData)
+		: nullptr;
 
 	auto ResolveBone = [&Grid, &Pieces, &Params](const FVector& P, bool& bOutOutsideBody) -> int32
 	{
@@ -495,6 +673,22 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 		BoneToPiece[Pieces[PieceIdx].BoneIndex] = PieceIdx;
 	}
 
+	// Cap look-up tables. A cap splat has to look like the surface it was cut
+	// from, so the average colour, opacity and splat size of every piece are
+	// accumulated while its splats stream past anyway.
+	TArray<FVector> PieceColorSum;
+	TArray<double> PieceOpacitySum;
+	TArray<double> PieceScaleSum;
+	PieceColorSum.SetNumZeroed(Pieces.Num());
+	PieceOpacitySum.SetNumZeroed(Pieces.Num());
+	PieceScaleSum.SetNumZeroed(Pieces.Num());
+
+	FVector GlobalColorSum = FVector::ZeroVector;
+	double GlobalOpacitySum = 0.0;
+	double GlobalScaleSum = 0.0;
+	int64 ColorSampleCount = 0;
+	int64 ScaleSampleCount = 0;
+
 	int32 BoundSplatCount = 0;
 	int32 CoarseSplatCount = 0;
 	int32 NonFiniteCount = 0;
@@ -536,6 +730,41 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 			if (PieceIdx != INDEX_NONE)
 			{
 				++PieceUseCount[PieceIdx];
+
+				if (OtherFloats)
+				{
+					const float* SplatScale = OtherFloats + (int64)Index * BindOtherFloats + 4;
+					const double ScaleAvg =
+						((double)SplatScale[0] + (double)SplatScale[1] + (double)SplatScale[2]) / 3.0;
+					if (FMath::IsFinite(ScaleAvg) && ScaleAvg > 0.0)
+					{
+						PieceScaleSum[PieceIdx] += ScaleAvg;
+						GlobalScaleSum += ScaleAvg;
+						++ScaleSampleCount;
+					}
+				}
+
+				if (ColorPixels)
+				{
+					int32 TexX = 0;
+					int32 TexY = 0;
+					GaussianSplattingUtils::SplatIndexToTextureCoord(Index, ColorTexWidth, TexX, TexY);
+					if (TexY < ColorTexHeight)
+					{
+						const FFloat16Color& Pixel = ColorPixels[TexY * ColorTexWidth + TexX];
+						const FVector Rgb(
+							FMath::Clamp(Pixel.R.GetFloat(), 0.0f, 1.0f),
+							FMath::Clamp(Pixel.G.GetFloat(), 0.0f, 1.0f),
+							FMath::Clamp(Pixel.B.GetFloat(), 0.0f, 1.0f));
+						const double Opacity = FMath::Clamp(Pixel.A.GetFloat(), 0.0f, 1.0f);
+
+						PieceColorSum[PieceIdx] += Rgb;
+						PieceOpacitySum[PieceIdx] += Opacity;
+						GlobalColorSum += Rgb;
+						GlobalOpacitySum += Opacity;
+						++ColorSampleCount;
+					}
+				}
 			}
 		}
 	}
@@ -554,7 +783,165 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 	const FVector3f BoundsMin((float)ComponentBounds.Min.X, (float)ComponentBounds.Min.Y, (float)ComponentBounds.Min.Z);
 	const FVector3f BoundsMax((float)ComponentBounds.Max.X, (float)ComponentBounds.Max.Y, (float)ComponentBounds.Max.Z);
 
-	if (!Asset->SetBoneBinding(RestBoneMatrices, SplatBoneIndices, BoundsMin, BoundsMax))
+	// ------------------------------------------------------------------------
+	// Cut surface (cap) splats. The triangles a cut creates carry no splat of
+	// their own, which is exactly why the section reads as a hole. The piece's
+	// own splat count against its external surface area gives the density the
+	// section has to match, so a section ends up about as dense as the surface
+	// it was cut from. Samples are area weighted across the piece's cut faces.
+	// ------------------------------------------------------------------------
+	TArray<FGaussianSplatCap> Caps;
+	TArray<uint32> CapBoneIndices;
+	int32 CutPieceCount = 0;
+
+	const float CapFlatness = FMath::Clamp(Params.CapFlatness, 0.01f, 1.0f);
+	const float CapDensityScale = FMath::Max(Params.CapDensityScale, 0.0f);
+	const int32 MinCapsPerCutPiece = FMath::Max(Params.MinCapsPerCutPiece, 0);
+	const int32 MaxCapsPerPiece = FMath::Max(Params.MaxCapsPerPiece, MinCapsPerCutPiece);
+	const int64 MaxCaps = FMath::Max((int64)Params.MaxCapSplatCount, 0ll);
+
+	if (MaxCaps > 0 && InternalFaceTotal > 0)
+	{
+		// Density fallback for pieces that own no splat at all, plus the look
+		// fallbacks for assets whose colour or rotation block is missing.
+		double TotalExternalArea = 0.0;
+		for (const FPieceCapSource& Source : CapSources)
+		{
+			TotalExternalArea += Source.ExternalArea;
+		}
+		const double GlobalDensity = (TotalExternalArea > UE_DOUBLE_SMALL_NUMBER && BoundSplatCount > 0)
+			? (double)BoundSplatCount / TotalExternalArea
+			: 0.0;
+		const FVector GlobalColor = (ColorSampleCount > 0)
+			? GlobalColorSum / (double)ColorSampleCount
+			: FVector(1.0, 1.0, 1.0);
+		const double GlobalOpacity = (ColorSampleCount > 0)
+			? GlobalOpacitySum / (double)ColorSampleCount
+			: 1.0;
+		double GlobalScale = (ScaleSampleCount > 0) ? GlobalScaleSum / (double)ScaleSampleCount : 0.0;
+		if (!(GlobalScale > 0.0))
+		{
+			GlobalScale = (double)Params.MinExtentCm;
+		}
+
+		for (int32 PieceIdx = 0; PieceIdx < CapSources.Num(); ++PieceIdx)
+		{
+			const FPieceCapSource& Source = CapSources[PieceIdx];
+			const int32 FaceStepCount = Source.InternalFaces.Num();
+			if (FaceStepCount == 0)
+			{
+				continue;
+			}
+			if ((int64)Caps.Num() >= MaxCaps)
+			{
+				break;
+			}
+
+			const int32 PieceUse = PieceUseCount[PieceIdx];
+			const double Density = (PieceUse > 0 && Source.ExternalArea > UE_DOUBLE_SMALL_NUMBER)
+				? (double)PieceUse / Source.ExternalArea
+				: GlobalDensity;
+
+			const int64 Wanted = (int64)FMath::RoundToDouble(Source.InternalArea * Density * (double)CapDensityScale);
+			const int64 Remaining = MaxCaps - (int64)Caps.Num();
+			int32 NumCaps = (int32)FMath::Min<int64>(
+				FMath::Clamp<int64>(Wanted, (int64)MinCapsPerCutPiece, (int64)MaxCapsPerPiece),
+				Remaining);
+			if (NumCaps <= 0)
+			{
+				continue;
+			}
+
+			const FVector CapRgb = (ColorPixels && PieceUse > 0)
+				? PieceColorSum[PieceIdx] / (double)PieceUse
+				: GlobalColor;
+			// A section must not read as a hole, so it never goes fully soft.
+			const double CapOpacity = FMath::Max(
+				(ColorPixels && PieceUse > 0) ? PieceOpacitySum[PieceIdx] / (double)PieceUse : GlobalOpacity,
+				(double)BindMinCapOpacity);
+			double CapScale = (OtherFloats && PieceUse > 0)
+				? PieceScaleSum[PieceIdx] / (double)PieceUse
+				: GlobalScale;
+			if (!(CapScale > 0.0))
+			{
+				CapScale = GlobalScale;
+			}
+
+			const uint32 CapBoneIndex = (uint32)Pieces[PieceIdx].BoneIndex;
+			const int32 FirstCapIdx = Caps.Num();
+			FRandomStream Stream(Params.CapRandomSeed + PieceIdx);
+
+			for (int32 CapIdx = 0; CapIdx < NumCaps; ++CapIdx)
+			{
+				// Area weighted triangle pick over the ascending CDF.
+				const double Pick = Stream.FRand();
+				int32 Low = 0;
+				int32 High = FaceStepCount - 1;
+				while (Low < High)
+				{
+					const int32 Mid = Low + (High - Low) / 2;
+					if (Source.InternalCdf[Mid] < Pick)
+					{
+						Low = Mid + 1;
+					}
+					else
+					{
+						High = Mid;
+					}
+				}
+
+				const FIntVector& Tri = GC.Indices[Source.InternalFaces[Low]];
+				const FVector V0 = ComponentSpaceVertex(Tri.X);
+				const FVector Edge1 = ComponentSpaceVertex(Tri.Y) - V0;
+				const FVector Edge2 = ComponentSpaceVertex(Tri.Z) - V0;
+
+				const FVector Normal = FVector::CrossProduct(Edge1, Edge2).GetSafeNormal();
+				if (Normal.IsNearlyZero())
+				{
+					continue;
+				}
+
+				// Uniform barycentric sample; folding the outer half back in
+				// keeps the distribution uniform without a rejection loop.
+				double U = Stream.FRand();
+				double V = Stream.FRand();
+				if (U + V > 1.0)
+				{
+					U = 1.0 - U;
+					V = 1.0 - V;
+				}
+				const FVector Position = V0 + Edge1 * U + Edge2 * V;
+
+				// A cap is a flat disc: its local +Z is the section normal and
+				// its Z extent is squeezed by the flatness factor.
+				FGaussianSplatCap Cap;
+				Cap.Position = FVector3f((float)Position.X, (float)Position.Y, (float)Position.Z);
+				Cap.Rotation = FQuat4f::FindBetweenNormals(
+					FVector3f(0.0f, 0.0f, 1.0f),
+					FVector3f((float)Normal.X, (float)Normal.Y, (float)Normal.Z));
+				Cap.Scale = FVector3f((float)CapScale, (float)CapScale, (float)(CapScale * (double)CapFlatness));
+				Cap.Color = FLinearColor((float)CapRgb.X, (float)CapRgb.Y, (float)CapRgb.Z, (float)CapOpacity);
+
+				Caps.Add(Cap);
+				CapBoneIndices.Add(CapBoneIndex);
+			}
+
+			if (Caps.Num() > FirstCapIdx)
+			{
+				++CutPieceCount;
+			}
+		}
+	}
+
+	// The binding validates its cap indices against the cap block, so the caps
+	// have to land first. Clearing is only worth a dirty mark when the asset
+	// actually carried caps before.
+	if (Caps.Num() > 0 || Asset->GetCapSplatCount() > 0)
+	{
+		Asset->SetFractureCaps(Caps);
+	}
+
+	if (!Asset->SetBoneBinding(RestBoneMatrices, SplatBoneIndices, BoundsMin, BoundsMax, CapBoneIndices))
 	{
 		Result.Error = TEXT("写入破裂骨头绑定失败（资产拒绝该绑定数据，详见日志）。");
 		return Result;
@@ -569,6 +956,8 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 	Result.LargestPieceCount = LargestPieceCount;
 	Result.GridSize = Grid.Size;
 	Result.CellSizeCm = Grid.CellSize;
+	Result.CutPieceCount = CutPieceCount;
+	Result.CapSplatCount = Caps.Num();
 
 	Result.Summary = FString::Printf(
 		TEXT("骨头总数: %d\n")
@@ -577,6 +966,8 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 		TEXT("碎片体外回退: %s\n")
 		TEXT("没有 splat 的碎片: %d\n")
 		TEXT("最大碎片 splat 数: %d\n")
+		TEXT("有断面的碎片: %d\n")
+		TEXT("断面填充 splat: %d\n")
 		TEXT("查找网格: %d x %d x %d @ %.2f cm\n")
 		TEXT("位置数据异常: %s"),
 		TransformCount,
@@ -585,6 +976,8 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 		*LexToString((int64)CoarseSplatCount),
 		EmptyPieceCount,
 		LargestPieceCount,
+		CutPieceCount,
+		Caps.Num(),
 		Grid.Size.X, Grid.Size.Y, Grid.Size.Z, Grid.CellSize,
 		*LexToString((int64)NonFiniteCount));
 

@@ -18,9 +18,13 @@ RWStructuredBuffer<uint> CompactedSplatIndices;    // Output: visible splat indi
 RWStructuredBuffer<uint> VisibleSplatCount;        // Output: atomic counter
 
 // Parameters
-uint TotalSplatCount;      // Total splats (original + LOD)
+uint TotalSplatCount;      // Total splats (original + LOD + fracture caps)
 uint OriginalSplatCount;   // Original splat count (LOD splats start after this)
 uint UseLODRendering;      // 1 = enable LOD skip logic
+// Fracture caps occupy [CapSplatStartIndex, TotalSplatCount) and have no
+// cluster entry, so they are handled before any cluster buffer is touched.
+uint CapSplatStartIndex;
+uint FractureCapsVisible;  // 1 = the fracture actually moved (caps may render)
 
 #ifndef THREADGROUP_SIZE
 #define THREADGROUP_SIZE 256
@@ -48,6 +52,20 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	uint splatIndex = DispatchThreadId.x;
 	if (splatIndex >= TotalSplatCount)
 	{
+		return;
+	}
+
+	// Fracture caps: no cluster data exists for them, so they bypass the cluster
+	// buffers and are visible only while the fracture is displaced. Returning
+	// early also keeps them out of VisibleSplatCount / MaxRenderBudget.
+	if (splatIndex >= CapSplatStartIndex)
+	{
+		if (FractureCapsVisible)
+		{
+			uint CapOutputIndex;
+			InterlockedAdd(VisibleSplatCount[0], 1, CapOutputIndex);
+			CompactedSplatIndices[CapOutputIndex] = splatIndex;
+		}
 		return;
 	}
 

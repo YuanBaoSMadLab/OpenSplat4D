@@ -258,14 +258,15 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	{
 		Parameters.UseClusterCulling = 1;
 		Parameters.UseLODRendering = bUseLODRendering ? 1 : 0;
-		Parameters.OriginalSplatCount = SplatCount - GPUResources->LODSplatCount;
+		Parameters.OriginalSplatCount = SplatCount - GPUResources->LODSplatCount - GPUResources->CapSplatCount;
 	}
 	else
 	{
 		Parameters.UseClusterCulling = 0;
 		Parameters.UseLODRendering = 0;
-		Parameters.OriginalSplatCount = SplatCount;
+		Parameters.OriginalSplatCount = SplatCount - GPUResources->CapSplatCount;
 	}
+	Parameters.CapSplatStartIndex = (uint32)(SplatCount - GPUResources->CapSplatCount);
 
 	// Cast to FViewInfo to access PrevViewInfo for velocity calculation
 	const FViewInfo& ViewInfo = static_cast<const FViewInfo&>(View);
@@ -820,8 +821,12 @@ void FGaussianSplatRenderer::DispatchCompactSplats(
 	Parameters.CompactedSplatIndices = GPUResources->CompactedSplatIndicesBufferUAV;
 	Parameters.VisibleSplatCount = GPUResources->VisibleSplatCountBufferUAV;
 	Parameters.TotalSplatCount = TotalSplatCount;
-	Parameters.OriginalSplatCount = OriginalSplatCount;
+	Parameters.OriginalSplatCount = OriginalSplatCount - GPUResources->CapSplatCount;
 	Parameters.UseLODRendering = bUseLODRendering ? 1 : 0;
+	// Fracture caps sit at the very end of the splat range and must never be
+	// mistaken for LOD splats (they have no cluster entry).
+	Parameters.CapSplatStartIndex = TotalSplatCount - GPUResources->CapSplatCount;
+	Parameters.FractureCapsVisible = (GPUResources->CapSplatCount > 0 && GPUResources->bFractureBonesActive) ? 1u : 0u;
 
 	const uint32 ThreadGroupSize = 256;
 	const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)TotalSplatCount, ThreadGroupSize);
@@ -934,7 +939,8 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.SelectedClusterBuffer = GPUResources->SelectedClusterBufferSRV;
 	Parameters.UseClusterCulling = 1;
 	Parameters.UseLODRendering = 0;
-	Parameters.OriginalSplatCount = OriginalSplatCount;
+	Parameters.OriginalSplatCount = OriginalSplatCount - GPUResources->CapSplatCount;
+	Parameters.CapSplatStartIndex = (uint32)(SplatCount - GPUResources->CapSplatCount);
 
 	// COMPACTION MODE: Use compacted indices
 	Parameters.CompactedSplatIndices = GPUResources->CompactedSplatIndicesBufferSRV;
@@ -1106,14 +1112,15 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	{
 		Parameters.UseClusterCulling = 1;
 		Parameters.UseLODRendering = bUseLODRendering ? 1 : 0;
-		Parameters.OriginalSplatCount = SplatCount - GPUResources->LODSplatCount;
+		Parameters.OriginalSplatCount = SplatCount - GPUResources->LODSplatCount - GPUResources->CapSplatCount;
 	}
 	else
 	{
 		Parameters.UseClusterCulling = 0;
 		Parameters.UseLODRendering = 0;
-		Parameters.OriginalSplatCount = SplatCount;
+		Parameters.OriginalSplatCount = SplatCount - GPUResources->CapSplatCount;
 	}
+	Parameters.CapSplatStartIndex = (uint32)(SplatCount - GPUResources->CapSplatCount);
 
 	Parameters.CompactedSplatIndices = GPUResources->CompactedSplatIndicesBufferSRV;
 	Parameters.UseCompaction = 0;
@@ -1588,7 +1595,8 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	Parameters.SelectedClusterBuffer     = GPUResources->SelectedClusterBufferSRV;
 	Parameters.UseClusterCulling         = 1;
 	Parameters.UseLODRendering           = 0;
-	Parameters.OriginalSplatCount        = OriginalSplatCount;
+	Parameters.OriginalSplatCount        = OriginalSplatCount - GPUResources->CapSplatCount;
+	Parameters.CapSplatStartIndex        = (uint32)(SplatCount - GPUResources->CapSplatCount);
 
 	// COMPACTION MODE
 	Parameters.CompactedSplatIndices = GPUResources->CompactedSplatIndicesBufferSRV;

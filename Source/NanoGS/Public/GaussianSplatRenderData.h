@@ -120,6 +120,15 @@ public:
 	int32 ClusterCount = 0;
 	int32 LeafClusterCount = 0;
 	int32 LODSplatCount = 0;
+
+	/**
+	 * Number of fracture cap splats appended to the packed splat buffer after
+	 * the LOD splats. They are part of SplatCount (the buffer covers everything)
+	 * and occupy [SplatCount - CapSplatCount, SplatCount). 0 when the asset has
+	 * no caps, in which case nothing about the layout changes.
+	 */
+	int32 CapSplatCount = 0;
+
 	bool bEnableNanite = false;
 	bool bHasClusterData = false;
 	bool bHasLODSplats = false;

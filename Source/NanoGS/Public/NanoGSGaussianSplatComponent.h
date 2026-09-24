@@ -313,6 +313,15 @@ protected:
 	/** Build collision body setup from point cloud data */
 	void BuildCollisionBodySetup();
 
+	/**
+	 * 按 CollisionMethod 把碰撞配置切到 BlockAll / NoCollision。
+	 *
+	 * 必须在几何（BodySetup）就绪之后调用，且刻意与 RebuildCollision() 分离：
+	 * RebuildCollision() 会在 OnCreatePhysicsState() → GetBodySetup() 路径里被懒调用，
+	 * 若在其中改 profile 会重入物理状态创建。启动阶段的调用点在 OnRegister()。
+	 */
+	void ApplyCollisionProfile();
+
 	/** Generate convex hull from point cloud positions */
 	bool GenerateConvexHull(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
 

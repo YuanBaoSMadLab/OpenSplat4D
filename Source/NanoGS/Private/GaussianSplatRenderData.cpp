@@ -227,6 +227,62 @@ void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset)
 		}
 	}
 
+	// --- Fracture cap splats ---
+	// Caps are appended after the LOD splats, so the packed buffer (and every
+	// index that addresses it) becomes:
+	//   [0, N) original | [N, N+LOD) LOD | [N+LOD, N+LOD+M) caps
+	// They only make sense together with a bone binding, whose per-splat index
+	// block already carries the cap bone indices right after the splat ones.
+	// That means the block must cover SplatCount + M exactly — i.e. the asset
+	// must not have grown since the binding was written — otherwise the indices
+	// would be misaligned and the caps are dropped rather than rendered wrong.
+	const int32 AssetCapSplatCount = Asset->GetCapSplatCount();
+	if (AssetCapSplatCount > 0)
+	{
+		if (bHasBoneBinding && BoneBindingSplatCount >= SplatCount + AssetCapSplatCount)
+		{
+			int64 CapSize = 0;
+			const uint8* RawCaps = static_cast<const uint8*>(Asset->LockCapSplatDataReadOnly(&CapSize));
+			ON_SCOPE_EXIT
+			{
+				Asset->UnlockCapSplatData();
+			};
+
+			if (RawCaps && CapSize >= (int64)AssetCapSplatCount * (int64)UGaussianSplatAsset::CapSplatStride)
+			{
+				constexpr int32 CapStrideFloats = UGaussianSplatAsset::CapSplatStride / (int32)sizeof(float);
+				const float* CapFloats = reinterpret_cast<const float*>(RawCaps);
+
+				PackedSplatData.SetNumUninitialized((SplatCount + AssetCapSplatCount) * GaussianSplattingConstants::PackedSplatStride);
+				uint32* PackedPtr = reinterpret_cast<uint32*>(PackedSplatData.GetData());
+
+				for (int32 i = 0; i < AssetCapSplatCount; i++)
+				{
+					const float* C = CapFloats + (int64)i * CapStrideFloats;
+					GaussianSplattingUtils::PackSplatToUint4(
+						FVector3f(C[0], C[1], C[2]),
+						FQuat4f(C[3], C[4], C[5], C[6]),
+						FVector3f(C[7], C[8], C[9]),
+						C[10], C[11], C[12], C[13],
+						&PackedPtr[(SplatCount + i) * 4]);
+				}
+
+				CapSplatCount = AssetCapSplatCount;
+				SplatCount += AssetCapSplatCount;
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("GaussianSplatRenderData: asset '%s' cap block is malformed (%lld bytes for %d caps); dropping caps"),
+					*AssetName, CapSize, AssetCapSplatCount);
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("GaussianSplatRenderData: asset '%s' has %d caps but the binding covers only %d of %d splats; dropping caps"),
+				*AssetName, AssetCapSplatCount, BoneBindingSplatCount, SplatCount + AssetCapSplatCount);
+		}
+	}
+
 	// Load chunk data
 	CachedChunkData = Asset->ChunkData;
 

@@ -43,6 +43,26 @@ struct FGaussianSplatBoneBindParams
 
 	/** Splats processed per streaming block while reading the position block. */
 	int32 SplatBlockSize = 1 << 20;
+
+	/** Flatness of a cap splat along its surface normal (0.01 .. 1). 0.25 turns
+	 *  the cap into a flat disc instead of a ball. */
+	float CapFlatness = 0.25f;
+
+	/** Cap density relative to the piece's own splat surface density. 1.0 makes
+	 *  the cut surface as dense as the piece's original surface. */
+	float CapDensityScale = 1.0f;
+
+	/** Minimum number of caps on a piece that exposes a cut surface. */
+	int32 MinCapsPerCutPiece = 8;
+
+	/** Upper bound on a single piece's cap count. */
+	int32 MaxCapsPerPiece = 8192;
+
+	/** Global cap budget; generation stops once it is reached. 0 disables caps. */
+	int32 MaxCapSplatCount = 2000000;
+
+	/** Deterministic sampling seed, so repeated binds produce identical caps. */
+	int32 CapRandomSeed = 20260924;
 };
 
 struct FGaussianSplatBoneBindResult
@@ -63,6 +83,11 @@ struct FGaussianSplatBoneBindResult
 	int32 LargestPieceCount = 0;
 	FIntVector GridSize = FIntVector::ZeroValue;
 	float CellSizeCm = 0.0f;
+
+	/** Pieces that expose a cut surface and received cap splats. */
+	int32 CutPieceCount = 0;
+	/** Cut surface (cap) splats written into the asset. */
+	int32 CapSplatCount = 0;
 };
 
 class FGaussianSplatBoneBinder

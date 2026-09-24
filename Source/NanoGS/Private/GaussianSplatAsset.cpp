@@ -57,6 +57,7 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 		ClusterHierarchy.Reset();
 		bHasBoneBinding = false;
 		BoneBindingBoneCount = 0;
+		CapSplatCount = 0;
 		return;
 	}
 
@@ -132,6 +133,17 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 	{
 		bHasBoneBinding = false;
 		BoneBindingBoneCount = 0;
+	}
+
+	// Fracture cap splats (Version 10+; v5-v9 assets keep defaults)
+	if (Version >= 10)
+	{
+		Ar << CapSplatCount;
+		CapSplatBulkData.Serialize(Ar, this);
+	}
+	else if (Ar.IsLoading())
+	{
+		CapSplatCount = 0;
 	}
 }
 
@@ -983,6 +995,18 @@ void UGaussianSplatAsset::UnlockBoneBindingData() const
 	if (BoneBindingBulkData.GetBulkDataSize() > 0) BoneBindingBulkData.Unlock();
 }
 
+const void* UGaussianSplatAsset::LockCapSplatDataReadOnly(int64* OutSize) const
+{
+	const int64 DataSize = CapSplatBulkData.GetBulkDataSize();
+	if (OutSize) *OutSize = DataSize;
+	return (DataSize > 0) ? CapSplatBulkData.LockReadOnly() : nullptr;
+}
+
+void UGaussianSplatAsset::UnlockCapSplatData() const
+{
+	if (CapSplatBulkData.GetBulkDataSize() > 0) CapSplatBulkData.Unlock();
+}
+
 bool UGaussianSplatAsset::GetBoneBindingHeader(FGaussianSplatBoneBindingHeader& OutHeader) const
 {
 	if (!HasBoneBinding())
@@ -1002,10 +1026,11 @@ bool UGaussianSplatAsset::GetBoneBindingHeader(FGaussianSplatBoneBindingHeader& 
 	{
 		FMemory::Memcpy(&OutHeader, Data, sizeof(FGaussianSplatBoneBindingHeader));
 
-		// The index block must cover every splat; anything shorter means the
+		// The index block must cover every splat (and every cap splat, which the
+		// renderer appends after the LOD splats); anything shorter means the
 		// asset was rebound after the splat count changed (R8) or is corrupt.
 		const int64 RequiredSize = (int64)GetBoneIndexBlockOffset(BoneBindingBoneCount)
-			+ (int64)SplatCount * (int64)sizeof(uint32);
+			+ (int64)(SplatCount + CapSplatCount) * (int64)sizeof(uint32);
 
 		bOk = OutHeader.Magic == GAUSSIAN_SPLAT_BONE_BINDING_MAGIC
 			&& OutHeader.Version == GAUSSIAN_SPLAT_BONE_BINDING_VERSION
@@ -1046,7 +1071,7 @@ bool UGaussianSplatAsset::GetRestBoneMatrices(TArray<FMatrix44f>& OutMatrices) c
 }
 
 bool UGaussianSplatAsset::SetBoneBinding(const TArray<FMatrix44f>& RestBoneMatrices, const TArray<uint32>& SplatBoneIndices,
-	const FVector3f& BoundsMin, const FVector3f& BoundsMax)
+	const FVector3f& BoundsMin, const FVector3f& BoundsMax, const TArray<uint32>& CapBoneIndices)
 {
 	const int32 BoneCount = RestBoneMatrices.Num();
 	if (BoneCount <= 0 || BoneCount > 65535)
@@ -1062,6 +1087,13 @@ bool UGaussianSplatAsset::SetBoneBinding(const TArray<FMatrix44f>& RestBoneMatri
 		return false;
 	}
 
+	if (CapBoneIndices.Num() != CapSplatCount)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SetBoneBinding: cap index count %d does not match CapSplatCount %d"),
+			CapBoneIndices.Num(), CapSplatCount);
+		return false;
+	}
+
 	for (int32 i = 0; i < SplatBoneIndices.Num(); i++)
 	{
 		if (SplatBoneIndices[i] >= (uint32)BoneCount)
@@ -1072,9 +1104,20 @@ bool UGaussianSplatAsset::SetBoneBinding(const TArray<FMatrix44f>& RestBoneMatri
 		}
 	}
 
+	for (int32 i = 0; i < CapBoneIndices.Num(); i++)
+	{
+		if (CapBoneIndices[i] >= (uint32)BoneCount)
+		{
+			UE_LOG(LogTemp, Error, TEXT("SetBoneBinding: cap %d references bone %u out of range (BoneCount=%d)"),
+				i, CapBoneIndices[i], BoneCount);
+			return false;
+		}
+	}
+
+	const int32 TotalIndexCount = SplatCount + CapSplatCount;
 	const int64 HeaderSize = (int64)sizeof(FGaussianSplatBoneBindingHeader);
 	const int64 MatrixBytes = (int64)BoneCount * (int64)sizeof(FMatrix44f);
-	const int64 IndexBytes = (int64)SplatCount * (int64)sizeof(uint32);
+	const int64 IndexBytes = (int64)TotalIndexCount * (int64)sizeof(uint32);
 	const int64 TotalBytes = HeaderSize + MatrixBytes + IndexBytes;
 	if (TotalBytes > (int64)MAX_int32)
 	{
@@ -1097,11 +1140,17 @@ bool UGaussianSplatAsset::SetBoneBinding(const TArray<FMatrix44f>& RestBoneMatri
 	FMemory::Memcpy(Dest + HeaderSize, RestBoneMatrices.GetData(), (SIZE_T)MatrixBytes);
 
 	// Store the 16-bit bone index in the low half of a 4-byte word so the
-	// shader can use an aligned ByteAddressBuffer.Load.
+	// shader can use an aligned ByteAddressBuffer.Load. Cap splats follow the
+	// real splats so the whole packed GPU buffer (splats + LOD + caps) can be
+	// indexed with the same buffer.
 	uint32* IndexDest = reinterpret_cast<uint32*>(Dest + HeaderSize + MatrixBytes);
 	for (int32 i = 0; i < SplatCount; i++)
 	{
 		IndexDest[i] = SplatBoneIndices[i] & 0xFFFFu;
+	}
+	for (int32 i = 0; i < CapSplatCount; i++)
+	{
+		IndexDest[SplatCount + i] = CapBoneIndices[i] & 0xFFFFu;
 	}
 
 	BoneBindingBulkData.Unlock();
@@ -1141,6 +1190,74 @@ void UGaussianSplatAsset::ClearBoneBinding()
 	OnAssetChanged.Broadcast(this);
 
 	UE_LOG(LogTemp, Log, TEXT("ClearBoneBinding: asset '%s' is no longer bound"), *GetName());
+}
+
+void UGaussianSplatAsset::SetFractureCaps(const TArray<FGaussianSplatCap>& InCaps)
+{
+	if (InCaps.Num() == 0)
+	{
+		if (CapSplatCount == 0 && CapSplatBulkData.GetBulkDataSize() == 0)
+		{
+			return;
+		}
+
+		CapSplatBulkData.RemoveBulkData();
+		CapSplatCount = 0;
+
+		RenderData.Reset();
+#if WITH_EDITOR
+		MarkPackageDirty();
+#endif
+		OnAssetChanged.Broadcast(this);
+		return;
+	}
+
+	const int64 TotalBytes = (int64)InCaps.Num() * (int64)CapSplatStride;
+	if (TotalBytes > (int64)MAX_int32)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SetFractureCaps: cap block too large (%lld bytes)"), TotalBytes);
+		return;
+	}
+
+	CapSplatBulkData.Lock(LOCK_READ_WRITE);
+	float* Dest = reinterpret_cast<float*>(CapSplatBulkData.Realloc(TotalBytes));
+
+	for (int32 i = 0; i < InCaps.Num(); i++)
+	{
+		const FGaussianSplatCap& Cap = InCaps[i];
+		float* Dst = Dest + (int64)i * (CapSplatStride / sizeof(float));
+
+		Dst[0] = Cap.Position.X;
+		Dst[1] = Cap.Position.Y;
+		Dst[2] = Cap.Position.Z;
+		Dst[3] = Cap.Rotation.X;
+		Dst[4] = Cap.Rotation.Y;
+		Dst[5] = Cap.Rotation.Z;
+		Dst[6] = Cap.Rotation.W;
+		Dst[7] = Cap.Scale.X;
+		Dst[8] = Cap.Scale.Y;
+		Dst[9] = Cap.Scale.Z;
+		Dst[10] = Cap.Color.R;
+		Dst[11] = Cap.Color.G;
+		Dst[12] = Cap.Color.B;
+		Dst[13] = Cap.Color.A;
+	}
+
+	CapSplatBulkData.Unlock();
+	CapSplatBulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
+
+	CapSplatCount = InCaps.Num();
+
+	// Caps are baked into the packed GPU buffer, so the shared render data has
+	// to be rebuilt around them.
+	RenderData.Reset();
+#if WITH_EDITOR
+	MarkPackageDirty();
+#endif
+	OnAssetChanged.Broadcast(this);
+
+	UE_LOG(LogTemp, Log, TEXT("SetFractureCaps: asset '%s' stored %d cap splats (%lld bytes)"),
+		*GetName(), CapSplatCount, TotalBytes);
 }
 
 // ----------------------------------------------------------------------------

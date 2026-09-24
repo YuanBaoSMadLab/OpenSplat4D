@@ -69,6 +69,7 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 	{
 		bCollisionDirty = true;
 		RebuildCollision();
+		ApplyCollisionProfile();
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, CurrentTime) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bPlaying) ||
@@ -110,6 +111,16 @@ void UGaussianSplatComponent::OnRegister()
 		Play4D();
 	}
 	Update4DTickEnabled();
+
+	// Collision: geometry must exist *before* the collision profile is switched on.
+	// RebuildCollision() is where BodySetup gets cooked; ApplyCollisionProfile() then
+	// flips the profile to BlockAll, which is what actually makes the engine create
+	// the physics state (UPrimitiveComponent::ShouldCreatePhysicsState() returns false
+	// while the body is still on NoCollision). With CollisionMethod == None both calls
+	// are cheap no-ops, so static assets pay nothing here.
+	bCollisionDirty = true;
+	RebuildCollision();
+	ApplyCollisionProfile();
 }
 
 void UGaussianSplatComponent::OnUnregister()
@@ -565,7 +576,8 @@ void UGaussianSplatComponent::RebuildCollision()
 
 	if (CollisionMethod == EGaussianCollisionMethod::None)
 	{
-		SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+		// Profile is handled by ApplyCollisionProfile() so that this function can be
+		// called from GetBodySetup() without re-entering physics state creation.
 		BodySetup = nullptr;
 		bCollisionDirty = false;
 		return;
@@ -605,7 +617,6 @@ void UGaussianSplatComponent::RebuildCollision()
 		BodySetup->InvalidatePhysicsData();
 		BodySetup->CreatePhysicsMeshes();
 
-		SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 		bCollisionDirty = false;
 
 		UE_LOG(LogTemp, Log, TEXT("GaussianSplat: BoundingBox collision rebuilt (bounds=%s)"), *LocalBounds.GetExtent().ToString());
@@ -675,12 +686,34 @@ void UGaussianSplatComponent::RebuildCollision()
 	BodySetup->InvalidatePhysicsData();
 	BodySetup->CreatePhysicsMeshes();
 
-	// Enable collision
-	SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 	bCollisionDirty = false;
 
 	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: Collision rebuilt (method=%d, points=%d, verts=%d, indices=%d)"),
 		(uint8)CollisionMethod, Points.Num(), Vertices.Num(), Indices.Num());
+}
+
+void UGaussianSplatComponent::ApplyCollisionProfile()
+{
+	const FName DesiredProfile = (CollisionMethod == EGaussianCollisionMethod::None)
+		? UCollisionProfile::NoCollision_ProfileName
+		: UCollisionProfile::BlockAll_ProfileName;
+
+	if (BodyInstance.GetCollisionProfileName() == DesiredProfile)
+	{
+		return;
+	}
+
+	const bool bWasCollisionEnabled = BodyInstance.GetCollisionEnabled() != ECollisionEnabled::NoCollision;
+	SetCollisionProfileName(DesiredProfile);
+
+	// Turning collision on is handled by SetCollisionProfileName itself (it calls
+	// EnsurePhysicsStateCreated when the collision-enabled state changes). Turning it
+	// off goes down the opposite path — that helper only ever creates — so an existing
+	// body has to be torn down explicitly.
+	if (bWasCollisionEnabled && DesiredProfile == UCollisionProfile::NoCollision_ProfileName)
+	{
+		RecreatePhysicsState();
+	}
 }
 
 void UGaussianSplatComponent::BuildCollisionBodySetup()

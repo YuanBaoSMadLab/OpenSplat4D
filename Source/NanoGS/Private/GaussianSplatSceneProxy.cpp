@@ -107,6 +107,7 @@ void FGaussianSplatGPUResources::InitRHI(FRHICommandListBase& RHICmdList)
 	bHasBoneBinding = SharedData->bHasBoneBinding;
 	BoneCount = SharedData->BoneCount;
 	BoneBindingSplatCount = SharedData->BoneBindingSplatCount;
+	CapSplatCount = SharedData->CapSplatCount;
 
 	// TotalSplatCount is needed by per-instance buffer sizing
 	TotalSplatCount = SplatCount;

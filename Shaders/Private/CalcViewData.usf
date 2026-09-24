@@ -58,6 +58,10 @@ StructuredBuffer<uint> SelectedClusterBuffer;  // Maps leaf cluster -> selected 
 uint UseClusterCulling;  // 1 = check visibility, 0 = process all splats
 uint UseLODRendering;    // 1 = enable LOD rendering (unified approach)
 uint OriginalSplatCount; // Count of original splats (LOD splats start after this)
+// Fracture cap splats are appended after the LOD splats, so they occupy
+// [CapSplatStartIndex, SplatCount). CapSplatStartIndex == SplatCount when the
+// asset has no caps, which makes every "is cap" test below false.
+uint CapSplatStartIndex;
 
 // Compaction mode: process only visible splats from CompactedSplatIndices
 StructuredBuffer<uint> CompactedSplatIndices;  // Indices of visible splats
@@ -299,6 +303,16 @@ float3 EvaluateSH4D(ByteAddressBuffer shBuffer, uint splatIndex, uint C, float3 
 // Core: transform a single splat to screen space and write to ViewDataBuffer
 void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uint selectedLODLevel)
 {
+	// Fracture caps exist only to fill the newly exposed cut surfaces. Until the
+	// fracture is actually displaced they would sit inside the still-solid mesh,
+	// so they are written as invalid instead of adding an interior haze.
+	const bool bIsCapSplat = (splatIndex >= CapSplatStartIndex);
+	if (bIsCapSplat && UseFractureBones == 0u)
+	{
+		WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
+		return;
+	}
+
 	// Unpack splat data from packed buffer
 	FUnpackedSplat splat = UnpackSplat(PackedSplatBuffer, splatIndex);
 
@@ -678,7 +692,9 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	}
 	// Keyframe mode skips SH: colorOpacity already carries the interpolated
 	// per-keyframe display color (frame SH data is not stored per keyframe).
-	else if (UseSHRendering && NumSHCoeffs > 0 && !UseKeyframes)
+	// Caps are skipped too: they live past the end of the SH buffer, and LoadSH
+	// has no bounds check, so it would read zeros and turn them grey.
+	else if (UseSHRendering && NumSHCoeffs > 0 && !UseKeyframes && !bIsCapSplat)
 	{
 		// View-dependent SH rendering
 		// Load SH coefficients from buffer (DC + higher-order)
@@ -769,6 +785,15 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		// Read actual splat index from compacted list
 		uint splatIndex = CompactedSplatIndices[threadIndex];
 
+		// Fracture caps are past the end of the cluster index buffer (which only
+		// covers original + LOD splats). They are compacted only while the
+		// fracture is displaced, so they bypass the cluster lookup entirely.
+		if (splatIndex >= CapSplatStartIndex)
+		{
+			ProcessSplat(splatIndex, CompactionGlobalBase + threadIndex, 0u, 1u);
+			return;
+		}
+
 		// Get cluster info for debug visualization
 		uint clusterIndex = SplatClusterIndexBuffer[splatIndex];
 		bool isLODSplat = (splatIndex >= OriginalSplatCount);
@@ -795,12 +820,15 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	// UNIFIED APPROACH: Handle both original and LOD splats
-	bool isLODSplat = (splatIndex >= OriginalSplatCount);
+	// Caps sit past the cluster index buffer, so they are excluded from every
+	// cluster-based test below (CapSplatStartIndex == SplatCount without caps).
+	bool isCapSplat = (splatIndex >= CapSplatStartIndex);
+	bool isLODSplat = !isCapSplat && (splatIndex >= OriginalSplatCount);
 	uint clusterIndex = 0;
 	uint selectedClusterID = 0;
 	uint selectedLODLevel = 0;
 
-	if (UseClusterCulling)
+	if (UseClusterCulling && !isCapSplat)
 	{
 		clusterIndex = SplatClusterIndexBuffer[splatIndex];
 

@@ -164,6 +164,13 @@ public:
 	int32 BoneBindingSplatCount = 0;
 
 	/**
+	 * Number of fracture cap splats appended after the LOD splats. They are
+	 * part of SplatCount and occupy [SplatCount - CapSplatCount, SplatCount).
+	 * 0 when the asset has no caps.
+	 */
+	int32 CapSplatCount = 0;
+
+	/**
 	 * Per-instance bone delta buffer (64 bytes/bone, dynamic). Kept per proxy
 	 * rather than in the shared render data because two instances of the same
 	 * asset can be fractured by different GeometryCollections.
