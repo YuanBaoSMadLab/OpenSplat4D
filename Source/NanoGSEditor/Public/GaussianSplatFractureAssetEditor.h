@@ -4,6 +4,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Input/Reply.h"
 #include "Toolkits/AssetEditorToolkit.h"
 #include "Toolkits/IToolkitHost.h"
 #include "Misc/NotifyHook.h"
@@ -11,6 +12,7 @@
 class UGaussianSplatFractureAsset;
 class IDetailsView;
 class SDockTab;
+class STextBlock;
 class SGaussianSplatAssetViewport;
 
 /**
@@ -19,10 +21,12 @@ class SGaussianSplatAssetViewport;
  * 布局：
  *   - 左侧：3D 预览视口，显示该破裂资产所引用的源 OpenSplat 资产，
  *     并按「破裂设置」叠加 PlanarCut 生成的切割面线框与 Voronoi 站点
- *   - 右侧：Details 面板，编辑破裂资产自身的属性（源资产引用、破裂设置、
- *     几何集合、绑定统计）
+ *   - 右侧：详情面板，顶部是「解算」按钮与解算状态，下面是破裂资产
+ *     自身的属性（源资产引用、破裂设置、几何集合、绑定统计）
  *
- * 「解算」按钮在后续阶段接入。
+ * 解算 = 把体素壳喂给 Chaos 的 PlanarCut 切割，产出 FGeometryCollection
+ * （内嵌为破裂资产的子对象），再用 FGaussianSplatBoneBinder 把每个 splat
+ * 归属到破裂块并把断面 splat 写回破裂资产。
  * 渲染侧不依赖本编辑器，破裂资产离开编辑器即可被蓝图/关卡使用。
  */
 class FGaussianSplatFractureAssetEditor : public FAssetEditorToolkit, public FNotifyHook
@@ -69,6 +73,18 @@ private:
 	/** 按「破裂设置」重算 PlanarCut 切割面并推给视口叠加显示 */
 	void RefreshCuttingPreview();
 
+	/** 「解算」按钮的点击处理 */
+	FReply OnSolveClicked();
+
+	/**
+	 * 解算主流程：体素壳 → FGeometryCollection → PlanarCut 切割 →
+	 * 内嵌 UGeometryCollection → 绑定回写（骨头归属 + 断面 splat）。
+	 */
+	void SolveFracture();
+
+	/** 更新详情面板顶部的解算状态文本 */
+	void SetSolveStatus(const FString& Message, bool bIsError);
+
 	/** The fracture asset being edited */
 	TStrongObjectPtr<UGaussianSplatFractureAsset> FractureAsset;
 
@@ -77,4 +93,7 @@ private:
 
 	/** Viewport widget (previews the source splat asset) */
 	TSharedPtr<SGaussianSplatAssetViewport> ViewportWidget;
+
+	/** 详情面板顶部的解算状态文本 */
+	TSharedPtr<STextBlock> SolveStatusText;
 };
