@@ -86,3 +86,29 @@ private:
 		UGaussianSplatAsset* ExistingAsset = nullptr
 	);
 };
+
+/**
+ * Factory for creating an empty fracture asset. It carries no data at first:
+ * the source splat asset and the fracture solve are set up in the dedicated
+ * fracture editor (双击进入).
+ */
+UCLASS(hidecategories = Object)
+class NANOGSEDITOR_API UGaussianSplatFractureAssetFactory : public UFactory
+{
+	GENERATED_BODY()
+
+public:
+	UGaussianSplatFractureAssetFactory();
+
+	//~ Begin UFactory Interface
+	virtual UObject* FactoryCreateNew(
+		UClass* InClass,
+		UObject* InParent,
+		FName InName,
+		EObjectFlags Flags,
+		UObject* Context,
+		FFeedbackContext* Warn) override;
+	virtual FText GetDisplayName() const override;
+	virtual FText GetToolTip() const override;
+	//~ End UFactory Interface
+};

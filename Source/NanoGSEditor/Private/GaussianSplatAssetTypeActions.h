@@ -44,8 +44,16 @@ private:
 	/** Handler for generating the blocky voxel proxy mesh used as a fracture source */
 	void ExecuteGenerateProxyMesh(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
 
-	/** Handler for binding the splats of the asset to the bones of a fracture GeometryCollection */
-	void ExecuteBindFractureBones(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
+	/** Handler for creating the independent fracture asset that references this splat asset */
+	void ExecuteGenerateFractureAsset(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
+
+	// ------------------------------------------------------------------------
+	// 已废弃（v2 重构）：旧的「绑定破裂骨头」把骨头绑定写回 UGaussianSplatAsset。
+	// 新流程里绑定数据归 UGaussianSplatFractureAsset，绑定改由破裂编辑器在
+	// 解算时调用 FGaussianSplatBoneBinder 完成，Content Browser 不再提供该入口。
+	// 代码保留不删，仅停用；如需恢复请先确认绑定目标已改回。
+	// ------------------------------------------------------------------------
+	// void ExecuteBindFractureBones(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
 
 	/** Check if all selected assets have Nanite enabled */
 	bool AreAllNaniteEnabled(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects) const;

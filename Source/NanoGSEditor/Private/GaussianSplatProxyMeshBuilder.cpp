@@ -4,6 +4,7 @@
 #include "GaussianSplatProxyMeshBuilder.h"
 
 #include "GaussianSplatAsset.h"
+#include "GaussianSplatFractureAsset.h"
 
 #include "Containers/BitArray.h"
 #include "Engine/StaticMesh.h"
@@ -805,4 +806,110 @@ UStaticMesh* FGaussianSplatProxyMeshBuilder::CreateProxyMeshAsset(
 	UE_LOG(LogTemp, Log, TEXT("GaussianSplatProxyMesh: created proxy mesh asset '%s'"), *OutPackageName);
 	OutError.Reset();
 	return Mesh;
+}
+
+bool FGaussianSplatProxyMeshBuilder::ExtractTriangleSoup(
+	const FMeshDescription& Mesh,
+	TArray<FVector3f>& OutVertices,
+	TArray<int32>& OutIndices)
+{
+	OutVertices.Reset();
+	OutIndices.Reset();
+
+	if (Mesh.Polygons().Num() == 0)
+	{
+		return false;
+	}
+
+	// Vertices are emitted on first use, so the soup only carries vertices the
+	// faces actually reference (the mesh may hold unreferenced ones).
+	TMap<FVertexID, int32> IndexByVertex;
+	TArray<FVertexID> PolygonVertices;
+	TArray<int32> CornerIndices;
+
+	for (const FPolygonID PolygonID : Mesh.Polygons().GetElementIDs())
+	{
+		Mesh.GetPolygonVertices(PolygonID, PolygonVertices);
+		const int32 CornerCount = PolygonVertices.Num();
+		if (CornerCount < 3)
+		{
+			continue;
+		}
+
+		CornerIndices.Reset();
+		for (const FVertexID VertexID : PolygonVertices)
+		{
+			int32* ExistingIndex = IndexByVertex.Find(VertexID);
+			if (!ExistingIndex)
+			{
+				ExistingIndex = &IndexByVertex.Add(VertexID, OutVertices.Num());
+				OutVertices.Add(Mesh.GetVertexPosition(VertexID));
+			}
+			CornerIndices.Add(*ExistingIndex);
+		}
+
+		// Fan triangulation. Fine for the proxy mesh, whose faces are convex
+		// quads on a lattice plane.
+		for (int32 Corner = 1; Corner + 1 < CornerCount; ++Corner)
+		{
+			OutIndices.Add(CornerIndices[0]);
+			OutIndices.Add(CornerIndices[Corner]);
+			OutIndices.Add(CornerIndices[Corner + 1]);
+		}
+	}
+
+	return OutVertices.Num() >= 3 && OutIndices.Num() >= 3;
+}
+
+bool FGaussianSplatProxyMeshBuilder::BuildVoxelShell(
+	const UGaussianSplatAsset* Asset,
+	UGaussianSplatFractureAsset* FractureAsset,
+	const FGaussianSplatProxyMeshParams& Params,
+	FString& OutError,
+	FGaussianSplatProxyMeshResult* OutResult)
+{
+	OutError.Reset();
+
+	if (!FractureAsset)
+	{
+		OutError = TEXT("破裂资产为空。");
+		return false;
+	}
+
+	// The shell is only written once the build succeeded, so a failed rebuild
+	// never destroys the shell a previous run stored.
+	FMeshDescription BuiltMesh;
+	const FGaussianSplatProxyMeshResult BuildResult = BuildMeshDescription(Asset, Params, BuiltMesh);
+	if (OutResult)
+	{
+		*OutResult = BuildResult;
+	}
+	if (!BuildResult.bSuccess)
+	{
+		OutError = BuildResult.Error;
+		return false;
+	}
+
+	TArray<FVector3f> Vertices;
+	TArray<int32> Indices;
+	if (!ExtractTriangleSoup(BuiltMesh, Vertices, Indices))
+	{
+		OutError = TEXT("代理网格里没有可用的三角形，体素壳未写入。");
+		return false;
+	}
+
+	FractureAsset->SetVoxelShell(Vertices, Indices, BuildResult.EffectiveVoxelSize);
+	if (!FractureAsset->HasVoxelShell())
+	{
+		OutError = TEXT("体素壳写入破裂资产失败（顶点 / 索引校验未通过）。");
+		return false;
+	}
+
+	// SetVoxelShell already marks the package dirty; the explicit call keeps the
+	// caller free of that assumption.
+	FractureAsset->MarkPackageDirty();
+
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplatProxyMesh: stored voxel shell in fracture '%s' (%d verts, %d triangles, voxel %.2f cm)"),
+		*FractureAsset->GetName(), Vertices.Num(), Indices.Num() / 3, BuildResult.EffectiveVoxelSize);
+	return true;
 }

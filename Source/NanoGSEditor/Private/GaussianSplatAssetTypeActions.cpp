@@ -7,7 +7,9 @@
 #include "GaussianSplat4DEditor.h"
 #include "GaussianSplatAssetFactory.h"
 #include "GaussianSplatProxyMeshBuilder.h"
-#include "GaussianSplatBoneBinder.h"
+// 已废弃（v2 重构）：旧的绑定直接写回 UGaussianSplatAsset，绑定入口移至破裂编辑器。
+// #include "GaussianSplatBoneBinder.h"
+#include "GaussianSplatFractureAsset.h"
 #include "Engine/StaticMesh.h"
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "EditorReimportHandler.h"
@@ -25,6 +27,91 @@
 #include "UObject/Package.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions_GaussianSplatAsset"
+
+namespace
+{
+	/** Content folder of an asset ("/Game/Splats" for "/Game/Splats/MySplat"). */
+	FString GetFractureAssetFolderPath(const UGaussianSplatAsset* SourceAsset)
+	{
+		if (SourceAsset && SourceAsset->GetOutermost())
+		{
+			const FString PackageName = SourceAsset->GetOutermost()->GetName();
+			const int32 SlashIndex = PackageName.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+			if (SlashIndex != INDEX_NONE)
+			{
+				return PackageName.Left(SlashIndex);
+			}
+		}
+		return TEXT("/Game");
+	}
+
+	/** Asset name the fracture asset of a splat asset is generated under. */
+	FString GetFractureAssetName(const UGaussianSplatAsset* SourceAsset)
+	{
+		return ObjectTools::SanitizeObjectName(SourceAsset->GetName()) + TEXT("_Fracture");
+	}
+
+	/** Already generated fracture asset of a splat asset (nullptr when none). */
+	UGaussianSplatFractureAsset* FindFractureAsset(const UGaussianSplatAsset* SourceAsset)
+	{
+		if (!SourceAsset)
+		{
+			return nullptr;
+		}
+
+		const FString FractureName = GetFractureAssetName(SourceAsset);
+		const FString ObjectPath = FString::Printf(TEXT("%s/%s.%s"),
+			*GetFractureAssetFolderPath(SourceAsset), *FractureName, *FractureName);
+
+		const FAssetData AssetData = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry")
+			.Get().GetAssetByObjectPath(FSoftObjectPath(ObjectPath));
+		return AssetData.IsValid() ? Cast<UGaussianSplatFractureAsset>(AssetData.GetAsset()) : nullptr;
+	}
+
+	/**
+	 * Fracture asset of a splat asset: the existing one when it was generated
+	 * before, otherwise a new one created next to the splat asset (named
+	 * "<Splat>_Fracture"). bOutCreated reports whether this call created it.
+	 */
+	UGaussianSplatFractureAsset* FindOrCreateFractureAsset(UGaussianSplatAsset* SourceAsset, bool& bOutCreated)
+	{
+		bOutCreated = false;
+		if (!SourceAsset)
+		{
+			return nullptr;
+		}
+
+		if (UGaussianSplatFractureAsset* ExistingAsset = FindFractureAsset(SourceAsset))
+		{
+			return ExistingAsset;
+		}
+
+		FString OutPackageName;
+		FString OutAssetName;
+		FAssetToolsModule::GetModule().Get().CreateUniqueAssetName(
+			GetFractureAssetFolderPath(SourceAsset) / GetFractureAssetName(SourceAsset), TEXT(""),
+			OutPackageName, OutAssetName);
+
+		UPackage* Package = CreatePackage(*OutPackageName);
+		UGaussianSplatFractureAsset* NewAsset = NewObject<UGaussianSplatFractureAsset>(
+			Package, UGaussianSplatFractureAsset::StaticClass(), FName(*OutAssetName), RF_Public | RF_Standalone);
+		if (!NewAsset)
+		{
+			return nullptr;
+		}
+
+		// 只引用源 splat 资产（不复制点云）；碰撞体素壳、骨头绑定与断面 splat
+		// 都由破裂编辑器生成后写回本资产。
+		NewAsset->SourceSplatAsset = SourceAsset;
+		NewAsset->MarkPackageDirty();
+		FAssetRegistryModule::AssetCreated(NewAsset);
+		bOutCreated = true;
+
+		UE_LOG(LogTemp, Log, TEXT("Created fracture asset '%s' referencing splat asset '%s'"),
+			*NewAsset->GetName(), *SourceAsset->GetName());
+		return NewAsset;
+	}
+}
 
 FText FAssetTypeActions_GaussianSplatAsset::GetName() const
 {
@@ -94,8 +181,9 @@ void FAssetTypeActions_GaussianSplatAsset::GetActions(const TArray<UObject*>& In
 		)
 	);
 
-	// 破裂 (fracture) submenu: builds the blocky proxy mesh that Chaos Fracture
-	// Mode cuts into a UGeometryCollection.
+	// 破裂 (fracture) submenu.
+	// 新流程：生成破裂资产（独立 UGaussianSplatFractureAsset）→ 双击进入破裂编辑器
+	// → 生成碰撞体素壳 / Chaos 破裂设置 / 预览 / 解算 → 拖入关卡或蓝图使用。
 	Section.AddSubMenu(
 		"GaussianSplatAsset_Fracture",
 		LOCTEXT("FractureSubMenuLabel", "破裂"),
@@ -103,18 +191,29 @@ void FAssetTypeActions_GaussianSplatAsset::GetActions(const TArray<UObject*>& In
 		FNewMenuDelegate::CreateLambda([this, GaussianSplatAssets](FMenuBuilder& SubMenuBuilder)
 		{
 			SubMenuBuilder.AddMenuEntry(
-				LOCTEXT("GenerateProxyMeshLabel", "生成破裂代理网格"),
-				LOCTEXT("GenerateProxyMeshTooltip", "按 splat 位置生成封闭的体素代理网格（StaticMesh），供 Chaos 破裂模式切割成 GeometryCollection"),
+				LOCTEXT("GenerateFractureAssetLabel", "生成破裂资产"),
+				LOCTEXT("GenerateFractureAssetTooltip", "创建一个独立破裂资产（引用本 splat 资产，不复制点云）。之后双击该资产进入破裂编辑器生成碰撞体素壳、做 Chaos 破裂设置、预览与解算"),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteGenerateFractureAsset, GaussianSplatAssets))
+			);
+
+			// 主流程入口：体素壳就是 Chaos 切割用的实体（同时可当碰撞体），
+			// 所以这一步会一并创建破裂资产（没有的话）并把壳写进去。
+			SubMenuBuilder.AddMenuEntry(
+				LOCTEXT("GenerateProxyMeshLabel", "生成碰撞体素网格"),
+				LOCTEXT("GenerateProxyMeshTooltip", "按 splat 位置生成封闭的体素壳，写入对应的破裂资产（没有则一并创建）。该壳既是 Chaos 破裂切割的实体，也可在破裂编辑器里用「体素壳用作碰撞」开关决定它是否同时作为碰撞体"),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteGenerateProxyMesh, GaussianSplatAssets))
 			);
 
-			SubMenuBuilder.AddMenuEntry(
-				LOCTEXT("BindFractureBonesLabel", "绑定破裂骨头"),
-				LOCTEXT("BindFractureBonesTooltip", "把每个 splat 分配到已切割 GeometryCollection 的某一块骨头上，使 splat 随该块一起破裂（请选择切割代理网格得到的 GeometryCollection）"),
-				FSlateIcon(),
-				FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteBindFractureBones, GaussianSplatAssets))
-			);
+			// 已废弃（v2 重构）：旧的「绑定破裂骨头」把绑定写回 splat 资产，新的绑定
+			// 由破裂编辑器在解算时写入破裂资产。入口停用，代码保留在下方 #if 0 段内。
+			// SubMenuBuilder.AddMenuEntry(
+			// 	LOCTEXT("BindFractureBonesLabel", "绑定破裂骨头"),
+			// 	LOCTEXT("BindFractureBonesTooltip", "把每个 splat 分配到已切割 GeometryCollection 的某一块骨头上，使 splat 随该块一起破裂（请选择切割代理网格得到的 GeometryCollection）"),
+			// 	FSlateIcon(),
+			// 	FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteBindFractureBones, GaussianSplatAssets))
+			// );
 		}),
 		false,
 		FSlateIcon()
@@ -421,31 +520,94 @@ void FAssetTypeActions_GaussianSplatAsset::ExecuteGenerateProxyMesh(TArray<TWeak
 			continue;
 		}
 
-		UE_LOG(LogTemp, Log, TEXT("Generating fracture proxy mesh for asset: %s"), *Asset->GetName());
+		UE_LOG(LogTemp, Log, TEXT("Generating collision voxel shell for asset: %s"), *Asset->GetName());
+
+		// 体素壳是破裂资产的一部分（Chaos 切割的实体 + 可选碰撞体），所以先拿到
+		// 对应的破裂资产：没有就一并新建，这样一次右键就同时得到壳与独立资产。
+		bool bCreatedAsset = false;
+		UGaussianSplatFractureAsset* FractureAsset = FindOrCreateFractureAsset(Asset, bCreatedAsset);
+		if (!FractureAsset)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(
+				TEXT("无法为 %s 创建破裂资产，碰撞体素壳未生成。"), *Asset->GetName())));
+			continue;
+		}
 
 		FString Error;
 		FGaussianSplatProxyMeshResult Result;
-		UStaticMesh* ProxyMesh = FGaussianSplatProxyMeshBuilder::CreateProxyMeshAsset(
-			Asset, FGaussianSplatProxyMeshParams(), Error, &Result);
-
-		if (!ProxyMesh)
+		if (!FGaussianSplatProxyMeshBuilder::BuildVoxelShell(
+			Asset, FractureAsset, FGaussianSplatProxyMeshParams(), Error, &Result))
 		{
 			FMessageDialog::Open(EAppMsgType::Ok, FText::Format(
-				LOCTEXT("ProxyMeshFailed", "无法为 {0} 生成破裂代理网格:\n{1}"),
+				LOCTEXT("VoxelShellFailed", "无法为 {0} 生成碰撞体素壳:\n{1}"),
 				FText::FromString(Asset->GetName()),
 				FText::FromString(Error.IsEmpty() ? TEXT("未知错误，请查看输出日志。") : Error)));
 			continue;
 		}
 
 		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(
-			TEXT("已生成破裂代理网格: %s\n\n%s\n\n下一步:\n")
-			TEXT("1. 把该 StaticMesh 拖入关卡\n")
-			TEXT("2. 选中它，进入「破裂」模式(Fracture Mode)\n")
-			TEXT("3. 切割后生成 GeometryCollection 资产"),
-			*ProxyMesh->GetName(), *Result.Summary)));
+			TEXT("已把碰撞体素壳写入破裂资产: %s%s\n\n%s\n\n下一步:\n")
+			TEXT("1. 双击该破裂资产，进入破裂编辑器\n")
+			TEXT("2. 在详情面板用「体素壳用作碰撞」决定它是否同时作为碰撞体；关闭则只作用于破裂\n")
+			TEXT("3. 设置 Chaos 破裂参数并解算，之后即可像 GeometryCollection 一样拖入关卡 / 蓝图使用"),
+			*FractureAsset->GetName(),
+			bCreatedAsset ? TEXT("（本次新建）") : TEXT("（沿用已有资产）"),
+			*Result.Summary)));
 	}
 }
 
+void FAssetTypeActions_GaussianSplatAsset::ExecuteGenerateFractureAsset(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects)
+{
+	// 第一个有效资产既作为破裂资产的源资产，也决定新资产的存放目录与命名。
+	UGaussianSplatAsset* SourceAsset = nullptr;
+	for (const TWeakObjectPtr<UGaussianSplatAsset>& AssetPtr : Objects)
+	{
+		if (UGaussianSplatAsset* Asset = AssetPtr.Get())
+		{
+			SourceAsset = Asset;
+			break;
+		}
+	}
+	if (!SourceAsset)
+	{
+		return;
+	}
+
+	// 与源资产同目录，命名 "<源资产>_Fracture"。已存在就复用它 —— 破裂资产是
+	// splat 资产的唯一对应物，重复生成只会得到看着一样的第二个资产。
+	if (UGaussianSplatFractureAsset* ExistingAsset = FindFractureAsset(SourceAsset))
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(
+			TEXT("%s 已经有破裂资产了: %s\n\n双击该资产即可进入破裂编辑器；若要重新生成碰撞体素壳，用「生成碰撞体素网格」。"),
+			*SourceAsset->GetName(), *ExistingAsset->GetName())));
+		return;
+	}
+
+	bool bCreatedAsset = false;
+	UGaussianSplatFractureAsset* NewAsset = FindOrCreateFractureAsset(SourceAsset, bCreatedAsset);
+	if (!NewAsset)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("GenerateFractureAssetFailed", "无法创建破裂资产。"));
+		return;
+	}
+
+	FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(
+		TEXT("已生成破裂资产: %s\n\n源 Splat 资产: %s\n\n下一步:\n")
+		TEXT("1. 双击该破裂资产，进入破裂编辑器\n")
+		TEXT("2. 在编辑器里生成碰撞体素壳并设置 Chaos 破裂参数\n")
+		TEXT("3. 解算后即可把资产拖入关卡 / 蓝图使用"),
+		*NewAsset->GetName(), *SourceAsset->GetName())));
+}
+
+// ----------------------------------------------------------------------------
+// 已废弃（v2 重构）：旧的「绑定破裂骨头」入口。
+// 它把骨头绑定与断面 splat 写回 UGaussianSplatAsset，而 v11 起绑定数据归属
+// UGaussianSplatFractureAsset，Content Browser 也不再提供该菜单项。绑定改由
+// 破裂编辑器在解算流程中调用 FGaussianSplatBoneBinder::BindAssetToCollection
+// （源资产 + 破裂资产 + GeometryCollection 三参）完成。
+// 代码保留不删，仅用 #if 0 停用以防误用；不要直接启用，先确认绑定目标。
+// ----------------------------------------------------------------------------
+#if 0
 void FAssetTypeActions_GaussianSplatAsset::ExecuteBindFractureBones(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects)
 {
 	TArray<UGaussianSplatAsset*> Assets;
@@ -511,5 +673,6 @@ void FAssetTypeActions_GaussianSplatAsset::ExecuteBindFractureBones(TArray<TWeak
 		TEXT("4. 触发破裂：splat 会跟随各自所属的碎块一起飞散"),
 		SuccessCount, Assets.Num(), *Report)));
 }
+#endif
 
 #undef LOCTEXT_NAMESPACE

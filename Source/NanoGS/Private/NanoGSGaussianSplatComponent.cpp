@@ -3,12 +3,14 @@
 
 #include "NanoGSGaussianSplatComponent.h"
 #include "GaussianSplatAsset.h"
+#include "GaussianSplatFractureAsset.h"
 #include "GaussianSplatSceneProxy.h"
 #include "GaussianSplatViewExtension.h"
 #include "Engine/World.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "HitProxies.h"
 #include "Containers/BitArray.h"
+#include "Misc/Crc.h"
 
 UGaussianSplatComponent::UGaussianSplatComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -81,13 +83,36 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 		Update4DTickEnabled();
 		PushCurrentTimeToProxy();
 	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FractureGeometryCollection))
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FractureGeometryCollection) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FractureAsset))
 	{
 		// Rest pose is relative to the previously-bound asset; reload it and
 		// re-evaluate whether the fracture tick is needed at all.
 		FractureRestMatrices.Reset();
 		FractureLastPushedDeltas.Reset();
 		bFractureWasActive = false;
+		// A new fracture asset may carry a different source splat cloud; keep the
+		// render asset in sync when the user has not picked one explicitly.
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FractureAsset) &&
+			FractureAsset != nullptr && SplatAsset == nullptr)
+		{
+			if (UGaussianSplatAsset* SourceAsset = FractureAsset->GetSourceSplatAsset())
+			{
+				SetSplatAsset(SourceAsset);
+			}
+		}
+
+		// ProxyMesh collision takes its geometry from the fracture asset, so
+		// swapping the asset also swaps the collision shell.
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FractureAsset) &&
+			CollisionMethod == EGaussianCollisionMethod::ProxyMesh)
+		{
+			bCollisionDirty = true;
+			RebuildCollision();
+			ApplyCollisionProfile();
+		}
+
+		MarkRenderStateDirty();
 		Update4DTickEnabled();
 	}
 
@@ -243,9 +268,10 @@ void UGaussianSplatComponent::PushCurrentTimeToProxy()
 
 bool UGaussianSplatComponent::IsFractureBindingActive() const
 {
+	// v11: the bone binding lives in the fracture asset, not on the splat asset.
 	return FractureGeometryCollection != nullptr
-		&& SplatAsset != nullptr
-		&& SplatAsset->HasBoneBinding();
+		&& FractureAsset != nullptr
+		&& FractureAsset->HasBoneBinding();
 }
 
 bool UGaussianSplatComponent::EnsureFractureRestMatrices()
@@ -255,18 +281,43 @@ bool UGaussianSplatComponent::EnsureFractureRestMatrices()
 		return true;
 	}
 
-	if (!SplatAsset || !SplatAsset->HasBoneBinding())
+	if (!FractureAsset || !FractureAsset->HasBoneBinding())
 	{
 		return false;
 	}
 
-	if (!SplatAsset->GetRestBoneMatrices(FractureRestMatrices))
+	if (!FractureAsset->GetRestBoneMatrices(FractureRestMatrices))
 	{
 		FractureRestMatrices.Reset();
 		return false;
 	}
 
 	return FractureRestMatrices.Num() > 0;
+}
+
+void UGaussianSplatComponent::SetFractureAsset(UGaussianSplatFractureAsset* NewAsset)
+{
+	if (FractureAsset == NewAsset)
+	{
+		return;
+	}
+
+	FractureAsset = NewAsset;
+
+	// Fall back to the fracture asset's source cloud when the component has no
+	// splat asset of its own, so a freshly created component renders right away.
+	if (SplatAsset == nullptr && FractureAsset != nullptr)
+	{
+		SetSplatAsset(FractureAsset->GetSourceSplatAsset());
+	}
+
+	// The rest pose belongs to the previous binding
+	FractureRestMatrices.Reset();
+	FractureLastPushedDeltas.Reset();
+	bFractureWasActive = false;
+
+	Update4DTickEnabled();
+	MarkRenderStateDirty();
 }
 
 void UGaussianSplatComponent::TickFractureBoneDeltas()
@@ -553,9 +604,113 @@ UBodySetup* UGaussianSplatComponent::GetBodySetup()
 	return BodySetup;
 }
 
+bool UGaussianSplatComponent::HasEffectiveCollision() const
+{
+	if (CollisionMethod == EGaussianCollisionMethod::None)
+	{
+		return false;
+	}
+
+	// ProxyMesh borrows its geometry from the fracture asset: without a shell —
+	// or with the shell marked "仅用于破裂" — there is nothing to collide with, and
+	// the body setup must stay empty so no physics state is ever created for it.
+	if (CollisionMethod == EGaussianCollisionMethod::ProxyMesh)
+	{
+		return FractureAsset != nullptr
+			&& FractureAsset->bUseVoxelShellAsCollision
+			&& FractureAsset->HasVoxelShell();
+	}
+
+	return true;
+}
+
+//~ Begin IInterface_CollisionDataProvider Interface
+
+bool UGaussianSplatComponent::ContainsPhysicsTriMeshData(bool bInUseAllTriData) const
+{
+	return HasEffectiveCollision() && CollisionMethod == EGaussianCollisionMethod::ProxyMesh;
+}
+
+bool UGaussianSplatComponent::GetTriMeshSizeEstimates(struct FTriMeshCollisionDataEstimates& OutTriMeshEstimates, bool bInUseAllTriData) const
+{
+	OutTriMeshEstimates.VerticeCount = 0;
+
+	if (!ContainsPhysicsTriMeshData(bInUseAllTriData))
+	{
+		return false;
+	}
+
+	// Cheap: the cached soup is filled by RebuildCollision(); fall back to the
+	// asset's own counter if the cache has not been built yet.
+	OutTriMeshEstimates.VerticeCount = VoxelShellVertices.Num() > 0
+		? VoxelShellVertices.Num()
+		: FractureAsset->VoxelShellVertexCount;
+	return true;
+}
+
+bool UGaussianSplatComponent::GetPhysicsTriMeshData(struct FTriMeshCollisionData* CollisionData, bool bInUseAllTriData)
+{
+	if (CollisionData == nullptr || !ContainsPhysicsTriMeshData(bInUseAllTriData))
+	{
+		return false;
+	}
+
+	if (VoxelShellVertices.Num() < 3 || VoxelShellIndices.Num() < 3)
+	{
+		// Cooked before the cache existed (or an empty shell): nothing to hand over.
+		return false;
+	}
+
+	CollisionData->Vertices = VoxelShellVertices;
+	CollisionData->Indices = VoxelShellIndices;
+	// MaterialIndices / UVs stay empty: Chaos only reads them when they are valid
+	// per-triangle / per-vertex, and this shell has neither.
+	CollisionData->MaterialIndices.Reset();
+	CollisionData->UVs.Reset();
+	CollisionData->bFlipNormals = false;
+	CollisionData->bDeformableMesh = false;
+	CollisionData->bFastCook = false;
+	CollisionData->bDisableActiveEdgePrecompute = false;
+	CollisionData->bReducedMemoryRepresentation = false;
+	return true;
+}
+
+void UGaussianSplatComponent::GetMeshId(FString& OutMeshId)
+{
+	OutMeshId.Empty();
+
+	if (CollisionMethod != EGaussianCollisionMethod::ProxyMesh || !HasEffectiveCollision())
+	{
+		return;
+	}
+
+	if (VoxelShellVertices.Num() == 0)
+	{
+		// Cache not built yet — identify by the owning asset so at least two
+		// components on the same fracture share one cook.
+		OutMeshId = FractureAsset->GetPathName();
+		return;
+	}
+
+	// The shell is data, not a shared asset: hash its content so a re-solved
+	// fracture (new shell on the same component) cannot be mistaken for a
+	// cooked-cache hit, while identical shells still share one entry.
+	uint32 Hash = FCrc::MemCrc32(VoxelShellVertices.GetData(), VoxelShellVertices.Num() * (int32)sizeof(FVector3f));
+	for (const FTriIndices& Tri : VoxelShellIndices)
+	{
+		Hash = FCrc::MemCrc32(&Tri.v0, sizeof(int32), Hash);
+		Hash = FCrc::MemCrc32(&Tri.v1, sizeof(int32), Hash);
+		Hash = FCrc::MemCrc32(&Tri.v2, sizeof(int32), Hash);
+	}
+	OutMeshId = FString::Printf(TEXT("GaussianSplatVoxelShell_%08X_%d_%d"),
+		Hash, VoxelShellVertices.Num(), VoxelShellIndices.Num());
+}
+
+//~ End IInterface_CollisionDataProvider Interface
+
 bool UGaussianSplatComponent::LineTraceComponent(FHitResult& OutHit, const FVector TraceStart, const FVector TraceEnd, const FCollisionQueryParams& TraceParams)
 {
-	if (CollisionMethod == EGaussianCollisionMethod::None || !BodySetup)
+	if (!HasEffectiveCollision() || !BodySetup)
 	{
 		return false;
 	}
@@ -569,6 +724,71 @@ bool UGaussianSplatComponent::LineTraceComponent(FHitResult& OutHit, const FVect
 
 void UGaussianSplatComponent::RebuildCollision()
 {
+	// ProxyMesh is the odd one out: its geometry is the fracture asset's collision
+	// voxel shell, cooked as a real triangle mesh. It never touches the splat cloud,
+	// so it is resolved before the source-asset guard below — the shell alone has to
+	// be enough, and nothing here may decompress a single splat.
+	if (CollisionMethod == EGaussianCollisionMethod::ProxyMesh)
+	{
+		VoxelShellVertices.Reset();
+		VoxelShellIndices.Reset();
+
+		// No fracture asset, no shell, or "仅用于破裂": this component has no
+		// collision at all and ApplyCollisionProfile() keeps it on NoCollision.
+		if (!HasEffectiveCollision())
+		{
+			BodySetup = nullptr;
+			bCollisionDirty = false;
+			return;
+		}
+
+		TArray<int32> ShellTriangles;
+		if (!FractureAsset->GetVoxelShell(VoxelShellVertices, ShellTriangles) ||
+			VoxelShellVertices.Num() < 3 || ShellTriangles.Num() < 3)
+		{
+			VoxelShellVertices.Reset();
+			BodySetup = nullptr;
+			bCollisionDirty = false;
+			UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: fracture '%s' voxel shell could not be read for ProxyMesh collision"), *FractureAsset->GetName());
+			return;
+		}
+
+		VoxelShellIndices.Reserve(ShellTriangles.Num() / 3);
+		for (int32 i = 0; i + 2 < ShellTriangles.Num(); i += 3)
+		{
+			FTriIndices& Tri = VoxelShellIndices.AddDefaulted_GetRef();
+			Tri.v0 = ShellTriangles[i];
+			Tri.v1 = ShellTriangles[i + 1];
+			Tri.v2 = ShellTriangles[i + 2];
+		}
+
+		if (!BodySetup)
+		{
+			BodySetup = NewObject<UBodySetup>(this, NAME_None, RF_Transient);
+			BodySetup->BodySetupGuid = FGuid::NewGuid();
+		}
+		else
+		{
+			BodySetup->AggGeom.EmptyElements();
+		}
+
+		// No simple shapes at all — the triangle mesh *is* the collision, which is
+		// why the trace flag has to say so: Chaos only keeps a triangle mesh in the
+		// simulation set when the shape reports UseComplexAsSimple, and conversely
+		// drops every non-mesh shape while that flag is set. Set before cooking.
+		BodySetup->CollisionTraceFlag = CTF_UseComplexAsSimple;
+		BodySetup->bGenerateMirroredCollision = false;
+		BodySetup->bDoubleSidedGeometry = true;
+		BodySetup->InvalidatePhysicsData();
+		BodySetup->CreatePhysicsMeshes();
+
+		bCollisionDirty = false;
+
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplat: ProxyMesh collision rebuilt from fracture '%s' (verts=%d, triangles=%d)"),
+			*FractureAsset->GetName(), VoxelShellVertices.Num(), VoxelShellIndices.Num());
+		return;
+	}
+
 	if (!SplatAsset || !SplatAsset->IsValid())
 	{
 		return;
@@ -593,6 +813,11 @@ void UGaussianSplatComponent::RebuildCollision()
 	{
 		BodySetup->AggGeom.EmptyElements();
 	}
+
+	// The ProxyMesh method above switches this to UseComplexAsSimple; restore the
+	// default so a switch back to a simple-shape method keeps a simulated body
+	// (Chaos drops every non-mesh shape while that flag is set).
+	BodySetup->CollisionTraceFlag = CTF_UseDefault;
 
 	// BoundingBox method: use the asset's cached bounds directly, avoiding the
 	// O(N) decompression + copy of all splat positions (can be millions of points).
@@ -694,9 +919,9 @@ void UGaussianSplatComponent::RebuildCollision()
 
 void UGaussianSplatComponent::ApplyCollisionProfile()
 {
-	const FName DesiredProfile = (CollisionMethod == EGaussianCollisionMethod::None)
-		? UCollisionProfile::NoCollision_ProfileName
-		: UCollisionProfile::BlockAll_ProfileName;
+	const FName DesiredProfile = HasEffectiveCollision()
+		? UCollisionProfile::BlockAll_ProfileName
+		: UCollisionProfile::NoCollision_ProfileName;
 
 	if (BodyInstance.GetCollisionProfileName() == DesiredProfile)
 	{

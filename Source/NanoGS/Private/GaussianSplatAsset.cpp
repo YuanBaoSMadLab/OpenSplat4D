@@ -55,9 +55,10 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 		BoundingBox.Init();
 		SHBands = 0;
 		ClusterHierarchy.Reset();
-		bHasBoneBinding = false;
-		BoneBindingBoneCount = 0;
-		CapSplatCount = 0;
+		// [已废弃 v11] 破裂数据已迁移到 UGaussianSplatFractureAsset，本资产不再持有
+		//bHasBoneBinding = false;
+		//BoneBindingBoneCount = 0;
+		//CapSplatCount = 0;
 		return;
 	}
 
@@ -122,28 +123,29 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 		bIsNative4D = false;
 	}
 
-	// Chaos fracture bone binding (Version 9+; v5-v8 assets keep defaults)
-	if (Version >= 9)
+	// [已废弃 v11] Chaos 破裂绑定块（v9/v10 旧包）与断面 cap 块（v10 旧包）已整体迁移到
+	// UGaussianSplatFractureAsset。旧包仍会被读入以保持字节流对齐，但数据随即丢弃
+	// （需要重新解算一次破裂，绑定/cap 才会回到新的破裂资产里）。
+	// Chaos fracture bone binding (legacy v9-v10; read-and-discard to keep the stream aligned)
+	if (Ar.IsLoading() && Version >= 9 && Version <= 10)
 	{
-		Ar << bHasBoneBinding;
-		Ar << BoneBindingBoneCount;
-		BoneBindingBulkData.Serialize(Ar, this);
-	}
-	else if (Ar.IsLoading())
-	{
-		bHasBoneBinding = false;
-		BoneBindingBoneCount = 0;
+		bool bLegacyHasBoneBinding = false;
+		int32 LegacyBoneBindingBoneCount = 0;
+		FByteBulkData LegacyBoneBindingBulkData;
+		Ar << bLegacyHasBoneBinding;
+		Ar << LegacyBoneBindingBoneCount;
+		LegacyBoneBindingBulkData.Serialize(Ar, this);
+		LegacyBoneBindingBulkData.RemoveBulkData();
 	}
 
-	// Fracture cap splats (Version 10+; v5-v9 assets keep defaults)
-	if (Version >= 10)
+	// Fracture cap splats (legacy v10; read-and-discard, see above)
+	if (Ar.IsLoading() && Version >= 10 && Version <= 10)
 	{
-		Ar << CapSplatCount;
-		CapSplatBulkData.Serialize(Ar, this);
-	}
-	else if (Ar.IsLoading())
-	{
-		CapSplatCount = 0;
+		int32 LegacyCapSplatCount = 0;
+		FByteBulkData LegacyCapSplatBulkData;
+		Ar << LegacyCapSplatCount;
+		LegacyCapSplatBulkData.Serialize(Ar, this);
+		LegacyCapSplatBulkData.RemoveBulkData();
 	}
 }
 
@@ -219,7 +221,8 @@ int64 UGaussianSplatAsset::GetMemoryUsage() const
 	TotalBytes += TemporalBulkData.GetBulkDataSize();
 	TotalBytes += KeyframeBulkData.GetBulkDataSize();
 	TotalBytes += Native4DBulkData.GetBulkDataSize();
-	TotalBytes += BoneBindingBulkData.GetBulkDataSize();
+	// [已废弃 v11] 绑定块已迁移到 UGaussianSplatFractureAsset
+	//TotalBytes += BoneBindingBulkData.GetBulkDataSize();
 
 	if (ColorTexture)
 	{
@@ -981,7 +984,12 @@ void UGaussianSplatAsset::UnlockNative4DData() const
 	if (Native4DBulkData.GetBulkDataSize() > 0) Native4DBulkData.Unlock();
 }
 
-// --- Fracture bone binding (version 9+, see header for the block layout) ---
+// --- [已废弃 v11] Fracture bone binding ---
+//
+// 绑定块（骨头矩阵 + 每 splat 骨头归属）与断面 cap 块的读写在 v11 已整体迁移到
+// UGaussianSplatFractureAsset（Source/NanoGS/Public/GaussianSplatFractureAsset.h）。
+// 以下实现保留仅作历史参考，请勿再使用；本资产已不持有这两个 bulk data。
+#if 0
 
 const void* UGaussianSplatAsset::LockBoneBindingDataReadOnly(int64* OutSize) const
 {
@@ -1259,6 +1267,8 @@ void UGaussianSplatAsset::SetFractureCaps(const TArray<FGaussianSplatCap>& InCap
 	UE_LOG(LogTemp, Log, TEXT("SetFractureCaps: asset '%s' stored %d cap splats (%lld bytes)"),
 		*GetName(), CapSplatCount, TotalBytes);
 }
+
+#endif // 0 — 已废弃 v11：破裂绑定块 / 断面 cap 块实现（迁移到 UGaussianSplatFractureAsset）
 
 // ----------------------------------------------------------------------------
 // .o4d v2 dedicated container (magic 'O4D2')

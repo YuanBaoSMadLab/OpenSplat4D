@@ -4,6 +4,7 @@
 #include "GaussianSplatBoneBinder.h"
 
 #include "GaussianSplatAsset.h"
+#include "GaussianSplatFractureAsset.h"
 #include "GaussianDataTypes.h"
 
 #include "GeometryCollection/GeometryCollection.h"
@@ -253,6 +254,7 @@ namespace
 
 FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 	UGaussianSplatAsset* Asset,
+	UGaussianSplatFractureAsset* Fracture,
 	const UGeometryCollection* Collection,
 	const FGaussianSplatBoneBindParams& Params)
 {
@@ -261,6 +263,12 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 	if (!Asset)
 	{
 		Result.Error = TEXT("资产为空。");
+		return Result;
+	}
+	// v11: the binding is written into the fracture asset, so it is required.
+	if (!Fracture)
+	{
+		Result.Error = TEXT("破裂资产为空（绑定数据写入破裂资产，需先生成破裂资产）。");
 		return Result;
 	}
 	if (!Collection)
@@ -934,16 +942,16 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 	}
 
 	// The binding validates its cap indices against the cap block, so the caps
-	// have to land first. Clearing is only worth a dirty mark when the asset
-	// actually carried caps before.
-	if (Caps.Num() > 0 || Asset->GetCapSplatCount() > 0)
+	// have to land first. Clearing is only worth a dirty mark when the fracture
+	// asset actually carried caps before.
+	if (Caps.Num() > 0 || Fracture->GetCapSplatCount() > 0)
 	{
-		Asset->SetFractureCaps(Caps);
+		Fracture->SetFractureCaps(Caps);
 	}
 
-	if (!Asset->SetBoneBinding(RestBoneMatrices, SplatBoneIndices, BoundsMin, BoundsMax, CapBoneIndices))
+	if (!Fracture->SetBoneBinding(RestBoneMatrices, SplatBoneIndices, BoundsMin, BoundsMax, CapBoneIndices))
 	{
-		Result.Error = TEXT("写入破裂骨头绑定失败（资产拒绝该绑定数据，详见日志）。");
+		Result.Error = TEXT("写入破裂骨头绑定失败（破裂资产拒绝该绑定数据，详见日志）。");
 		return Result;
 	}
 

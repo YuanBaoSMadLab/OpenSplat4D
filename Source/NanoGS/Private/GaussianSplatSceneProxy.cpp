@@ -4,6 +4,7 @@
 #include "GaussianSplatSceneProxy.h"
 #include "NanoGSGaussianSplatComponent.h"
 #include "GaussianSplatAsset.h"
+#include "GaussianSplatFractureAsset.h"
 #include "GaussianSplatRenderData.h"
 #include "GaussianSplatViewExtension.h"
 #include "Engine/Texture2D.h"
@@ -34,15 +35,24 @@ FString FGaussianSplatGPUResources::GetAssetName() const
 	return SharedData.IsValid() ? SharedData->GetAssetName() : FString();
 }
 
-void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
+void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset, UGaussianSplatFractureAsset* Fracture)
 {
 	if (!Asset || !Asset->IsValid())
 	{
 		return;
 	}
 
-	// Get or create shared render data (CPU-side cached data, loaded once per asset)
-	SharedData = Asset->GetOrCreateRenderData();
+	// Get or create shared render data (CPU-side cached data, loaded once per asset).
+	// The fracture asset is the authoritative source when present: its render data
+	// is the source point cloud with the bone binding / cap splats folded in.
+	if (Fracture != nullptr)
+	{
+		SharedData = Fracture->GetOrCreateRenderData();
+	}
+	if (!SharedData.IsValid())
+	{
+		SharedData = Asset->GetOrCreateRenderData();
+	}
 	if (!SharedData.IsValid() || !SharedData->IsInitialized())
 	{
 		return;
@@ -758,6 +768,7 @@ void FGaussianSplatGPUResources::CreatePerInstanceBuffers(FRHICommandListBase& R
 FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent* InComponent)
 	: FPrimitiveSceneProxy(InComponent)
 	, CachedAsset(InComponent->SplatAsset.Get())
+	, CachedFractureAsset(InComponent->FractureAsset.Get())
 	, SplatCount(InComponent->SplatAsset ? InComponent->SplatAsset->GetSplatCount() : 0)
 	, SHOrder(InComponent->SHOrder)
 	, OpacityScale(InComponent->OpacityScale)
@@ -914,7 +925,7 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 	}
 
 	GPUResources = new FGaussianSplatGPUResources();
-	GPUResources->Initialize(Asset);
+	GPUResources->Initialize(Asset, CachedFractureAsset.Get());
 
 	// Get color texture reference
 	if (Asset->ColorTexture)

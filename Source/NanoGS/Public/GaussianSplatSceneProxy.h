@@ -14,6 +14,7 @@
 
 class UGaussianSplatComponent;
 class UGaussianSplatAsset;
+class UGaussianSplatFractureAsset;
 class FGaussianSplatRenderData;
 
 
@@ -29,8 +30,10 @@ public:
 	FGaussianSplatGPUResources();
 	virtual ~FGaussianSplatGPUResources();
 
-	/** Initialize resources from asset data */
-	void Initialize(UGaussianSplatAsset* Asset);
+	/** Initialize resources from asset data. When Fracture is given, the shared
+	 *  render data comes from the fracture asset (source splats + bone binding +
+	 *  cap splats); otherwise from the plain splat asset. */
+	void Initialize(UGaussianSplatAsset* Asset, UGaussianSplatFractureAsset* Fracture = nullptr);
 
 	/** Check if resources are valid */
 	bool IsValid() const { return bInitialized && SplatCount > 0 && (PackedSplatBufferSRV.IsValid() || ColorTextureSRV.IsValid()); }
@@ -549,6 +552,11 @@ private:
 	 *  if asset is GC'd or replaced via SetSplatAsset while proxy exists.
 	 *  Must call .Get() and check validity before each access on render thread. */
 	TWeakObjectPtr<UGaussianSplatAsset> CachedAsset;
+
+	/** Optional fracture asset (v11+). Its shared render data already folds in
+	 *  the source splats plus the bone binding and cap splats, so when set it is
+	 *  the data source instead of CachedAsset. Weak ptr for the same reason. */
+	TWeakObjectPtr<UGaussianSplatFractureAsset> CachedFractureAsset;
 
 	/** Rendering parameters */
 	int32 SplatCount = 0;

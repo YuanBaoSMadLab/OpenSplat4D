@@ -3,6 +3,7 @@
 
 #include "GaussianSplatRenderData.h"
 #include "GaussianSplatAsset.h"
+#include "GaussianSplatFractureAsset.h"
 #include "RHICommandList.h"
 #include "Misc/ScopeExit.h"
 
@@ -15,7 +16,7 @@ FGaussianSplatRenderData::~FGaussianSplatRenderData()
 	ReleaseGPUBuffers();
 }
 
-void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset)
+void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset, UGaussianSplatFractureAsset* Fracture)
 {
 	FScopeLock Lock(&InitLock);
 
@@ -186,20 +187,22 @@ void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset)
 	}
 
 	// --- Fracture bone binding (static per-splat bone index) ---
-	// The index block length is derived from the bulk data size rather than
-	// SplatCount: a later Nanite rebuild grows SplatCount with LOD splats, and
-	// the renderer must not read past the binding it was given.
-	if (Asset->HasBoneBinding())
+	// v11: the binding lives in the dedicated fracture asset; the source splat
+	// asset no longer carries one. The index block length is derived from the
+	// bulk data size rather than SplatCount: a later Nanite rebuild grows
+	// SplatCount with LOD splats, and the renderer must not read past the
+	// binding it was given.
+	if (Fracture != nullptr && Fracture->HasBoneBinding())
 	{
 		int64 BindingSize = 0;
-		const uint8* RawBinding = static_cast<const uint8*>(Asset->LockBoneBindingDataReadOnly(&BindingSize));
+		const uint8* RawBinding = static_cast<const uint8*>(Fracture->LockBoneBindingDataReadOnly(&BindingSize));
 		ON_SCOPE_EXIT
 		{
-			Asset->UnlockBoneBindingData();
+			Fracture->UnlockBoneBindingData();
 		};
 
-		const int32 BoundBoneCount = Asset->GetBoneCount();
-		const int64 IndexBlockOffset = UGaussianSplatAsset::GetBoneIndexBlockOffset(BoundBoneCount);
+		const int32 BoundBoneCount = Fracture->GetBoneCount();
+		const int64 IndexBlockOffset = UGaussianSplatFractureAsset::GetBoneIndexBlockOffset(BoundBoneCount);
 		const int64 IndexCount = (RawBinding && BindingSize > IndexBlockOffset)
 			? (BindingSize - IndexBlockOffset) / static_cast<int64>(sizeof(uint32))
 			: 0;
@@ -236,21 +239,21 @@ void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset)
 	// That means the block must cover SplatCount + M exactly — i.e. the asset
 	// must not have grown since the binding was written — otherwise the indices
 	// would be misaligned and the caps are dropped rather than rendered wrong.
-	const int32 AssetCapSplatCount = Asset->GetCapSplatCount();
+	const int32 AssetCapSplatCount = (Fracture != nullptr) ? Fracture->GetCapSplatCount() : 0;
 	if (AssetCapSplatCount > 0)
 	{
 		if (bHasBoneBinding && BoneBindingSplatCount >= SplatCount + AssetCapSplatCount)
 		{
 			int64 CapSize = 0;
-			const uint8* RawCaps = static_cast<const uint8*>(Asset->LockCapSplatDataReadOnly(&CapSize));
+			const uint8* RawCaps = static_cast<const uint8*>(Fracture->LockCapSplatDataReadOnly(&CapSize));
 			ON_SCOPE_EXIT
 			{
-				Asset->UnlockCapSplatData();
+				Fracture->UnlockCapSplatData();
 			};
 
-			if (RawCaps && CapSize >= (int64)AssetCapSplatCount * (int64)UGaussianSplatAsset::CapSplatStride)
+			if (RawCaps && CapSize >= (int64)AssetCapSplatCount * (int64)UGaussianSplatFractureAsset::CapSplatStride)
 			{
-				constexpr int32 CapStrideFloats = UGaussianSplatAsset::CapSplatStride / (int32)sizeof(float);
+				constexpr int32 CapStrideFloats = UGaussianSplatFractureAsset::CapSplatStride / (int32)sizeof(float);
 				const float* CapFloats = reinterpret_cast<const float*>(RawCaps);
 
 				PackedSplatData.SetNumUninitialized((SplatCount + AssetCapSplatCount) * GaussianSplattingConstants::PackedSplatStride);

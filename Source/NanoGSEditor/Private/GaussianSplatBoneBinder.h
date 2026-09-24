@@ -6,6 +6,7 @@
 #include "CoreMinimal.h"
 
 class UGaussianSplatAsset;
+class UGaussianSplatFractureAsset;
 class UGeometryCollection;
 
 /**
@@ -94,14 +95,18 @@ class FGaussianSplatBoneBinder
 {
 public:
 	/**
-	 * Assign every splat of Asset to a bone of Collection and store the result
-	 * on the asset (asset side bone binding, version 9 block).
+	 * Assign every splat of Asset to a bone of Collection.
 	 *
+	 * @param Asset     Source splat asset: read only (positions, format, 4D flag).
+	 * @param Fracture  Destination fracture asset: the bone binding and the cut
+	 *                  surface caps are written here (v11; the splat asset no
+	 *                  longer carries a binding).
 	 * @return Result with bSuccess false and Error set when the binding could
-	 *         not be produced; the asset is left untouched in that case.
+	 *         not be produced; neither asset is touched in that case.
 	 */
 	static FGaussianSplatBoneBindResult BindAssetToCollection(
 		UGaussianSplatAsset* Asset,
+		UGaussianSplatFractureAsset* Fracture,
 		const UGeometryCollection* Collection,
 		const FGaussianSplatBoneBindParams& Params = FGaussianSplatBoneBindParams());
 };

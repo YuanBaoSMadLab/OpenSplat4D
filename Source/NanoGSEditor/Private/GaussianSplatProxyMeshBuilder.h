@@ -7,6 +7,7 @@
 #include "MeshDescription.h"
 
 class UGaussianSplatAsset;
+class UGaussianSplatFractureAsset;
 class UStaticMesh;
 
 /**
@@ -90,6 +91,30 @@ public:
 	 */
 	static UStaticMesh* CreateProxyMeshAsset(
 		const UGaussianSplatAsset* Asset,
+		const FGaussianSplatProxyMeshParams& Params,
+		FString& OutError,
+		FGaussianSplatProxyMeshResult* OutResult = nullptr);
+
+	/**
+	 * Extract a raw triangle soup out of a built proxy mesh: welded vertex
+	 * positions and three int32 indices per triangle. Quad faces are fan
+	 * triangulated. Returns false when the mesh has no usable polygon.
+	 */
+	static bool ExtractTriangleSoup(
+		const FMeshDescription& Mesh,
+		TArray<FVector3f>& OutVertices,
+		TArray<int32>& OutIndices);
+
+	/**
+	 * Build the proxy mesh and store it in FractureAsset as the collision voxel
+	 * shell (the fracture asset owns the shell itself, so no StaticMesh asset
+	 * is created). Rebuilds any previous shell; on failure the previous shell
+	 * is left untouched.
+	 * @return True when the shell was written (OutError holds the reason).
+	 */
+	static bool BuildVoxelShell(
+		const UGaussianSplatAsset* Asset,
+		UGaussianSplatFractureAsset* FractureAsset,
 		const FGaussianSplatProxyMeshParams& Params,
 		FString& OutError,
 		FGaussianSplatProxyMeshResult* OutResult = nullptr);

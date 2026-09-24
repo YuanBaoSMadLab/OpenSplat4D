@@ -5,10 +5,12 @@
 
 #include "CoreMinimal.h"
 #include "Components/PrimitiveComponent.h"
+#include "Interfaces/Interface_CollisionDataProvider.h"
 #include "GaussianDataTypes.h"
 #include "NanoGSGaussianSplatComponent.generated.h"
 
 class UGaussianSplatAsset;
+class UGaussianSplatFractureAsset;
 class FGaussianSplatSceneProxy;
 class UBodySetup;
 
@@ -42,14 +44,26 @@ enum class EGaussianCollisionMethod : uint8
 	/** Bounding box collision */
 	BoundingBox UMETA(DisplayName = "包围盒"),
 	/** Voxel-based collision (approximate shape) */
-	Voxel UMETA(DisplayName = "体素")
+	Voxel UMETA(DisplayName = "体素"),
+	/** The fracture asset's collision voxel shell, cooked as a real triangle
+	 *  mesh ("complex as simple").  Unlike Voxel / ConvexHull this keeps the
+	 *  concave silhouette and hollow interiors, because nothing is filled in.
+	 *  Requires a fracture asset that owns a voxel shell whose
+	 *  bUseVoxelShellAsCollision is on; otherwise the component ends up with
+	 *  no collision at all ("仅用于破裂"). */
+	ProxyMesh UMETA(DisplayName = "体素壳(复杂碰撞)")
 };
 
 /**
  * Component for rendering Gaussian Splatting assets in the scene
+ *
+ * Implements IInterface_CollisionDataProvider so UBodySetup, whose outer is
+ * this component, can pull a triangle mesh out of it and cook it — the same
+ * route USplineMeshComponent uses.  Only the ProxyMesh collision method feeds
+ * it (see GetPhysicsTriMeshData).
  */
 UCLASS(ClassGroup = (Rendering), meta = (BlueprintSpawnableComponent), hidecategories = (Navigation))
-class NANOGS_API UGaussianSplatComponent : public UPrimitiveComponent
+class NANOGS_API UGaussianSplatComponent : public UPrimitiveComponent, public IInterface_CollisionDataProvider
 {
 	GENERATED_BODY()
 
@@ -83,6 +97,21 @@ public:
 	/** Collision test */
 	virtual bool LineTraceComponent(struct FHitResult& OutHit, const FVector TraceStart, const FVector TraceEnd, const FCollisionQueryParams& TraceParams) override;
 	//~ End UPrimitiveComponent Interface
+
+	//~ Begin IInterface_CollisionDataProvider Interface
+	/** Hand the cached voxel shell to the physics cooker. Fails (false) unless
+	 *  the ProxyMesh method is active and a shell is loaded, so a BodySetup that
+	 *  somehow cooks while another method is selected still comes out empty. */
+	virtual bool GetPhysicsTriMeshData(struct FTriMeshCollisionData* CollisionData, bool bInUseAllTriData) override;
+
+	virtual bool GetTriMeshSizeEstimates(struct FTriMeshCollisionDataEstimates& OutTriMeshEstimates, bool bInUseAllTriData) const override;
+
+	virtual bool ContainsPhysicsTriMeshData(bool bInUseAllTriData) const override;
+
+	/** DDC key component: the shell's content hash, so re-solving the fracture
+	 *  cannot be mistaken for a cache hit. */
+	virtual void GetMeshId(FString& OutMeshId) override;
+	//~ End IInterface_CollisionDataProvider Interface
 
 	/** Set the Gaussian Splat asset to render */
 	UFUNCTION(BlueprintCallable, Category = "高斯泼溅")
@@ -209,14 +238,27 @@ public:
 	// 因此运行时只能靠反射（FindFunction + ProcessEvent）读取变换。
 	// ------------------------------------------------------------------
 
-	/** 驱动本组件的几何集合组件（必须已在该资产上"绑定破裂骨头"）。
+	/** 驱动本组件的几何集合组件（必须已在该破裂资产上解算过破裂）。
 	 *  留空则表示不做破裂跟随。 */
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "高斯泼溅|破裂",
 		meta = (DisplayName = "破裂几何集合组件",
 			AllowedClasses = "/Script/GeometryCollectionEngine.GeometryCollectionComponent"))
 	TObjectPtr<UObject> FractureGeometryCollection = nullptr;
 
-	/** 当前是否有生效的破裂跟随（已指定组件 + 资产已绑定骨头） */
+	/** 破裂资产（UGaussianSplatFractureAsset）。指定后：
+	 *   - 骨头绑定与断面 splat 从该资产读取（源资产自 v11 起不再持有破裂数据）；
+	 *   - 渲染数据取该资产（源点云 + 绑定 + 断面）而不是裸源资产。
+	 *  留空 = 按普通 splat 资产渲染，无破裂。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|破裂",
+		meta = (DisplayName = "破裂资产",
+			AllowedClasses = "/Script/NanoGS.GaussianSplatFractureAsset"))
+	TObjectPtr<UGaussianSplatFractureAsset> FractureAsset = nullptr;
+
+	/** 设置破裂资产。会自动把源 splat 资产同步为本组件的渲染资产（若为空）。 */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|破裂", meta = (DisplayName = "设置破裂资产"))
+	void SetFractureAsset(UGaussianSplatFractureAsset* NewAsset);
+
+	/** 当前是否有生效的破裂跟随（已指定组件 + 破裂资产已绑定骨头） */
 	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|破裂", meta = (DisplayName = "破裂跟随是否生效"))
 	bool IsFractureBindingActive() const;
 
@@ -314,6 +356,16 @@ protected:
 	void BuildCollisionBodySetup();
 
 	/**
+	 * 当前配置是否真的会产生碰撞几何。
+	 *
+	 * 与 "CollisionMethod != None" 的区别只在 ProxyMesh：该方法的几何来自破裂
+	 * 资产的体素壳，壳不存在、或壳被标为"仅用于破裂"（bUseVoxelShellAsCollision
+	 * 关闭）时组件必须完全没有碰撞，profile 也得留在 NoCollision，
+	 * 否则引擎会为一个空 BodySetup 建出物理状态。
+	 */
+	bool HasEffectiveCollision() const;
+
+	/**
 	 * 按 CollisionMethod 把碰撞配置切到 BlockAll / NoCollision。
 	 *
 	 * 必须在几何（BodySetup）就绪之后调用，且刻意与 RebuildCollision() 分离：
@@ -376,4 +428,17 @@ private:
 
 	/** Whether collision needs rebuild */
 	bool bCollisionDirty = true;
+
+	// ------------------------------------------------------------------
+	// ProxyMesh collision source: the fracture asset's voxel shell, cached
+	// as a triangle soup so the cooker can read it without re-locking the
+	// bulk data. Positions are in source asset local space (the same space
+	// the other collision methods build in). Empty for every other method.
+	// ------------------------------------------------------------------
+
+	/** Shell vertex positions (source asset local space) */
+	TArray<FVector3f> VoxelShellVertices;
+
+	/** Shell triangles */
+	TArray<FTriIndices> VoxelShellIndices;
 };

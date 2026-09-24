@@ -59,7 +59,16 @@ public class NanoGSEditor : ModuleRules
 					// component space hierarchy) live in the Chaos runtime module.
 					"Chaos",
 					// IContentBrowserSingleton, for the GeometryCollection picker dialog.
-					"ContentBrowser"
+					"ContentBrowser",
+					// Chaos 破裂解算：FPlanarCells / CutWithPlanarCells / CreateCuttingSurfacePreview
+					// （Editor-only；NanoGS (Runtime) 绝不能依赖这些）。
+					"PlanarCut",
+					"FractureEngine",
+					// FVoronoiDiagram（Voronoi 站点破裂来源）。
+					"Voronoi",
+					// FDynamicMesh3（切割面预览）与几何工具。
+					"GeometryCore",
+					"DynamicMesh"
 				}
 			);
 

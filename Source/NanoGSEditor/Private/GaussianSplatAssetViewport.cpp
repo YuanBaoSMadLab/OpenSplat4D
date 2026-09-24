@@ -8,6 +8,8 @@
 #include "AdvancedPreviewScene.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
+#include "PrimitiveDrawInterface.h"
+#include "SceneView.h"
 
 #define LOCTEXT_NAMESPACE "GaussianSplatAssetViewport"
 
@@ -152,6 +154,52 @@ void FGaussianSplatAssetViewportClient::SetSplatAsset(UGaussianSplatAsset* InAss
 	}
 }
 
+void FGaussianSplatAssetViewportClient::SetCuttingPreview(const TArray<FVector>& InSegments, const TArray<FVector>& InSites)
+{
+	CuttingPreviewSegments = InSegments;
+	CuttingPreviewSites = InSites;
+	Invalidate();
+}
+
+void FGaussianSplatAssetViewportClient::ClearCuttingPreview()
+{
+	if (CuttingPreviewSegments.Num() == 0 && CuttingPreviewSites.Num() == 0)
+	{
+		return;
+	}
+
+	CuttingPreviewSegments.Reset();
+	CuttingPreviewSites.Reset();
+	Invalidate();
+}
+
+void FGaussianSplatAssetViewportClient::Draw(const FSceneView* View, FPrimitiveDrawInterface* PDI)
+{
+	// 基类负责拖拽工具 / gizmo / DrawHelper / active modes，必须先调用
+	FEditorViewportClient::Draw(View, PDI);
+
+	if (!PDI)
+	{
+		return;
+	}
+
+	const int32 SegmentCount = CuttingPreviewSegments.Num() / 2;
+	for (int32 SegmentIndex = 0; SegmentIndex < SegmentCount; ++SegmentIndex)
+	{
+		PDI->DrawLine(
+			CuttingPreviewSegments[SegmentIndex * 2],
+			CuttingPreviewSegments[SegmentIndex * 2 + 1],
+			FLinearColor(0.95f, 0.55f, 0.20f),
+			SDPG_Foreground,
+			1.0f);
+	}
+
+	for (const FVector& Site : CuttingPreviewSites)
+	{
+		PDI->DrawPoint(Site, FLinearColor(0.62f, 0.94f, 0.84f), 4.0f, SDPG_Foreground);
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 // SGaussianSplatAssetViewport
 //////////////////////////////////////////////////////////////////////////
@@ -190,6 +238,22 @@ void SGaussianSplatAssetViewport::SetSplatAsset(UGaussianSplatAsset* InAsset, bo
 AGaussianSplatActor* SGaussianSplatAssetViewport::GetPreviewActor() const
 {
 	return ViewportClient.IsValid() ? ViewportClient->GetPreviewActor() : nullptr;
+}
+
+void SGaussianSplatAssetViewport::SetCuttingPreview(const TArray<FVector>& InSegments, const TArray<FVector>& InSites)
+{
+	if (ViewportClient.IsValid())
+	{
+		ViewportClient->SetCuttingPreview(InSegments, InSites);
+	}
+}
+
+void SGaussianSplatAssetViewport::ClearCuttingPreview()
+{
+	if (ViewportClient.IsValid())
+	{
+		ViewportClient->ClearCuttingPreview();
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

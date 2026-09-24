@@ -3,6 +3,7 @@
 
 #include "GaussianSplatAssetFactory.h"
 #include "GaussianSplatAsset.h"
+#include "GaussianSplatFractureAsset.h"
 #include "PLYFileReader.h"
 #include "FudanPthReader.h"
 #include "EditorFramework/AssetImportData.h"
@@ -364,4 +365,39 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYSequence(
 		*Asset->GetName(), N, M, KeyframeBytes);
 
 	return Asset;
+}
+
+// ----------------------------------------------------------------------------
+// UGaussianSplatFractureAssetFactory
+//
+// 只创建一个空的破裂资产：源 splat 资产、碰撞体素壳、破裂解算都在专用编辑器
+// （双击破裂资产打开）里完成，工厂本身不碰数据。
+// ----------------------------------------------------------------------------
+
+UGaussianSplatFractureAssetFactory::UGaussianSplatFractureAssetFactory()
+{
+	bCreateNew = true;
+	bEditAfterNew = true;
+	SupportedClass = UGaussianSplatFractureAsset::StaticClass();
+}
+
+UObject* UGaussianSplatFractureAssetFactory::FactoryCreateNew(
+	UClass* InClass,
+	UObject* InParent,
+	FName InName,
+	EObjectFlags Flags,
+	UObject* Context,
+	FFeedbackContext* Warn)
+{
+	return NewObject<UGaussianSplatFractureAsset>(InParent, InClass, InName, Flags);
+}
+
+FText UGaussianSplatFractureAssetFactory::GetDisplayName() const
+{
+	return FText::FromString(TEXT("破裂资产"));
+}
+
+FText UGaussianSplatFractureAssetFactory::GetToolTip() const
+{
+	return FText::FromString(TEXT("Chaos 破裂资产：引用一个 OpenSplat 资产，内嵌破裂几何集合、骨头绑定与断面 splat。双击进入破裂编辑器进行设置与解算。"));
 }

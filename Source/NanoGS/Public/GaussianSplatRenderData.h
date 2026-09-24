@@ -10,6 +10,7 @@
 #include "RHIResources.h"
 
 class UGaussianSplatAsset;
+class UGaussianSplatFractureAsset;
 
 /**
  * Shared render data for a Gaussian Splat asset.
@@ -23,8 +24,15 @@ public:
 	FGaussianSplatRenderData();
 	~FGaussianSplatRenderData();
 
-	/** Initialize CPU-side data from asset. Only runs once (guarded by bIsInitialized). */
-	void Initialize(UGaussianSplatAsset* Asset);
+	/**
+	 * Initialize CPU-side data.
+	 * @param Asset     Source splat asset (point cloud, LOD, 4D data).
+	 * @param Fracture  Optional fracture asset; when non-null its bone binding and
+	 *                  cap splats are folded into the packed data. Pass null to
+	 *                  render the plain splat asset (no fracture).
+	 * Only runs once (guarded by bIsInitialized).
+	 */
+	void Initialize(UGaussianSplatAsset* Asset, UGaussianSplatFractureAsset* Fracture = nullptr);
 
 	/** Create shared GPU buffers. Thread-safe, only runs once. Must be called on render thread. */
 	void CreateGPUBuffers(FRHICommandListBase& RHICmdList);
