@@ -27,6 +27,8 @@ public class NanoGSEditor : ModuleRules
 				"Engine",
 				"NanoGS",
 				"OpenSplat4DRuntime",
+				// AGaussianSplatFractureActor（拖入场景的破裂 Actor 工厂要引用它）。
+				"OpenSplat4DFracture",
 				// FMeshDescription is part of the proxy mesh builder's interface.
 				"MeshDescription"
 			}
