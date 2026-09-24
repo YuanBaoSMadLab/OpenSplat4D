@@ -15,6 +15,7 @@
 #include "SceneView.h"
 #include "SceneManagement.h"
 #include "DynamicMeshBuilder.h"
+#include "MeshBuilderOneFrameResources.h"
 #include "Materials/Material.h"
 #include "MaterialDomain.h"
 #include "EngineUtils.h"
@@ -779,10 +780,13 @@ FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent
 	, SortEveryNthFrame(InComponent->SortEveryNthFrame)
 	, bEnableFrustumCulling(InComponent->bEnableFrustumCulling)
 	, bCastShadow(InComponent->bCastShadow)
-	, ShadowProxyDetail(InComponent->ShadowProxyDetail)
-	, ShadowIntensity(InComponent->ShadowIntensity)
 {
 	bWillEverBeLit = false;  // Pure emissive rendering - splats are not affected by scene lighting
+
+	// Copy the shadow geometry (fracture asset's voxel shell, source asset local
+	// space). Already empty on the component unless bCastShadow is on and a shell
+	// exists, so this is a no-op for every other configuration.
+	InComponent->GetShadowGeometry(ShadowShellVertices, ShadowShellTriangles);
 }
 
 FGaussianSplatSceneProxy::~FGaussianSplatSceneProxy()
@@ -804,10 +808,12 @@ FPrimitiveViewRelevance FGaussianSplatSceneProxy::GetViewRelevance(const FSceneV
 {
 	FPrimitiveViewRelevance Result;
 	Result.bDrawRelevance = IsShown(View);
-	// Shadow casting disabled: previous implementation used a bounding-box proxy that
-	// wrapped the entire model producing a cube-shaped shadow. Removed until a proper
-	// shape-based shadow mesh can be generated.
-	Result.bShadowRelevance = false;
+	// Shadow relevance is what lets the primitive into the shadow passes at all
+	// (FShadowSetup::AddSubjectPrimitive early-outs without it). It only flips on
+	// when the user asked for shadows *and* real shell geometry was cached; the
+	// geometry is then submitted exclusively to the shadow depth pass by
+	// GetDynamicMeshElements, so the splats themselves are never occluded.
+	Result.bShadowRelevance = bCastShadow && ShadowShellTriangles.Num() >= 3 && IsShown(View);
 	Result.bDynamicRelevance = true;
 	Result.bStaticRelevance = false;
 	Result.bRenderInMainPass = true;
@@ -909,8 +915,86 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 					SelectionHitProxy);
 			}
 #endif // WITH_EDITOR
+
+			// Shadow depth pass. The pass is identified by the cull frustum it
+			// installs on the view before calling GetDynamicMeshElements
+			// (ShadowSetup.cpp, FGatherShadowPrimitivesPacket / GatherDynamicMeshElementsArray).
+			// Only the voxel shell is submitted here - never for the hit proxy pass.
+			if (bCastShadow && ShadowShellTriangles.Num() >= 3 && !ViewFamily.EngineShowFlags.HitProxies &&
+				Views[ViewIndex]->GetDynamicMeshElementsShadowCullFrustum() != nullptr)
+			{
+				AddShadowMeshBatch(ViewIndex, Collector);
+			}
 		}
 	}
+}
+
+void FGaussianSplatSceneProxy::AddShadowMeshBatch(int32 ViewIndex, FMeshElementCollector& Collector) const
+{
+	const int32 VertexCount = ShadowShellVertices.Num();
+	const int32 TriangleCount = ShadowShellTriangles.Num() / 3;
+
+	UMaterialInterface* ShadowMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
+	if (!ShadowMaterial || VertexCount < 3 || TriangleCount < 1)
+	{
+		return;
+	}
+
+	// The builder hands its vertex/index buffers over to the one frame resource,
+	// so it has to be local to this call (and cannot be reused afterwards).
+	FMeshBuilderOneFrameResources& OneFrameResource = Collector.AllocateOneFrameResource<FMeshBuilderOneFrameResources>();
+	FDynamicMeshBuilder MeshBuilder(Collector.GetFeatureLevel());
+	MeshBuilder.ReserveVertices(VertexCount);
+	MeshBuilder.ReserveTriangles(TriangleCount);
+
+	// Some valid tangent basis; the shell is never shaded.
+	const FVector2f UV(0.f, 0.f);
+	const FVector3f TX(1.f, 0.f, 0.f);
+	const FVector3f TY(0.f, 1.f, 0.f);
+	const FVector3f TZ(0.f, 0.f, 1.f);
+	const FColor White = FColor::White;
+
+	// Voxel shell vertices are in source asset local space, which is the space
+	// this proxy's local-to-world also maps (same as GetLocalBounds).
+	for (int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex)
+	{
+		MeshBuilder.AddVertex(ShadowShellVertices[VertexIndex], UV, TX, TY, TZ, White);
+	}
+	for (int32 TriangleIndex = 0; TriangleIndex < TriangleCount; ++TriangleIndex)
+	{
+		MeshBuilder.AddTriangle(
+			ShadowShellTriangles[TriangleIndex * 3 + 0],
+			ShadowShellTriangles[TriangleIndex * 3 + 1],
+			ShadowShellTriangles[TriangleIndex * 3 + 2]);
+	}
+
+	FMeshBatch& Mesh = Collector.AllocateMesh();
+	// bDisableBackfaceCulling = true: the shell's triangle winding is not
+	// guaranteed consistent, and MeshPassProcessor turns that flag into CM_None
+	// for the shadow pass, so no face is culled away.
+	MeshBuilder.GetMeshElement(
+		GetLocalToWorld(),
+		ShadowMaterial->GetRenderProxy(),
+		SDPG_World,
+		/*bDisableBackfaceCulling=*/true,
+		/*bReceivesDecals=*/false,
+		ViewIndex,
+		OneFrameResource,
+		Mesh);
+
+	// Shadow caster only. GetMeshElement leaves these at their defaults, and the
+	// defaults are wrong for us: letting the hull into the base pass would draw a
+	// solid shell over the splats, and letting it into the depth prepass would
+	// write depth that the splats' CF_DepthNearOrEqual test then fails against -
+	// which dimmed the whole model with the old bounding-box proxy.
+	Mesh.CastShadow = true;
+	Mesh.bUseForMaterial = false;
+	Mesh.bUseForDepthPass = false;
+	Mesh.bUseAsOccluder = false;
+	Mesh.bUseSelectionOutline = false;
+	Mesh.BatchHitProxyId = FHitProxyId();
+
+	Collector.AddMesh(ViewIndex, Mesh);
 }
 
 //critical setup. creates FGaussianSplatGPUResources which uploads all the GPU buffers

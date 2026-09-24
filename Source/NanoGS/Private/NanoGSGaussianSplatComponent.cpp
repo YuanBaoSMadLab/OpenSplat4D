@@ -32,8 +32,8 @@ UGaussianSplatComponent::UGaussianSplatComponent(const FObjectInitializer& Objec
 	// Enable dynamic rendering
 	Mobility = EComponentMobility::Movable;
 
-	// Shadow proxy detail: 0=Bounding box, 1=Convex hull, 2=Full
-	ShadowProxyDetail = 1;
+	// 已废弃：阴影代理类型（旧包围盒路径已移除）
+	// ShadowProxyDetail = 1;
 }
 
 void UGaussianSplatComponent::PostLoad()
@@ -57,10 +57,15 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, LODErrorThreshold) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxDrawDistance) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FadeOutStartDistance) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SortEveryNthFrame) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bCastShadow) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, ShadowIntensity))
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SortEveryNthFrame))
 	{
+		MarkRenderStateDirty();
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bCastShadow))
+	{
+		// Shadow geometry is cached on the component and copied into the proxy
+		// at construction, so re-cache before rebuilding the proxy.
+		RebuildShadowGeometry();
 		MarkRenderStateDirty();
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, CollisionMethod) ||
@@ -112,6 +117,12 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 			ApplyCollisionProfile();
 		}
 
+		// Shadows also come from the fracture asset's voxel shell.
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FractureAsset))
+		{
+			RebuildShadowGeometry();
+		}
+
 		MarkRenderStateDirty();
 		Update4DTickEnabled();
 	}
@@ -146,6 +157,10 @@ void UGaussianSplatComponent::OnRegister()
 	bCollisionDirty = true;
 	RebuildCollision();
 	ApplyCollisionProfile();
+
+	// Shadow geometry is copied into the proxy at construction time, so the cache
+	// must be ready before the render state is created.
+	RebuildShadowGeometry();
 }
 
 void UGaussianSplatComponent::OnUnregister()
@@ -316,6 +331,9 @@ void UGaussianSplatComponent::SetFractureAsset(UGaussianSplatFractureAsset* NewA
 	FractureLastPushedDeltas.Reset();
 	bFractureWasActive = false;
 
+	// Shadow geometry comes from the new asset's voxel shell
+	RebuildShadowGeometry();
+
 	Update4DTickEnabled();
 	MarkRenderStateDirty();
 }
@@ -464,6 +482,16 @@ FPrimitiveSceneProxy* UGaussianSplatComponent::CreateSceneProxy()
 	{
 		return nullptr;
 	}
+
+	// The engine reads UPrimitiveComponent::CastShadow while constructing the
+	// proxy descriptor (FPrimitiveSceneProxyDesc::InitializeFromPrimitiveComponent),
+	// and the shadow culling pass skips any primitive whose bCastDynamicShadow is
+	// false. That bitfield defaults to false, so it must be mirrored here before
+	// the proxy is created. SetCastShadow() is deliberately avoided: it calls
+	// MarkRenderStateDirty(), which would rebuild the proxy every frame from
+	// inside this very call. The qualified name bypasses the hiding accessor
+	// UGaussianSplatComponent::CastShadow().
+	UPrimitiveComponent::CastShadow = bCastShadow ? 1 : 0;
 
 	// Allow scene proxy creation in preview worlds (for asset editor viewport)
 	// Only skip for PIE worlds that are not the main game world
@@ -944,6 +972,36 @@ void UGaussianSplatComponent::ApplyCollisionProfile()
 void UGaussianSplatComponent::BuildCollisionBodySetup()
 {
 	RebuildCollision();
+}
+
+void UGaussianSplatComponent::RebuildShadowGeometry()
+{
+	ShadowShellVertices.Reset();
+	ShadowShellTriangles.Reset();
+
+	// Off by default: without the flag the proxy never enters the shadow pass,
+	// so the cache stays empty and the render path is untouched.
+	if (!bCastShadow || FractureAsset == nullptr)
+	{
+		return;
+	}
+
+	// Same triangle soup the ProxyMesh collision method uses. Read regardless of
+	// bUseVoxelShellAsCollision: that flag gates *collision*, and the shell is
+	// still the correct closed hull to cast shadows from.
+	if (!FractureAsset->GetVoxelShell(ShadowShellVertices, ShadowShellTriangles) ||
+		ShadowShellVertices.Num() < 3 || ShadowShellTriangles.Num() < 3)
+	{
+		ShadowShellVertices.Reset();
+		ShadowShellTriangles.Reset();
+		UE_LOG(LogTemp, Warning,
+			TEXT("GaussianSplat: fracture '%s' voxel shell could not be read; shadows stay off. Generate the collision voxel shell on the fracture asset first."),
+			*FractureAsset->GetName());
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: shadow geometry rebuilt from fracture '%s' (verts=%d, triangles=%d)"),
+		*FractureAsset->GetName(), ShadowShellVertices.Num(), ShadowShellTriangles.Num() / 3);
 }
 
 bool UGaussianSplatComponent::GenerateConvexHull(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)

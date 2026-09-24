@@ -571,8 +571,32 @@ private:
 
 	/** Shadow parameters */
 	bool bCastShadow = false;
-	uint8 ShadowProxyDetail = 1;  // 0=Box, 1=Convex, 2=Full
-	float ShadowIntensity = 1.0f;
+	// 已废弃：旧的包围盒阴影代理参数（ShadowProxyDetail / ShadowIntensity）
+	// uint8 ShadowProxyDetail = 1;  // 0=Box, 1=Convex, 2=Full
+	// float ShadowIntensity = 1.0f;
+
+	// ------------------------------------------------------------------
+	// Shadow geometry: the fracture asset's voxel shell (source asset local
+	// space), copied from the component at construction. Empty unless
+	// bCastShadow is on and the asset has a shell, in which case the proxy
+	// submits it to the shadow depth pass and nowhere else.
+	// ------------------------------------------------------------------
+
+	/** Shadow shell vertex positions */
+	TArray<FVector3f> ShadowShellVertices;
+
+	/** Shadow shell triangles (3 indices per triangle) */
+	TArray<int32> ShadowShellTriangles;
+
+	/**
+	 * Submit the voxel shell to the shadow depth pass for one view.
+	 *
+	 * The batch is flagged so it is used *only* as a shadow caster: no material,
+	 * no depth prepass, no occluder. Letting it into those passes would write the
+	 * shell's depth over the splats (whose PSO tests with CF_DepthNearOrEqual)
+	 * and dim the model, which is exactly the bug this replaces.
+	 */
+	void AddShadowMeshBatch(int32 ViewIndex, FMeshElementCollector& Collector) const;
 
 #if WITH_EDITOR
 	/** Cached hit proxy created in CreateHitProxies, used for editor viewport click selection. */

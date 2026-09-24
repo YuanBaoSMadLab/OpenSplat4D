@@ -214,17 +214,30 @@ public:
 		MarkRenderStateDirty();
 	}
 
-	/** 阴影投射 - 是否投射阴影到周围场景 */
+	/** 阴影投射 - 是否投射阴影到周围场景。
+	 *  开启后使用破裂资产的体素壳（封闭流形块状外壳）作为阴影几何，
+	 *  形状贴合点云本体，只在阴影深度 pass 提交，不写入自身深度/颜色，
+	 *  因此不会压暗模型本身。需要指定 FractureAsset 且该资产已有体素壳。 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (DisplayName = "投射阴影"))
 	bool bCastShadow = false;
 
-	/** 阴影代理类型 - 控制阴影的精度和性能 (0=包围盒, 1=凸包, 2=完整) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (ClampMin = "0", ClampMax = "2", EditCondition = "bCastShadow"))
-	uint8 ShadowProxyDetail = 1;
+	// 已废弃：阴影代理类型（包围盒路径已移除，只用体素壳）
+	// UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (ClampMin = "0", ClampMax = "2", EditCondition = "bCastShadow"))
+	// uint8 ShadowProxyDetail = 1;
 
-	/** 阴影强度缩放 - 控制阴影的深浅 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bCastShadow"))
-	float ShadowIntensity = 1.0f;
+	// 已废弃：阴影强度缩放（阴影深度 pass 不解算材质，无法按材质调深浅）
+	// UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bCastShadow"))
+	// float ShadowIntensity = 1.0f;
+
+	/** 体素壳阴影几何（源资产局部空间）是否可用。供代理查询，无锁只读。 */
+	bool HasShadowGeometry() const { return ShadowShellTriangles.Num() >= 3; }
+
+	/** 取体素壳阴影几何（源资产局部空间的三角形汤）。 */
+	void GetShadowGeometry(TArray<FVector3f>& OutVertices, TArray<int32>& OutTriangles) const
+	{
+		OutVertices = ShadowShellVertices;
+		OutTriangles = ShadowShellTriangles;
+	}
 
 	// ------------------------------------------------------------------
 	// 破裂（Chaos GeometryCollection 驱动）
@@ -383,6 +396,14 @@ protected:
 	/** Generate voxel-based collision */
 	bool GenerateVoxelCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
 
+	/**
+	 * 重建阴影几何：从破裂资产的体素壳取三角形汤并缓存。
+	 *
+	 * bCastShadow 关闭、未指定破裂资产、或壳读不到时清空缓存，
+	 * 代理侧随即关闭阴影分支（零开销）。资产/开关变化时调用。
+	 */
+	void RebuildShadowGeometry();
+
 private:
 	/** Enable/disable component tick based on 4D asset + playing state */
 	void Update4DTickEnabled();
@@ -441,4 +462,15 @@ private:
 
 	/** Shell triangles */
 	TArray<FTriIndices> VoxelShellIndices;
+
+	// ------------------------------------------------------------------
+	// Shadow geometry: the fracture asset's voxel shell as a raw triangle
+	// soup (source asset local space). Only filled while bCastShadow is on.
+	// ------------------------------------------------------------------
+
+	/** Shadow shell vertex positions */
+	TArray<FVector3f> ShadowShellVertices;
+
+	/** Shadow shell triangles (3 indices per triangle) */
+	TArray<int32> ShadowShellTriangles;
 };
