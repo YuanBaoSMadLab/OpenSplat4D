@@ -44,6 +44,9 @@ private:
 	/** Handler for generating the blocky voxel proxy mesh used as a fracture source */
 	void ExecuteGenerateProxyMesh(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
 
+	/** Handler for binding the splats of the asset to the bones of a fracture GeometryCollection */
+	void ExecuteBindFractureBones(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects);
+
 	/** Check if all selected assets have Nanite enabled */
 	bool AreAllNaniteEnabled(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects) const;
 

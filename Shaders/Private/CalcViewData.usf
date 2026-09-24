@@ -34,6 +34,17 @@ uint UseNative4D;         // 1 = asset has native 4D data
 uint Native4DSplatCount;  // splats covered by Native4DBuffer
 float TimeDuration;       // Animation period used by the temporal SH bands
 
+// Fracture bone binding (Chaos GeometryCollection driven). Splats are assigned
+// to a bone by the editor-side binding pass; every frame the owning component
+// pushes Delta_b = Cur_b * Rest_b^-1 (asset-local space) into BoneDeltaBuffer.
+// Both buffers are dummies when UseFractureBones is 0, in which case the splat
+// takes the untouched path.
+ByteAddressBuffer SplatBoneIndexBuffer; // 4 bytes/splat (low 16 bits = bone index)
+ByteAddressBuffer BoneDeltaBuffer;      // 64 bytes/bone: row-major float4x4
+uint UseFractureBones;   // 1 = apply per-bone delta transforms
+uint FractureBoneCount;  // bones in BoneDeltaBuffer
+uint FractureSplatCount; // splats covered by SplatBoneIndexBuffer
+
 RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer; //pass calculated result to ViewDataBuffer
 
 // Cluster visibility integration (UNIFIED APPROACH)
@@ -126,6 +137,42 @@ float2x2 ProjectCovarianceToWorld2D(float3x3 cov3D_local, float3 viewPos)
 	float3x3 cov3D_world = mul(transpose(localToWorldRot), mul(cov3D_local, localToWorldRot));
 	float3x3 viewMat = (float3x3)WorldToView;
 	return CalcCovariance2D(cov3D_world, viewMat, viewPos, FocalLength);
+}
+
+// Look up the fracture bone delta for a splat. Returns identity when the
+// splat is outside the binding (e.g. an LOD splat appended after import).
+float4x4 LoadBoneDelta(uint splatIndex, out float3x3 outLinearPart)
+{
+	outLinearPart = float3x3(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
+
+	if (UseFractureBones == 0u || splatIndex >= FractureSplatCount)
+	{
+		return float4x4(1.0, 0.0, 0.0, 0.0,
+		                0.0, 1.0, 0.0, 0.0,
+		                0.0, 0.0, 1.0, 0.0,
+		                0.0, 0.0, 0.0, 1.0);
+	}
+
+	const uint boneIndex = SplatBoneIndexBuffer.Load(splatIndex * 4u) & 0xFFFFu;
+	if (boneIndex >= FractureBoneCount)
+	{
+		return float4x4(1.0, 0.0, 0.0, 0.0,
+		                0.0, 1.0, 0.0, 0.0,
+		                0.0, 0.0, 1.0, 0.0,
+		                0.0, 0.0, 0.0, 1.0);
+	}
+
+	// 64B record, row-major: UE's row-vector convention (v * M) matches
+	// HLSL's mul(float4(v,1), M).
+	const uint boneOffset = boneIndex * 64u;
+	const float4x4 BoneDelta = float4x4(
+		asfloat(BoneDeltaBuffer.Load4(boneOffset)),
+		asfloat(BoneDeltaBuffer.Load4(boneOffset + 16u)),
+		asfloat(BoneDeltaBuffer.Load4(boneOffset + 32u)),
+		asfloat(BoneDeltaBuffer.Load4(boneOffset + 48u)));
+
+	outLinearPart = (float3x3)BoneDelta;
+	return BoneDelta;
 }
 
 // Load one 4D SH coefficient (3 x float16 = 6 bytes) from the SH buffer.
@@ -502,6 +549,17 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 			mul(PlyToUe, mul(CovCond, transpose(PlyToUe)));
 	}
 
+	// Fracture bone binding: displace the splat by its bone's local delta
+	// transform. The linear part is folded into the covariance below, so the
+	// bone's rotation and scale follow without ever decomposing the matrix.
+	// Identity deltas multiply exactly, so un-fractured bones are unchanged.
+	float3x3 boneLinear = float3x3(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
+	if (UseFractureBones != 0u)
+	{
+		const float4x4 BoneDelta = LoadBoneDelta(splatIndex, boneLinear);
+		localPos = mul(float4(localPos, 1.0), BoneDelta).xyz;
+	}
+
 	// Transform to world space
 	float4 worldPos = mul(float4(localPos, 1.0), LocalToWorld);
 	float4 clipPos = mul(worldPos, WorldToClip);
@@ -556,6 +614,15 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	{
 		cov3D_local = CalcCovariance3D(rotation, scale);
 	}
+
+	// Fracture bone binding: fold the bone's linear part into the covariance.
+	// C_world = (Bl*Lt)^T Cl (Bl*Lt) = Lt^T (Bl^T Cl Bl) Lt, so folding here is
+	// equivalent to the bone rotating/scaling the splat ellipsoid.
+	if (UseFractureBones != 0u)
+	{
+		cov3D_local = mul(transpose(boneLinear), mul(cov3D_local, boneLinear));
+	}
+
 	float2x2 cov2D = ProjectCovarianceToWorld2D(cov3D_local, viewPos.xyz);
 
 	// Decompose to axes

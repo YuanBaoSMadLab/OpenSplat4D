@@ -22,7 +22,26 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnGaussianSplatAssetChanged, UGaussianSplat
 #define GAUSSIAN_SPLAT_ASSET_MAGIC   0x47535056  // "GSPV"
 // v7: keyframe 4D data (bIsKeyframe4D/KeyframeCount/KeyframeBulkData).
 // v8: fudan 4DGS native 4D data (bIsNative4D/Native4DBulkData). v5-v7 assets load unchanged.
-#define GAUSSIAN_SPLAT_ASSET_VERSION 8
+// v9: optional Chaos fracture bone binding (bHasBoneBinding/BoneBindingBulkData).
+//     v5-v8 assets load bit-for-bit unchanged; v9 assets are rejected by older
+//     plugin builds (the version check above asks the user to reimport).
+#define GAUSSIAN_SPLAT_ASSET_VERSION 9
+
+/** Fracture bone binding block header (64 bytes, magic 'GSFB'). */
+#define GAUSSIAN_SPLAT_BONE_BINDING_MAGIC   0x47534642  // "GSFB"
+#define GAUSSIAN_SPLAT_BONE_BINDING_VERSION 1u
+
+struct FGaussianSplatBoneBindingHeader
+{
+	uint32 Magic = GAUSSIAN_SPLAT_BONE_BINDING_MAGIC;
+	uint32 Version = GAUSSIAN_SPLAT_BONE_BINDING_VERSION;
+	uint32 BoneCount = 0;
+	uint32 SplatCount = 0;
+	FVector3f BoundsMin = FVector3f::ZeroVector;
+	FVector3f BoundsMax = FVector3f::ZeroVector;
+	uint8 Reserved[24] = {};
+};
+static_assert(sizeof(FGaussianSplatBoneBindingHeader) == 64, "Bone binding header must stay 64 bytes");
 
 /**
  * Asset containing Gaussian Splatting data loaded from PLY files
@@ -267,6 +286,71 @@ public:
 	/** Lock keyframe bulk data in place. Returns nullptr if empty. */
 	const void* LockKeyframeDataReadOnly(int64* OutSize = nullptr) const;
 	void UnlockKeyframeData() const;
+
+	// ------------------------------------------------------------------
+	// Fracture bone binding (version 9+). Optional block written by the
+	// editor-side binding pass (splat positions -> GeometryCollection bones).
+	//
+	// Layout of BoneBindingBulkData:
+	//   [0 .. 63]  FGaussianSplatBoneBindingHeader (64 B, magic 'GSFB')
+	//   [64 ..   ] K x 64 B  FMatrix44f rest bone matrix per bone
+	//   [..  ..  ] N x  4 B  per-splat uint32: low 16 bits = bone index,
+	//                        high 16 bits reserved (0)
+	// K = BoneCount, N = SplatCount. The index array covers ALL splats
+	// (LOD splats included), so it is exactly as long as the packed splat
+	// buffer the renderer uploads. uint16 indices because
+	// ByteAddressBuffer.Load needs 4-byte alignment and the bone count is
+	// hard-capped at 65535 by the binding pass.
+	// ------------------------------------------------------------------
+
+	/** Whether this asset carries a fracture bone binding */
+	UPROPERTY(VisibleAnywhere, Category = "破裂", meta = (DisplayName = "已绑定破裂骨头"))
+	bool bHasBoneBinding = false;
+
+	/** Bone count of the binding (0 when unbound). Stored separately so the
+	 *  render data can validate without parsing the header. */
+	UPROPERTY(VisibleAnywhere, Category = "破裂", meta = (DisplayName = "破裂骨头数"))
+	int32 BoneBindingBoneCount = 0;
+
+	/** Fracture bone binding block (see layout above); empty when unbound */
+	FByteBulkData BoneBindingBulkData;
+
+	/** Whether this asset has a fracture bone binding */
+	UFUNCTION(BlueprintCallable, Category = "破裂")
+	bool HasBoneBinding() const { return bHasBoneBinding && BoneBindingBoneCount > 0; }
+
+	/** Bone count of the fracture binding (0 when unbound) */
+	UFUNCTION(BlueprintCallable, Category = "破裂")
+	int32 GetBoneCount() const { return HasBoneBinding() ? BoneBindingBoneCount : 0; }
+
+	/** Lock the bone binding block in place. Returns nullptr if empty. */
+	const void* LockBoneBindingDataReadOnly(int64* OutSize = nullptr) const;
+	void UnlockBoneBindingData() const;
+
+	/** Byte offset of the per-splat index block inside the binding block. */
+	static int32 GetBoneIndexBlockOffset(int32 InBoneCount)
+	{
+		return (int32)sizeof(FGaussianSplatBoneBindingHeader) + InBoneCount * (int32)sizeof(FMatrix44f);
+	}
+
+	/** Fill OutHeader from the binding block. False when unbound or malformed. */
+	bool GetBoneBindingHeader(FGaussianSplatBoneBindingHeader& OutHeader) const;
+
+	/** Copy the K rest bone matrices (asset local space) out of the binding block. */
+	bool GetRestBoneMatrices(TArray<FMatrix44f>& OutMatrices) const;
+
+	/**
+	 * Store a fracture bone binding, replacing any previous one.
+	 * @param RestBoneMatrices  K matrices in asset local space, which is also
+	 *                          the GeometryCollection component space at bind time.
+	 * @param SplatBoneIndices  Exactly SplatCount bone indices (0 <= i < K).
+	 * @return False on invalid input (nothing is modified).
+	 */
+	bool SetBoneBinding(const TArray<FMatrix44f>& RestBoneMatrices, const TArray<uint32>& SplatBoneIndices,
+		const FVector3f& BoundsMin, const FVector3f& BoundsMax);
+
+	/** Drop the fracture bone binding; the asset returns to unbound. */
+	void ClearBoneBinding();
 
 	/**
 	 * Save this asset to the dedicated .o4d v2 container file

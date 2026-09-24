@@ -185,6 +185,48 @@ void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset)
 		}
 	}
 
+	// --- Fracture bone binding (static per-splat bone index) ---
+	// The index block length is derived from the bulk data size rather than
+	// SplatCount: a later Nanite rebuild grows SplatCount with LOD splats, and
+	// the renderer must not read past the binding it was given.
+	if (Asset->HasBoneBinding())
+	{
+		int64 BindingSize = 0;
+		const uint8* RawBinding = static_cast<const uint8*>(Asset->LockBoneBindingDataReadOnly(&BindingSize));
+		ON_SCOPE_EXIT
+		{
+			Asset->UnlockBoneBindingData();
+		};
+
+		const int32 BoundBoneCount = Asset->GetBoneCount();
+		const int64 IndexBlockOffset = UGaussianSplatAsset::GetBoneIndexBlockOffset(BoundBoneCount);
+		const int64 IndexCount = (RawBinding && BindingSize > IndexBlockOffset)
+			? (BindingSize - IndexBlockOffset) / static_cast<int64>(sizeof(uint32))
+			: 0;
+
+		if (RawBinding && BoundBoneCount > 0 && IndexCount > 0)
+		{
+			BoneCount = BoundBoneCount;
+			BoneBindingSplatCount = static_cast<int32>(IndexCount);
+			bHasBoneBinding = true;
+
+			CachedBoneIndices.SetNumUninitialized(BoneBindingSplatCount);
+			FMemory::Memcpy(CachedBoneIndices.GetData(), RawBinding + IndexBlockOffset,
+				BoneBindingSplatCount * sizeof(uint32));
+
+			// Low 16 bits carry the bone index (see the binding layout comment).
+			for (uint32& BoneIndex : CachedBoneIndices)
+			{
+				BoneIndex &= 0xFFFFu;
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("GaussianSplatRenderData: asset '%s' marked fracture-bound but the binding block is malformed; treating as unbound"),
+				*AssetName);
+		}
+	}
+
 	// Load chunk data
 	CachedChunkData = Asset->ChunkData;
 
@@ -424,6 +466,40 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 		SharedBufferCount++;
 	}
 
+	// --- Fracture bone index buffer (always create at least a dummy for shader binding) ---
+	{
+		uint32 BoneIndexDataSize = CachedBoneIndices.Num() * sizeof(uint32);
+		if (BoneIndexDataSize == 0)
+		{
+			BoneIndexDataSize = sizeof(uint32); // dummy single element
+		}
+
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianSplatBoneIndexBuffer"),
+			BoneIndexDataSize,
+			sizeof(uint32),
+			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::SRVMask);
+		SplatBoneIndexBuffer = RHICmdList.CreateBuffer(Desc);
+
+		void* Data = RHICmdList.LockBuffer(SplatBoneIndexBuffer, 0, BoneIndexDataSize, RLM_WriteOnly);
+		if (CachedBoneIndices.Num() > 0)
+		{
+			FMemory::Memcpy(Data, CachedBoneIndices.GetData(), BoneIndexDataSize);
+		}
+		else
+		{
+			FMemory::Memzero(Data, BoneIndexDataSize);
+		}
+		RHICmdList.UnlockBuffer(SplatBoneIndexBuffer);
+
+		SplatBoneIndexBufferSRV = RHICmdList.CreateShaderResourceView(
+			SplatBoneIndexBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+		SharedBufferCount++;
+	}
+
 	// --- Chunk buffer (always create at least a dummy for shader binding) ---
 	{
 		uint32 ChunkCount = CachedChunkData.Num();
@@ -538,6 +614,7 @@ void FGaussianSplatRenderData::CreateGPUBuffers(FRHICommandListBase& RHICmdList)
 	TemporalData.Empty();
 	KeyframeData.Empty();
 	Native4DData.Empty();
+	CachedBoneIndices.Empty();
 	CachedChunkData.Empty();
 	CachedClusterData.Empty();
 	CachedSplatClusterIndices.Empty();
@@ -565,6 +642,8 @@ void FGaussianSplatRenderData::ReleaseGPUBuffers()
 	KeyframeBufferSRV.SafeRelease();
 	Native4DBuffer.SafeRelease();
 	Native4DBufferSRV.SafeRelease();
+	SplatBoneIndexBuffer.SafeRelease();
+	SplatBoneIndexBufferSRV.SafeRelease();
 	SplatClusterIndexBuffer.SafeRelease();
 	SplatClusterIndexBufferSRV.SafeRelease();
 	bGPUBuffersCreated = false;

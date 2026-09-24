@@ -317,6 +317,8 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 					GPUResources->CachedErrorThreshold != ProxyErrorThreshold ||
 					GPUResources->CachedDebugMode != CurrentDebugMode ||
 					GPUResources->CachedDebugForceLODLevel != CurrentDebugForceLODLevel ||
+					// Fracture: new bone deltas must re-run CalcViewData + the sort
+					GPUResources->bBoneDeltasDirty ||
 					(GPUResources->bIs4D && GPUResources->CachedCurrentTime != GPUResources->CurrentTime))
 				{
 					bCanSkip = false;

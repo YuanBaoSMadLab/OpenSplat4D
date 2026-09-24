@@ -55,6 +55,58 @@ namespace GaussianSplatRenderConstants
 	constexpr uint8 StencilWriteMask = 0x08;
 }
 
+// ----------------------------------------------------------------------------
+// Fracture bone binding helpers
+// ----------------------------------------------------------------------------
+namespace
+{
+	/**
+	 * Upload this frame's bone deltas when the owning component pushed new ones.
+	 * No-op (and no RHI work at all) when the proxy is unbound, already uploaded,
+	 * or at rest -- so an un-fractured proxy keeps the untouched render path.
+	 */
+	void UploadFractureBoneDeltasIfDirty(FRHICommandListImmediate& RHICmdList, FGaussianSplatGPUResources* GPUResources)
+	{
+		if (!GPUResources || !GPUResources->bBoneDeltasDirty || !GPUResources->BoneDeltaBuffer.IsValid())
+		{
+			return;
+		}
+
+		const int32 UploadCount = FMath::Min(GPUResources->BoneCount, GPUResources->BoneDeltaUploadData.Num());
+		if (UploadCount <= 0)
+		{
+			GPUResources->bBoneDeltasDirty = false;
+			GPUResources->bFractureBonesActive = false;
+			return;
+		}
+
+		const uint32 Bytes = static_cast<uint32>(UploadCount) * static_cast<uint32>(sizeof(FMatrix44f));
+		void* Data = RHICmdList.LockBuffer(GPUResources->BoneDeltaBuffer, 0, Bytes, RLM_WriteOnly);
+		FMemory::Memcpy(Data, GPUResources->BoneDeltaUploadData.GetData(), Bytes);
+		RHICmdList.UnlockBuffer(GPUResources->BoneDeltaBuffer);
+
+		GPUResources->bBoneDeltasDirty = false;
+	}
+
+	/** Fill the fracture bone parameters shared by all CalcViewData variants. */
+	void FillFractureBoneParameters(FGaussianSplatCalcViewDataCS::FParameters& Parameters, const FGaussianSplatGPUResources* GPUResources)
+	{
+		const bool bBound = GPUResources
+			&& GPUResources->bHasBoneBinding
+			&& GPUResources->bFractureBonesActive
+			&& GPUResources->BoneCount > 0
+			&& GPUResources->BoneBindingSplatCount > 0
+			&& GPUResources->SplatBoneIndexBufferSRV.IsValid()
+			&& GPUResources->BoneDeltaBufferSRV.IsValid();
+
+		Parameters.SplatBoneIndexBuffer = GPUResources->SplatBoneIndexBufferSRV;
+		Parameters.BoneDeltaBuffer = GPUResources->BoneDeltaBufferSRV;
+		Parameters.UseFractureBones = bBound ? 1u : 0u;
+		Parameters.FractureBoneCount = bBound ? static_cast<uint32>(GPUResources->BoneCount) : 0u;
+		Parameters.FractureSplatCount = bBound ? static_cast<uint32>(GPUResources->BoneBindingSplatCount) : 0u;
+	}
+}
+
 // Helper: Set pixel shader velocity parameters using self-tracked previous frame data.
 // UE5's PrevViewInfo is not populated for PostOpaqueRender callbacks, so we store
 // current frame matrices and use them as "previous" data next frame.
@@ -184,6 +236,9 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
 	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;
 	Parameters.TimeDuration = GPUResources->TimeDuration4D;
+	// Fracture bone binding (no-op unless the bound GeometryCollection moved)
+	UploadFractureBoneDeltasIfDirty(RHICmdList, GPUResources);
+	FillFractureBoneParameters(Parameters, GPUResources);
 	// Distance-based visibility range (0 = unlimited)
 	Parameters.MaxDrawDistance = MaxDrawDistance;
 	Parameters.FadeOutStartDistance = FadeOutStartDistance;
@@ -863,6 +918,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompacted(
 	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
 	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;
 	Parameters.TimeDuration = GPUResources->TimeDuration4D;
+	// Fracture bone binding (no-op unless the bound GeometryCollection moved)
+	UploadFractureBoneDeltasIfDirty(RHICmdList, GPUResources);
+	FillFractureBoneParameters(Parameters, GPUResources);
 	// Distance-based visibility range (0 = unlimited)
 	Parameters.MaxDrawDistance = MaxDrawDistance;
 	Parameters.FadeOutStartDistance = FadeOutStartDistance;
@@ -1027,6 +1085,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataGlobal(
 	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
 	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;
 	Parameters.TimeDuration = GPUResources->TimeDuration4D;
+	// Fracture bone binding (no-op unless the bound GeometryCollection moved)
+	UploadFractureBoneDeltasIfDirty(RHICmdList, GPUResources);
+	FillFractureBoneParameters(Parameters, GPUResources);
 	// Distance-based visibility range (0 = unlimited)
 	Parameters.MaxDrawDistance = MaxDrawDistance;
 	Parameters.FadeOutStartDistance = FadeOutStartDistance;
@@ -1509,6 +1570,9 @@ void FGaussianSplatRenderer::DispatchCalcViewDataCompactedGlobal(
 	Parameters.UseNative4D = GPUResources->bIsNative4D ? 1u : 0u;
 	Parameters.Native4DSplatCount = (uint32)GPUResources->Native4DSplatCount;
 	Parameters.TimeDuration = GPUResources->TimeDuration4D;
+	// Fracture bone binding (no-op unless the bound GeometryCollection moved)
+	UploadFractureBoneDeltasIfDirty(RHICmdList, GPUResources);
+	FillFractureBoneParameters(Parameters, GPUResources);
 	// Distance-based visibility range (0 = unlimited)
 	Parameters.MaxDrawDistance = MaxDrawDistance;
 	Parameters.FadeOutStartDistance = FadeOutStartDistance;

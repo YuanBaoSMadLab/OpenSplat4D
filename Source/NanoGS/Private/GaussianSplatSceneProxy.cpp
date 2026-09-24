@@ -102,6 +102,11 @@ void FGaussianSplatGPUResources::InitRHI(FRHICommandListBase& RHICmdList)
 	bIsNative4D = SharedData->bIsNative4D;
 	Native4DSplatCount = SharedData->Native4DSplatCount;
 	TimeDuration4D = SharedData->TimeDuration4D;
+	SplatBoneIndexBuffer = SharedData->SplatBoneIndexBuffer;
+	SplatBoneIndexBufferSRV = SharedData->SplatBoneIndexBufferSRV;
+	bHasBoneBinding = SharedData->bHasBoneBinding;
+	BoneCount = SharedData->BoneCount;
+	BoneBindingSplatCount = SharedData->BoneBindingSplatCount;
 
 	// TotalSplatCount is needed by per-instance buffer sizing
 	TotalSplatCount = SplatCount;
@@ -140,6 +145,11 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	KeyframeBufferSRV.SafeRelease();
 	Native4DBuffer.SafeRelease();
 	Native4DBufferSRV.SafeRelease();
+	SplatBoneIndexBuffer.SafeRelease();
+	SplatBoneIndexBufferSRV.SafeRelease();
+	BoneDeltaBuffer.SafeRelease();
+	BoneDeltaBufferSRV.SafeRelease();
+	BoneDeltaUploadData.Empty();
 
 	// Release legacy buffers
 	PositionBuffer.SafeRelease();
@@ -259,6 +269,44 @@ void FGaussianSplatGPUResources::CreateDummyWhiteTexture(FRHICommandListBase& RH
 
 void FGaussianSplatGPUResources::CreatePerInstanceBuffers(FRHICommandListBase& RHICmdList)
 {
+	// --- Fracture bone delta buffer (per instance; dummy 64B when unbound) ---
+	// Not BUF_Static: the owning component rewrites it every frame the bound
+	// GeometryCollection moves.
+	{
+		const uint32 BufferSize = (bHasBoneBinding && BoneCount > 0)
+			? (uint32)BoneCount * (uint32)sizeof(FMatrix44f)
+			: (uint32)sizeof(FMatrix44f); // dummy single identity record
+
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianSplatBoneDeltaBuffer"),
+			BufferSize,
+			0,
+			BUF_Dynamic | BUF_ShaderResource | BUF_ByteAddressBuffer)
+			.SetInitialState(ERHIAccess::SRVMask);
+		BoneDeltaBuffer = RHICmdList.CreateBuffer(Desc);
+
+		void* Data = RHICmdList.LockBuffer(BoneDeltaBuffer, 0, BufferSize, RLM_WriteOnly);
+		if (bHasBoneBinding && BoneCount > 0)
+		{
+			BoneDeltaUploadData.SetNumUninitialized(BoneCount);
+			for (int32 i = 0; i < BoneCount; i++)
+			{
+				BoneDeltaUploadData[i] = FMatrix44f::Identity;
+			}
+			FMemory::Memcpy(Data, BoneDeltaUploadData.GetData(), BufferSize);
+		}
+		else
+		{
+			const FMatrix44f Identity = FMatrix44f::Identity;
+			FMemory::Memcpy(Data, &Identity, BufferSize);
+		}
+		RHICmdList.UnlockBuffer(BoneDeltaBuffer);
+
+		BoneDeltaBufferSRV = RHICmdList.CreateShaderResourceView(
+			BoneDeltaBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Raw));
+	}
+
 	// When Nanite is disabled (no cluster data), create dummy buffers for shader binding
 	if (!bHasClusterData)
 	{

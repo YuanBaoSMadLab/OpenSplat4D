@@ -7,7 +7,9 @@
 #include "GaussianSplat4DEditor.h"
 #include "GaussianSplatAssetFactory.h"
 #include "GaussianSplatProxyMeshBuilder.h"
+#include "GaussianSplatBoneBinder.h"
 #include "Engine/StaticMesh.h"
+#include "GeometryCollection/GeometryCollectionObject.h"
 #include "EditorReimportHandler.h"
 #include "ToolMenuSection.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -17,6 +19,8 @@
 #include "Framework/Application/SlateApplication.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
+#include "ContentBrowserModule.h"
+#include "IContentBrowserSingleton.h"
 #include "ObjectTools.h"
 #include "UObject/Package.h"
 
@@ -103,6 +107,13 @@ void FAssetTypeActions_GaussianSplatAsset::GetActions(const TArray<UObject*>& In
 				LOCTEXT("GenerateProxyMeshTooltip", "按 splat 位置生成封闭的体素代理网格（StaticMesh），供 Chaos 破裂模式切割成 GeometryCollection"),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteGenerateProxyMesh, GaussianSplatAssets))
+			);
+
+			SubMenuBuilder.AddMenuEntry(
+				LOCTEXT("BindFractureBonesLabel", "绑定破裂骨头"),
+				LOCTEXT("BindFractureBonesTooltip", "把每个 splat 分配到已切割 GeometryCollection 的某一块骨头上，使 splat 随该块一起破裂（请选择切割代理网格得到的 GeometryCollection）"),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_GaussianSplatAsset::ExecuteBindFractureBones, GaussianSplatAssets))
 			);
 		}),
 		false,
@@ -433,6 +444,72 @@ void FAssetTypeActions_GaussianSplatAsset::ExecuteGenerateProxyMesh(TArray<TWeak
 			TEXT("3. 切割后生成 GeometryCollection 资产"),
 			*ProxyMesh->GetName(), *Result.Summary)));
 	}
+}
+
+void FAssetTypeActions_GaussianSplatAsset::ExecuteBindFractureBones(TArray<TWeakObjectPtr<UGaussianSplatAsset>> Objects)
+{
+	TArray<UGaussianSplatAsset*> Assets;
+	for (const TWeakObjectPtr<UGaussianSplatAsset>& AssetPtr : Objects)
+	{
+		if (UGaussianSplatAsset* Asset = AssetPtr.Get())
+		{
+			Assets.Add(Asset);
+		}
+	}
+	if (Assets.Num() == 0)
+	{
+		return;
+	}
+
+	// One target collection for the whole selection: the proxy mesh of an asset
+	// is cut into exactly one collection, and batch binding is the common case.
+	FOpenAssetDialogConfig DialogConfig;
+	DialogConfig.DialogTitleOverride = LOCTEXT("BindFractureBonesDialogTitle", "选择切割代理网格得到的 GeometryCollection");
+	DialogConfig.bAllowMultipleSelection = false;
+	DialogConfig.AssetClassNames.Add(FTopLevelAssetPath(FName(TEXT("/Script/GeometryCollectionEngine")), FName(TEXT("GeometryCollection"))));
+
+	const TArray<FAssetData> SelectedAssets = IContentBrowserSingleton::Get().CreateModalOpenAssetDialog(DialogConfig);
+	if (SelectedAssets.Num() == 0)
+	{
+		return;
+	}
+
+	const UGeometryCollection* Collection = Cast<UGeometryCollection>(SelectedAssets[0].GetAsset());
+	if (!Collection)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("BindFractureBonesBadCollection", "所选资产不是 GeometryCollection。"));
+		return;
+	}
+
+	FString Report;
+	int32 SuccessCount = 0;
+	for (UGaussianSplatAsset* Asset : Assets)
+	{
+		UE_LOG(LogTemp, Log, TEXT("Binding fracture bones for asset '%s' to collection '%s'"),
+			*Asset->GetName(), *Collection->GetName());
+
+		const bool bHadBinding = Asset->HasBoneBinding();
+		const FGaussianSplatBoneBindResult Result = FGaussianSplatBoneBinder::BindAssetToCollection(Asset, Collection);
+
+		if (!Result.bSuccess)
+		{
+			Report += FString::Printf(TEXT("[失败] %s\n%s\n\n"), *Asset->GetName(),
+				Result.Error.IsEmpty() ? TEXT("未知错误，请查看输出日志。") : *Result.Error);
+			continue;
+		}
+
+		++SuccessCount;
+		Report += FString::Printf(TEXT("[完成] %s%s\n%s\n\n"), *Asset->GetName(),
+			bHadBinding ? TEXT("（已替换原有绑定）") : TEXT(""), *Result.Summary);
+	}
+
+	FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(
+		TEXT("绑定破裂骨头: %d / %d 个资产成功\n\n%s\n下一步:\n")
+		TEXT("1. 把 GeometryCollection 与 splat 资产放入关卡\n")
+		TEXT("2. 让 splat 组件的世界变换与几何集合组件一致（代理网格在原点切割）\n")
+		TEXT("3. 在 splat 组件的【高斯泼溅|破裂】分类里，把【破裂几何集合组件】指向该 GeometryCollectionComponent\n")
+		TEXT("4. 触发破裂：splat 会跟随各自所属的碎块一起飞散"),
+		SuccessCount, Assets.Num(), *Report)));
 }
 
 #undef LOCTEXT_NAMESPACE

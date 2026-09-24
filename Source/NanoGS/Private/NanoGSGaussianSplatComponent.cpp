@@ -13,10 +13,13 @@
 UGaussianSplatComponent::UGaussianSplatComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	// Tick is only enabled at runtime for 4D playback (Update4DTickEnabled);
-	// static 3D assets keep it disabled so there is no per-frame CPU cost.
+	// Tick is only enabled at runtime for 4D playback or fracture following
+	// (Update4DTickEnabled); static assets keep it disabled so there is no
+	// per-frame CPU cost.
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.bStartWithTickEnabled = false;
+	// Fracture following must read the collection *after* physics has stepped.
+	PrimaryComponentTick.TickGroup = TG_PostPhysics;
 
 	bUseAsOccluder = false;
 	SetGenerateOverlapEvents(false);
@@ -77,6 +80,15 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 		Update4DTickEnabled();
 		PushCurrentTimeToProxy();
 	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FractureGeometryCollection))
+	{
+		// Rest pose is relative to the previously-bound asset; reload it and
+		// re-evaluate whether the fracture tick is needed at all.
+		FractureRestMatrices.Reset();
+		FractureLastPushedDeltas.Reset();
+		bFractureWasActive = false;
+		Update4DTickEnabled();
+	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
@@ -109,6 +121,9 @@ void UGaussianSplatComponent::OnUnregister()
 void UGaussianSplatComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	// Fracture following runs independently of 4D playback
+	TickFractureBoneDeltas();
 
 	if (!bPlaying || !SplatAsset || !SplatAsset->Is4D())
 	{
@@ -200,7 +215,7 @@ void UGaussianSplatComponent::SetPlaybackTime(float InTime)
 
 void UGaussianSplatComponent::Update4DTickEnabled()
 {
-	SetComponentTickEnabled(bPlaying && Supports4DPlayback());
+	SetComponentTickEnabled((bPlaying && Supports4DPlayback()) || IsFractureBindingActive());
 }
 
 void UGaussianSplatComponent::PushCurrentTimeToProxy()
@@ -209,6 +224,152 @@ void UGaussianSplatComponent::PushCurrentTimeToProxy()
 	{
 		SplatProxy->SetCurrentTime(CurrentTime);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 破裂跟随（Chaos GeometryCollection）
+// ---------------------------------------------------------------------------
+
+bool UGaussianSplatComponent::IsFractureBindingActive() const
+{
+	return FractureGeometryCollection != nullptr
+		&& SplatAsset != nullptr
+		&& SplatAsset->HasBoneBinding();
+}
+
+bool UGaussianSplatComponent::EnsureFractureRestMatrices()
+{
+	if (FractureRestMatrices.Num() > 0)
+	{
+		return true;
+	}
+
+	if (!SplatAsset || !SplatAsset->HasBoneBinding())
+	{
+		return false;
+	}
+
+	if (!SplatAsset->GetRestBoneMatrices(FractureRestMatrices))
+	{
+		FractureRestMatrices.Reset();
+		return false;
+	}
+
+	return FractureRestMatrices.Num() > 0;
+}
+
+void UGaussianSplatComponent::TickFractureBoneDeltas()
+{
+	FGaussianSplatSceneProxy* SplatProxy = static_cast<FGaussianSplatSceneProxy*>(SceneProxy);
+
+	// A rebuilt scene proxy starts with an empty delta buffer, so forget what we
+	// had pushed and re-upload on the next tick instead of assuming it is current.
+	if (SplatProxy != LastFractureProxy)
+	{
+		LastFractureProxy = SplatProxy;
+		FractureLastPushedDeltas.Reset();
+		bFractureWasActive = false;
+	}
+
+	if (!IsFractureBindingActive() || !SplatProxy || !EnsureFractureRestMatrices())
+	{
+		// Nothing to follow: release the bone path exactly once
+		if (bFractureWasActive && SplatProxy)
+		{
+			SplatProxy->SetBoneDeltas(TArray<FMatrix44f>());
+			bFractureWasActive = false;
+		}
+		return;
+	}
+
+	// Read the collection's bone transforms. NanoGS loads at PostConfigInit,
+	// before GeometryCollectionEngine, so this must go through reflection.
+	// GetCurrentTransforms() returns TArray<FTransform> (component space,
+	// center-of-mass frame, i.e. already carrying MassToLocal -- which is also
+	// what the binding stored, so the term cancels in the delta).
+	UFunction* GetTransformsFn = FractureGeometryCollection->FindFunction(TEXT("GetCurrentTransforms"));
+	if (!GetTransformsFn || GetTransformsFn->ParmsSize == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: fracture target '%s' has no GetCurrentTransforms(); fracture following disabled"),
+			*FractureGeometryCollection->GetName());
+		FractureGeometryCollection = nullptr;
+		Update4DTickEnabled();
+		return;
+	}
+
+	TArray<uint8> Parms;
+	Parms.SetNumZeroed(GetTransformsFn->ParmsSize);
+	FractureGeometryCollection->ProcessEvent(GetTransformsFn, Parms.GetData());
+
+	TArray<FTransform> CurrentTransforms;
+	for (TFieldIterator<FProperty> It(GetTransformsFn); It; ++It)
+	{
+		if (It->HasAnyPropertyFlags(CPF_ReturnParm))
+		{
+			if (const TArray<FTransform>* Result = It->ContainerPtrToValuePtr<TArray<FTransform>>(Parms.GetData()))
+			{
+				CurrentTransforms = *Result;  // deep copy; Parms dies below
+			}
+		}
+	}
+
+	const int32 BoneCount = FMath::Min(FractureRestMatrices.Num(), CurrentTransforms.Num());
+	if (BoneCount <= 0)
+	{
+		return;
+	}
+
+	FractureBoneDeltas.SetNumUninitialized(FractureRestMatrices.Num());
+
+	bool bAnyDisplaced = false;
+	for (int32 BoneIndex = 0; BoneIndex < FractureRestMatrices.Num(); ++BoneIndex)
+	{
+		if (BoneIndex >= BoneCount)
+		{
+			// Collection lost this piece (e.g. removed on break): leave it at rest
+			FractureBoneDeltas[BoneIndex] = FMatrix44f::Identity;
+			continue;
+		}
+
+		const FMatrix CurM = CurrentTransforms[BoneIndex].ToMatrixWithScale();
+		const FMatrix RestM = FMatrix(FractureRestMatrices[BoneIndex]);
+		const FMatrix DeltaM = CurM * RestM.InverseFast();
+
+		FractureBoneDeltas[BoneIndex] = FMatrix44f(DeltaM);
+
+		if (!bAnyDisplaced && !DeltaM.Equals(FMatrix::Identity, 1e-4))
+		{
+			bAnyDisplaced = true;
+		}
+	}
+
+	if (!bAnyDisplaced)
+	{
+		// At rest: disable the shader's bone path (zero per-frame render cost)
+		if (bFractureWasActive)
+		{
+			SplatProxy->SetBoneDeltas(TArray<FMatrix44f>());
+			bFractureWasActive = false;
+		}
+		FractureLastPushedDeltas.Reset();
+		return;
+	}
+
+	// Only push when something actually moved. A settled pile keeps the deltas
+	// already on the GPU -- so the debris stays displaced, but CalcViewData and
+	// the depth sort stop being forced to re-run every frame.
+	const bool bUnchanged = bFractureWasActive
+		&& FractureLastPushedDeltas.Num() == FractureBoneDeltas.Num()
+		&& FMemory::Memcmp(FractureLastPushedDeltas.GetData(), FractureBoneDeltas.GetData(),
+			FractureBoneDeltas.Num() * sizeof(FMatrix44f)) == 0;
+	if (bUnchanged)
+	{
+		return;
+	}
+
+	SplatProxy->SetBoneDeltas(FractureBoneDeltas);
+	FractureLastPushedDeltas = FractureBoneDeltas;
+	bFractureWasActive = true;
 }
 
 void UGaussianSplatComponent::SetNanitePrecision(float InThreshold)
@@ -310,6 +471,12 @@ void UGaussianSplatComponent::OnAssetChanged()
 	bBoundsCached = false;
 	UpdateBounds();
 	MarkRenderStateDirty();
+
+	// The rest bone matrices belong to the previous asset
+	FractureRestMatrices.Reset();
+	FractureLastPushedDeltas.Reset();
+	bFractureWasActive = false;
+	Update4DTickEnabled();
 }
 
 void UGaussianSplatComponent::MarkRenderStateDirty()
@@ -332,6 +499,12 @@ void UGaussianSplatComponent::OnAssetDataChanged(UGaussianSplatAsset* ChangedAss
 		// Invalidate cached bounds since splat count may have changed
 		bBoundsCached = false;
 		UpdateBounds();
+
+		// The rest bone matrices may belong to a now-replaced binding
+		FractureRestMatrices.Reset();
+		FractureLastPushedDeltas.Reset();
+		bFractureWasActive = false;
+		Update4DTickEnabled();
 
 		// Recreate the scene proxy with updated asset data
 		// This will cause CreateSceneProxy to be called again with the new Nanite state

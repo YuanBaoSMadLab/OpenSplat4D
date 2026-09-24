@@ -55,6 +55,8 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 		BoundingBox.Init();
 		SHBands = 0;
 		ClusterHierarchy.Reset();
+		bHasBoneBinding = false;
+		BoneBindingBoneCount = 0;
 		return;
 	}
 
@@ -117,6 +119,19 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 	else if (Ar.IsLoading())
 	{
 		bIsNative4D = false;
+	}
+
+	// Chaos fracture bone binding (Version 9+; v5-v8 assets keep defaults)
+	if (Version >= 9)
+	{
+		Ar << bHasBoneBinding;
+		Ar << BoneBindingBoneCount;
+		BoneBindingBulkData.Serialize(Ar, this);
+	}
+	else if (Ar.IsLoading())
+	{
+		bHasBoneBinding = false;
+		BoneBindingBoneCount = 0;
 	}
 }
 
@@ -192,6 +207,7 @@ int64 UGaussianSplatAsset::GetMemoryUsage() const
 	TotalBytes += TemporalBulkData.GetBulkDataSize();
 	TotalBytes += KeyframeBulkData.GetBulkDataSize();
 	TotalBytes += Native4DBulkData.GetBulkDataSize();
+	TotalBytes += BoneBindingBulkData.GetBulkDataSize();
 
 	if (ColorTexture)
 	{
@@ -951,6 +967,180 @@ const void* UGaussianSplatAsset::LockNative4DDataReadOnly(int64* OutSize) const
 void UGaussianSplatAsset::UnlockNative4DData() const
 {
 	if (Native4DBulkData.GetBulkDataSize() > 0) Native4DBulkData.Unlock();
+}
+
+// --- Fracture bone binding (version 9+, see header for the block layout) ---
+
+const void* UGaussianSplatAsset::LockBoneBindingDataReadOnly(int64* OutSize) const
+{
+	const int64 DataSize = BoneBindingBulkData.GetBulkDataSize();
+	if (OutSize) *OutSize = DataSize;
+	return (DataSize > 0) ? BoneBindingBulkData.LockReadOnly() : nullptr;
+}
+
+void UGaussianSplatAsset::UnlockBoneBindingData() const
+{
+	if (BoneBindingBulkData.GetBulkDataSize() > 0) BoneBindingBulkData.Unlock();
+}
+
+bool UGaussianSplatAsset::GetBoneBindingHeader(FGaussianSplatBoneBindingHeader& OutHeader) const
+{
+	if (!HasBoneBinding())
+	{
+		return false;
+	}
+
+	int64 DataSize = 0;
+	const void* Data = LockBoneBindingDataReadOnly(&DataSize);
+	if (!Data)
+	{
+		return false;
+	}
+
+	bool bOk = false;
+	if (DataSize >= (int64)sizeof(FGaussianSplatBoneBindingHeader))
+	{
+		FMemory::Memcpy(&OutHeader, Data, sizeof(FGaussianSplatBoneBindingHeader));
+
+		// The index block must cover every splat; anything shorter means the
+		// asset was rebound after the splat count changed (R8) or is corrupt.
+		const int64 RequiredSize = (int64)GetBoneIndexBlockOffset(BoneBindingBoneCount)
+			+ (int64)SplatCount * (int64)sizeof(uint32);
+
+		bOk = OutHeader.Magic == GAUSSIAN_SPLAT_BONE_BINDING_MAGIC
+			&& OutHeader.Version == GAUSSIAN_SPLAT_BONE_BINDING_VERSION
+			&& OutHeader.BoneCount == (uint32)BoneBindingBoneCount
+			&& OutHeader.SplatCount == (uint32)SplatCount
+			&& DataSize >= RequiredSize;
+	}
+
+	UnlockBoneBindingData();
+	return bOk;
+}
+
+bool UGaussianSplatAsset::GetRestBoneMatrices(TArray<FMatrix44f>& OutMatrices) const
+{
+	OutMatrices.Reset();
+
+	FGaussianSplatBoneBindingHeader Header;
+	if (!GetBoneBindingHeader(Header))
+	{
+		return false;
+	}
+
+	int64 DataSize = 0;
+	const void* Data = LockBoneBindingDataReadOnly(&DataSize);
+	if (!Data)
+	{
+		return false;
+	}
+
+	const int32 BoneCount = BoneBindingBoneCount;
+	OutMatrices.SetNumUninitialized(BoneCount);
+	FMemory::Memcpy(OutMatrices.GetData(),
+		static_cast<const uint8*>(Data) + sizeof(FGaussianSplatBoneBindingHeader),
+		(SIZE_T)BoneCount * sizeof(FMatrix44f));
+
+	UnlockBoneBindingData();
+	return true;
+}
+
+bool UGaussianSplatAsset::SetBoneBinding(const TArray<FMatrix44f>& RestBoneMatrices, const TArray<uint32>& SplatBoneIndices,
+	const FVector3f& BoundsMin, const FVector3f& BoundsMax)
+{
+	const int32 BoneCount = RestBoneMatrices.Num();
+	if (BoneCount <= 0 || BoneCount > 65535)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SetBoneBinding: invalid bone count %d (must be 1..65535)"), BoneCount);
+		return false;
+	}
+
+	if (SplatCount <= 0 || SplatBoneIndices.Num() != SplatCount)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SetBoneBinding: splat index count %d does not match SplatCount %d"),
+			SplatBoneIndices.Num(), SplatCount);
+		return false;
+	}
+
+	for (int32 i = 0; i < SplatBoneIndices.Num(); i++)
+	{
+		if (SplatBoneIndices[i] >= (uint32)BoneCount)
+		{
+			UE_LOG(LogTemp, Error, TEXT("SetBoneBinding: splat %d references bone %u out of range (BoneCount=%d)"),
+				i, SplatBoneIndices[i], BoneCount);
+			return false;
+		}
+	}
+
+	const int64 HeaderSize = (int64)sizeof(FGaussianSplatBoneBindingHeader);
+	const int64 MatrixBytes = (int64)BoneCount * (int64)sizeof(FMatrix44f);
+	const int64 IndexBytes = (int64)SplatCount * (int64)sizeof(uint32);
+	const int64 TotalBytes = HeaderSize + MatrixBytes + IndexBytes;
+	if (TotalBytes > (int64)MAX_int32)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SetBoneBinding: binding block too large (%lld bytes)"), TotalBytes);
+		return false;
+	}
+
+	BoneBindingBulkData.Lock(LOCK_READ_WRITE);
+	uint8* Dest = static_cast<uint8*>(BoneBindingBulkData.Realloc(TotalBytes));
+
+	FGaussianSplatBoneBindingHeader Header;
+	Header.Magic = GAUSSIAN_SPLAT_BONE_BINDING_MAGIC;
+	Header.Version = GAUSSIAN_SPLAT_BONE_BINDING_VERSION;
+	Header.BoneCount = (uint32)BoneCount;
+	Header.SplatCount = (uint32)SplatCount;
+	Header.BoundsMin = BoundsMin;
+	Header.BoundsMax = BoundsMax;
+
+	FMemory::Memcpy(Dest, &Header, sizeof(FGaussianSplatBoneBindingHeader));
+	FMemory::Memcpy(Dest + HeaderSize, RestBoneMatrices.GetData(), (SIZE_T)MatrixBytes);
+
+	// Store the 16-bit bone index in the low half of a 4-byte word so the
+	// shader can use an aligned ByteAddressBuffer.Load.
+	uint32* IndexDest = reinterpret_cast<uint32*>(Dest + HeaderSize + MatrixBytes);
+	for (int32 i = 0; i < SplatCount; i++)
+	{
+		IndexDest[i] = SplatBoneIndices[i] & 0xFFFFu;
+	}
+
+	BoneBindingBulkData.Unlock();
+	BoneBindingBulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
+
+	bHasBoneBinding = true;
+	BoneBindingBoneCount = BoneCount;
+
+	// The binding is baked into a static GPU buffer, so the shared render data
+	// has to be rebuilt around it.
+	RenderData.Reset();
+#if WITH_EDITOR
+	MarkPackageDirty();
+#endif
+	OnAssetChanged.Broadcast(this);
+
+	UE_LOG(LogTemp, Log, TEXT("SetBoneBinding: asset '%s' bound to %d bones (%d splats, %lld bytes)"),
+		*GetName(), BoneCount, SplatCount, TotalBytes);
+	return true;
+}
+
+void UGaussianSplatAsset::ClearBoneBinding()
+{
+	if (!bHasBoneBinding && BoneBindingBulkData.GetBulkDataSize() == 0)
+	{
+		return;
+	}
+
+	BoneBindingBulkData.RemoveBulkData();
+	bHasBoneBinding = false;
+	BoneBindingBoneCount = 0;
+
+	RenderData.Reset();
+#if WITH_EDITOR
+	MarkPackageDirty();
+#endif
+	OnAssetChanged.Broadcast(this);
+
+	UE_LOG(LogTemp, Log, TEXT("ClearBoneBinding: asset '%s' is no longer bound"), *GetName());
 }
 
 // ----------------------------------------------------------------------------

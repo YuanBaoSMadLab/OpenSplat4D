@@ -75,6 +75,19 @@ public:
 	FBufferRHIRef Native4DBuffer;
 	FShaderResourceViewRHIRef Native4DBufferSRV;
 
+	/** Fracture bone binding: static per-splat bone index buffer (4 bytes/splat; dummy 4B when unbound) */
+	FBufferRHIRef SplatBoneIndexBuffer;
+	FShaderResourceViewRHIRef SplatBoneIndexBufferSRV;
+
+	/** Whether the asset carries a fracture bone binding */
+	bool bHasBoneBinding = false;
+
+	/** Number of bones in the binding (0 when unbound) */
+	int32 BoneCount = 0;
+
+	/** Splats covered by SplatBoneIndexBuffer (0 when unbound) */
+	int32 BoneBindingSplatCount = 0;
+
 	/** Whether the asset has 4D temporal data */
 	bool bIs4D = false;
 
@@ -120,6 +133,7 @@ private:
 	TArray<uint8> TemporalData;
 	TArray<uint8> KeyframeData;
 	TArray<uint8> Native4DData;
+	TArray<uint32> CachedBoneIndices;
 	TArray<FGaussianChunkInfo> CachedChunkData;
 	TArray<FGaussianGPUCluster> CachedClusterData;
 	TArray<uint32> CachedSplatClusterIndices;

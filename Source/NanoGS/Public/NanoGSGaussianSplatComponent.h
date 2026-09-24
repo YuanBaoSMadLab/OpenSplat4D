@@ -197,6 +197,29 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bCastShadow"))
 	float ShadowIntensity = 1.0f;
 
+	// ------------------------------------------------------------------
+	// 破裂（Chaos GeometryCollection 驱动）
+	//
+	// 该资产必须在编辑器里执行过"绑定破裂骨头"。绑定后，每帧从下面的
+	// 几何集合组件读取各骨头的当前变换，算出 Delta_b = Cur_b · Rest_b⁻¹
+	// 推给渲染代理，splat 就会跟随各自所属的碎块一起飞散。
+	//
+	// 注意：这里刻意用 UObject* 而不是 UGeometryCollectionComponent*。
+	// NanoGS 模块在 PostConfigInit 相位加载，早于 GeometryCollectionEngine，
+	// 因此运行时只能靠反射（FindFunction + ProcessEvent）读取变换。
+	// ------------------------------------------------------------------
+
+	/** 驱动本组件的几何集合组件（必须已在该资产上"绑定破裂骨头"）。
+	 *  留空则表示不做破裂跟随。 */
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "高斯泼溅|破裂",
+		meta = (DisplayName = "破裂几何集合组件",
+			AllowedClasses = "/Script/GeometryCollectionEngine.GeometryCollectionComponent"))
+	TObjectPtr<UObject> FractureGeometryCollection = nullptr;
+
+	/** 当前是否有生效的破裂跟随（已指定组件 + 资产已绑定骨头） */
+	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|破裂", meta = (DisplayName = "破裂跟随是否生效"))
+	bool IsFractureBindingActive() const;
+
 	/** 碰撞生成方法 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "碰撞方法"))
 	EGaussianCollisionMethod CollisionMethod = EGaussianCollisionMethod::None;
@@ -305,6 +328,31 @@ private:
 
 	/** Push CurrentTime to the scene proxy (no-op if no proxy) */
 	void PushCurrentTimeToProxy();
+
+	/**
+	 * 破裂跟随：读取几何集合组件的骨头当前变换，算出
+	 * Delta_b = Cur_b · Rest_b⁻¹ 并推给渲染代理。
+	 * 全身静止（或未生效）时推空数组，渲染路径完全关闭，零每帧开销。
+	 */
+	void TickFractureBoneDeltas();
+
+	/** Load (once) the asset's K rest bone matrices. False if unavailable. */
+	bool EnsureFractureRestMatrices();
+
+	/** Cached rest bone matrices (asset local space, K x FMatrix44f) */
+	TArray<FMatrix44f> FractureRestMatrices;
+
+	/** Reused scratch for the per-frame deltas pushed to the proxy */
+	TArray<FMatrix44f> FractureBoneDeltas;
+
+	/** Deltas most recently pushed (used to skip uploads once the debris settles) */
+	TArray<FMatrix44f> FractureLastPushedDeltas;
+
+	/** 上一帧推给代理的状态：true = 正在跟随破裂 */
+	bool bFractureWasActive = false;
+
+	/** 上次推送目标的场景代理。代理重建（如重新绑定骨头）后必须重推一次。 */
+	const void* LastFractureProxy = nullptr;
 
 	/** Cached bounds */
 	mutable FBoxSphereBounds CachedBounds;

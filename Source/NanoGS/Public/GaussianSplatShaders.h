@@ -39,6 +39,16 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, UseNative4D)
 		SHADER_PARAMETER(uint32, Native4DSplatCount)              // splats covered by Native4DBuffer
 		SHADER_PARAMETER(float, TimeDuration)                     // Animation period for the temporal SH bands
+		// Fracture bone binding (Chaos GeometryCollection driven). Splats are
+		// assigned to a bone by the editor-side binding pass; every frame the
+		// owning component pushes Delta_b = Cur_b * Rest_b^-1 into
+		// BoneDeltaBuffer. When UseFractureBones is 0 both buffers below are
+		// dummies and the shader takes the untouched path.
+		SHADER_PARAMETER_SRV(ByteAddressBuffer, SplatBoneIndexBuffer)  // 4 bytes/splat (low 16 bits = bone index)
+		SHADER_PARAMETER_SRV(ByteAddressBuffer, BoneDeltaBuffer)       // 64 bytes/bone: FMatrix44f local delta
+		SHADER_PARAMETER(uint32, UseFractureBones)                     // 1 = apply per-bone delta transforms
+		SHADER_PARAMETER(uint32, FractureBoneCount)                    // bones in BoneDeltaBuffer
+		SHADER_PARAMETER(uint32, FractureSplatCount)                   // splats covered by SplatBoneIndexBuffer
 		// Distance-based visibility range (0 = unlimited)
 		SHADER_PARAMETER(float, MaxDrawDistance)
 		SHADER_PARAMETER(float, FadeOutStartDistance)

@@ -150,6 +150,40 @@ public:
 	/** Animation period (TimeEnd - TimeStart) for the temporal SH bands */
 	float TimeDuration4D = 0.f;
 
+	/** Fracture bone binding: static per-splat bone index SRV (from shared render data) */
+	FBufferRHIRef SplatBoneIndexBuffer;
+	FShaderResourceViewRHIRef SplatBoneIndexBufferSRV;
+
+	/** Whether this proxy's asset carries a fracture bone binding */
+	bool bHasBoneBinding = false;
+
+	/** Number of bones in the binding (0 when unbound) */
+	int32 BoneCount = 0;
+
+	/** Splats covered by SplatBoneIndexBuffer (0 when unbound) */
+	int32 BoneBindingSplatCount = 0;
+
+	/**
+	 * Per-instance bone delta buffer (64 bytes/bone, dynamic). Kept per proxy
+	 * rather than in the shared render data because two instances of the same
+	 * asset can be fractured by different GeometryCollections.
+	 */
+	FBufferRHIRef BoneDeltaBuffer;
+	FShaderResourceViewRHIRef BoneDeltaBufferSRV;
+
+	/** Render-thread staging for per-frame bone delta uploads */
+	TArray<FMatrix44f> BoneDeltaUploadData;
+
+	/** Set when BoneDeltaUploadData differs from the GPU copy; cleared on upload */
+	bool bBoneDeltasDirty = false;
+
+	/**
+	 * 1 while the bound fracture is actually displaced. Gates UseFractureBones so
+	 * an un-fractured (or unbound) proxy keeps the untouched shader path and pays
+	 * zero per-frame cost.
+	 */
+	bool bFractureBonesActive = false;
+
 	/** Current 4D playback time (asset time units). Written by render commands from the owning component. */
 	float CurrentTime = 0.f;
 
@@ -418,6 +452,42 @@ public:
 				{
 					Res->CurrentTime = InTime;
 				}
+			});
+	}
+
+	/**
+	 * Push this frame's fracture bone deltas (Delta_b = Cur_b * Rest_b^-1).
+	 * Game-thread safe (enqueues a render command). Render-thread FIFO ordering
+	 * guarantees this runs before any subsequently enqueued proxy destruction
+	 * command. An empty array marks the fracture as at rest, which disables the
+	 * bone path again.
+	 */
+	void SetBoneDeltas(const TArray<FMatrix44f>& InDeltas)
+	{
+		FGaussianSplatGPUResources* Res = GPUResources;
+		if (!Res)
+		{
+			return;
+		}
+
+		ENQUEUE_RENDER_COMMAND(GaussianSplatSetBoneDeltas)(
+			[Res, Deltas = InDeltas](FRHICommandListImmediate&)
+			{
+				if (!Res->bHasBoneBinding)
+				{
+					return;
+				}
+
+				if (Deltas.Num() != Res->BoneCount)
+				{
+					// At rest (or bounds changed): keep the GPU copy but stop using it
+					Res->bFractureBonesActive = false;
+					return;
+				}
+
+				Res->BoneDeltaUploadData = Deltas;
+				Res->bBoneDeltasDirty = true;
+				Res->bFractureBonesActive = true;
 			});
 	}
 

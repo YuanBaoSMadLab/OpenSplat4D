@@ -52,9 +52,14 @@ public class NanoGSEditor : ModuleRules
 					"WorkspaceMenuStructure",
 					// FStaticMeshAttributes lives in StaticMeshDescription.
 					"StaticMeshDescription",
-					// Editor-only Chaos fracture support (proxy mesh -> GeometryCollection).
-					// NanoGS (Runtime) must never depend on this.
-					"GeometryCollectionEngine"
+					// Editor-only Chaos fracture support (proxy mesh -> GeometryCollection
+					// -> splat bone binding). NanoGS (Runtime) must never depend on this.
+					"GeometryCollectionEngine",
+					// FGeometryCollection / GeometryCollectionAlgo (rest bone matrices and
+					// component space hierarchy) live in the Chaos runtime module.
+					"Chaos",
+					// IContentBrowserSingleton, for the GeometryCollection picker dialog.
+					"ContentBrowser"
 				}
 			);
 
