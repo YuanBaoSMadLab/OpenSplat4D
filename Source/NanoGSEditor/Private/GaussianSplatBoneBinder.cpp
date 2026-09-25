@@ -699,7 +699,17 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 
 	int32 BoundSplatCount = 0;
 	int32 CoarseSplatCount = 0;
+	int32 ClippedSplatCount = 0;
 	int32 NonFiniteCount = 0;
+
+	// Estimation-grid clipping. The voxel shell bounds are the body the user
+	// authored: if they moved the estimation grid (Fracture->GridOriginOffset)
+	// to push the floor, the background or a stray cluster off it, those splats
+	// must not follow a fracture piece either. They are flagged as dropped in
+	// the index block, which the render shader uses to skip them, so the source
+	// asset itself is never modified.
+	const FBox ClipBounds = Fracture->VoxelShellBounds;
+	const bool bClipToShell = ClipBounds.IsValid != 0;
 
 	const int32 BlockSize = FMath::Max(Params.SplatBlockSize, 1);
 	for (int32 BlockStart = 0; BlockStart < SplatCount; BlockStart += BlockSize)
@@ -720,8 +730,18 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 				continue;
 			}
 
+			const FVector SplatPosition(P[0], P[1], P[2]);
+
+			// Outside the estimation grid => dropped, not bound. See bClipToShell.
+			if (bClipToShell && !ClipBounds.IsInsideOrOn(SplatPosition))
+			{
+				SplatBoneIndices[Index] = GAUSSIAN_SPLAT_BONE_INDEX_DROPPED;
+				++ClippedSplatCount;
+				continue;
+			}
+
 			bool bOutsideBody = false;
-			const int32 BoneIdx = ResolveBone(FVector(P[0], P[1], P[2]), bOutsideBody);
+			const int32 BoneIdx = ResolveBone(SplatPosition, bOutsideBody);
 			if (BoneIdx == INDEX_NONE)
 			{
 				SplatBoneIndices[Index] = 0;
@@ -775,6 +795,15 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 				}
 			}
 		}
+	}
+
+	if (ClippedSplatCount > 0 && BoundSplatCount == 0)
+	{
+		Result.Error = FString::Printf(
+			TEXT("全部 %d 个 splat 都落在估算网格（体素壳包围盒 %s）之外，破裂里将没有任何 splat。\n")
+			TEXT("请把「估算网格位置偏移」改回接近 (0,0,0) 并重新生成体素壳。"),
+			ClippedSplatCount, *ClipBounds.ToString());
+		return Result;
 	}
 
 	int32 EmptyPieceCount = 0;
@@ -960,6 +989,7 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 	Result.PieceCount = Pieces.Num();
 	Result.BoundSplatCount = BoundSplatCount;
 	Result.CoarseSplatCount = CoarseSplatCount;
+	Result.ClippedSplatCount = ClippedSplatCount;
 	Result.EmptyBoneCount = EmptyPieceCount;
 	Result.LargestPieceCount = LargestPieceCount;
 	Result.GridSize = Grid.Size;
@@ -971,6 +1001,7 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 		TEXT("骨头总数: %d\n")
 		TEXT("碎片数: %d\n")
 		TEXT("已绑定 splat: %s\n")
+		TEXT("网格外剔除: %s\n")
 		TEXT("碎片体外回退: %s\n")
 		TEXT("没有 splat 的碎片: %d\n")
 		TEXT("最大碎片 splat 数: %d\n")
@@ -981,6 +1012,7 @@ FGaussianSplatBoneBindResult FGaussianSplatBoneBinder::BindAssetToCollection(
 		TransformCount,
 		Pieces.Num(),
 		*LexToString((int64)BoundSplatCount),
+		*LexToString((int64)ClippedSplatCount),
 		*LexToString((int64)CoarseSplatCount),
 		EmptyPieceCount,
 		LargestPieceCount,

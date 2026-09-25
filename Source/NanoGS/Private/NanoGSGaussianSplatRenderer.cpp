@@ -104,6 +104,16 @@ namespace
 		Parameters.UseFractureBones = bBound ? 1u : 0u;
 		Parameters.FractureBoneCount = bBound ? static_cast<uint32>(GPUResources->BoneCount) : 0u;
 		Parameters.FractureSplatCount = bBound ? static_cast<uint32>(GPUResources->BoneBindingSplatCount) : 0u;
+
+		// Grid clipping deliberately does *not* depend on bFractureBonesActive: a
+		// splat the user pushed outside the fracture's estimation grid must be gone
+		// from the moment the fracture is solved, not only once it is displaced.
+		// It only needs the index buffer, which exists whenever the binding does.
+		const bool bHasDropList = GPUResources
+			&& GPUResources->bHasBoneBinding
+			&& GPUResources->BoneBindingSplatCount > 0
+			&& GPUResources->SplatBoneIndexBufferSRV.IsValid();
+		Parameters.FractureDropCount = bHasDropList ? static_cast<uint32>(GPUResources->BoneBindingSplatCount) : 0u;
 	}
 }
 

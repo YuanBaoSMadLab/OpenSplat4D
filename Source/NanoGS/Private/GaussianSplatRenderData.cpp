@@ -217,10 +217,12 @@ void FGaussianSplatRenderData::Initialize(UGaussianSplatAsset* Asset, UGaussianS
 			FMemory::Memcpy(CachedBoneIndices.GetData(), RawBinding + IndexBlockOffset,
 				BoneBindingSplatCount * sizeof(uint32));
 
-			// Low 16 bits carry the bone index (see the binding layout comment).
+			// Low 16 bits carry the bone index, bit 16 the "outside the estimation
+			// grid, do not render" flag (see the binding layout comment). Everything
+			// above is reserved, hence the mask rather than a plain copy.
 			for (uint32& BoneIndex : CachedBoneIndices)
 			{
-				BoneIndex &= 0xFFFFu;
+				BoneIndex &= (0xFFFFu | GAUSSIAN_SPLAT_BONE_INDEX_DROPPED);
 			}
 		}
 		else

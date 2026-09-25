@@ -44,6 +44,11 @@ ByteAddressBuffer BoneDeltaBuffer;      // 64 bytes/bone: row-major float4x4
 uint UseFractureBones;   // 1 = apply per-bone delta transforms
 uint FractureBoneCount;  // bones in BoneDeltaBuffer
 uint FractureSplatCount; // splats covered by SplatBoneIndexBuffer
+// Splats flagged as outside the fracture's estimation grid (bit 16 of the index
+// entry) are dropped instead of rendered. Gated independently of
+// UseFractureBones so the clipping already shows on an undisplaced fracture.
+// 0 = no clipping, and the index buffer is then never read.
+uint FractureDropCount;
 
 RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer; //pass calculated result to ViewDataBuffer
 
@@ -308,6 +313,19 @@ void ProcessSplat(uint splatIndex, uint outputIndex, uint selectedClusterID, uin
 	// so they are written as invalid instead of adding an interior haze.
 	const bool bIsCapSplat = (splatIndex >= CapSplatStartIndex);
 	if (bIsCapSplat && UseFractureBones == 0u)
+	{
+		WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
+		return;
+	}
+
+	// Estimation-grid clipping: the editor-side binding flags every splat that
+	// fell outside the fracture's estimation grid (the user moved the grid to
+	// push the floor / background off it). Such a splat must not show up in the
+	// fracture, and the source asset itself is never modified. The read is
+	// skipped entirely when FractureDropCount is 0, i.e. for every asset without
+	// a fracture binding.
+	if (splatIndex < FractureDropCount &&
+		(SplatBoneIndexBuffer.Load(splatIndex * 4u) & 0xFFFF0000u) != 0u)
 	{
 		WriteInvalidSplat(outputIndex, selectedClusterID, selectedLODLevel);
 		return;

@@ -27,6 +27,17 @@ struct FGaussianSplatProxyMeshParams
 	/** Edge length of one voxel (cm). <= 0 => auto = max(trimmed diagonal / 192, 1 cm). */
 	float VoxelSize = 0.0f;
 
+	/** Position offset (cm, asset local space) applied on top of the estimation
+	 *  grid's automatically derived minimum corner.
+	 *
+	 *  The grid is what decides which splats belong to the body: a splat that
+	 *  falls outside it neither fills a voxel nor (through the shell bounds)
+	 *  ends up in the fracture. That makes moving the grid the way the fracture
+	 *  editor excludes parts of a capture -- floor, background, stray floaters --
+	 *  without touching the source asset. Zero keeps the grid on the trimmed
+	 *  cloud bounds. */
+	FVector GridOriginOffset = FVector::ZeroVector;
+
 	/** Per-axis trimming quantile (0.01 => drop the lowest/highest 1%) so stray
 	 *  floaters cannot inflate the grid and destroy the effective resolution. */
 	float TrimPercentile = 0.01f;
@@ -58,6 +69,9 @@ struct FGaussianSplatProxyMeshResult
 	FVector GridOrigin = FVector::ZeroVector;
 	FIntVector GridSize = FIntVector::ZeroValue;
 	int64 OccupiedVoxels = 0;
+	/** Splats that fell outside the estimation grid and were therefore not
+	 *  allowed to contribute to the shell (see GridOriginOffset). */
+	int64 ClippedSplats = 0;
 	int32 QuadCount = 0;
 	int32 TriangleCount = 0;
 	/** Edges referenced by a number of faces other than 2 (should be 0). */

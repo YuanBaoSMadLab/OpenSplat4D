@@ -20,11 +20,23 @@ class FGaussianSplatRenderData;
 //     binding block + cut-surface (cap) splat block.
 // v2: adds the collision voxel shell block (magic 'GSVS') after the cap
 //     block. v1 packages stay readable (they simply have no shell).
-#define GAUSSIAN_SPLAT_FRACTURE_ASSET_VERSION 2
+// v3: adds the estimation grid offset of the shell (FVector). v1/v2 packages
+//     stay readable (they simply keep the offset at zero).
+#define GAUSSIAN_SPLAT_FRACTURE_ASSET_VERSION 3
 
 /** Fracture bone binding block header (64 bytes, magic 'GSFB'). */
 #define GAUSSIAN_SPLAT_BONE_BINDING_MAGIC   0x47534642  // "GSFB"
 #define GAUSSIAN_SPLAT_BONE_BINDING_VERSION 1u
+
+/**
+ * Bit 16 of a per-splat bone index entry: the splat lies outside the
+ * estimation grid (see UGaussianSplatFractureAsset::GridOriginOffset) and must
+ * not be rendered as part of the fracture. The bone index itself stays in the
+ * low 16 bits, so a dropped splat is still a valid index for anything that
+ * ignores the flag; only the render shader acts on it, and only while the
+ * fracture binding is bound.
+ */
+#define GAUSSIAN_SPLAT_BONE_INDEX_DROPPED 0x00010000u
 
 struct FGaussianSplatBoneBindingHeader
 {
@@ -72,6 +84,21 @@ struct FGaussianSplatCap
 	FQuat4f Rotation = FQuat4f::Identity;
 	FVector3f Scale = FVector3f::OneVector;
 	FLinearColor Color = FLinearColor::White;
+};
+
+/**
+ * 破裂预览的两种形态（编辑器里「破碎预览」按钮按它决定跑哪一种）。
+ */
+UENUM(BlueprintType)
+enum class EGaussianSplatFracturePreviewMode : uint8
+{
+	/** 轻量运动学预览：碎片沿「爆炸中心 → 该块」的方向飞散，可选重力。
+	 *  不跑 Chaos 求解，开销极小，改参数立刻能看。 */
+	Kinematic UMETA(DisplayName = "轻量（运动学）"),
+
+	/** 真实 Chaos 预览：在预览场景里现搭一个几何集合组件做刚体模拟，
+	 *  碎片真的会互相碰撞、落地。开销大，需要已解算。 */
+	Chaos UMETA(DisplayName = "真实（Chaos）"),
 };
 
 /**
@@ -150,6 +177,38 @@ struct NANOGS_API FGaussianSplatFractureSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "预览",
 		meta = (DisplayName = "显示切割面预览"))
 	bool bShowCuttingPreview = true;
+
+	// ------------------------------------------------------------------
+	// 破碎预览：破裂编辑器里的轻量运动学预览（不跑 Chaos 求解）。
+	// 每块沿「爆炸中心 → 该块」的方向飞散，可选叠加重力。纯显示，
+	// 不影响破裂资产里已解算的任何数据；改完在编辑器里点「破碎预览」即生效。
+	// ------------------------------------------------------------------
+
+	/** 破碎预览：碎片是否受重力。关 = 沿爆炸方向匀速直线飞散（无重力）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "预览",
+		meta = (DisplayName = "破碎预览：重力"))
+	bool bPreviewGravity = true;
+
+	/** 破碎预览的爆炸初速度（cm/s）。离爆炸中心越远的块飞得越快。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "预览",
+		meta = (DisplayName = "破碎预览：爆炸速度", ClampMin = "0.0", Units = "cm/s"))
+	float PreviewExplosionSpeed = 120.0f;
+
+	/** 破碎预览的爆炸中心相对物体中心的偏移（cm）。零 = 在物体中心爆炸（默认）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "预览",
+		meta = (DisplayName = "破碎预览：爆炸中心偏移", Units = "cm"))
+	FVector PreviewExplosionCenterOffset = FVector::ZeroVector;
+
+	/** 破碎预览跑哪一种形态（见 EGaussianSplatFracturePreviewMode） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "预览",
+		meta = (DisplayName = "破碎预览：模式"))
+	EGaussianSplatFracturePreviewMode PreviewMode = EGaussianSplatFracturePreviewMode::Kinematic;
+
+	/** 真实 Chaos 预览的爆炸强度（AddRadialImpulse 的 strength，cm/s，bVelChange）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "预览",
+		meta = (DisplayName = "破碎预览：Chaos 爆炸强度", ClampMin = "0.0",
+			EditCondition = "PreviewMode == EGaussianSplatFracturePreviewMode::Chaos"))
+	float PreviewChaosExplosionStrength = 400.0f;
 };
 
 /**
@@ -257,6 +316,17 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "破裂|体素壳", meta = (DisplayName = "体素壳包围盒"))
 	FBox VoxelShellBounds = FBox(ForceInit);
 
+	/** 估算网格（体素网格）的位置偏移，源资产局部空间，单位 cm。
+	 *
+	 *  网格原本自动贴合点云；把它挪开之后，落在网格外的 splat 既不会填充体素
+	 *  （壳的形状随之改变），也不会参与破裂 —— 绑定阶段会把它们标记为「剔除」，
+	 *  破裂 Actor 里不渲染。源 Splat 资产一个字节都不改动，把偏移改回 0 并重新
+	 *  生成体素壳即可完全复原。
+	 *  改完必须点编辑器里的「重新生成体素壳」才生效（生成会写回壳与绑定）。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "破裂|体素壳",
+		meta = (DisplayName = "估算网格位置偏移", Units = "cm"))
+	FVector GridOriginOffset = FVector::ZeroVector;
+
 	/** Also use the voxel shell as the splat component's collision body.
 	 *  Off = the shell only drives the fracture solve ("仅用于破裂"). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "破裂|体素壳",
@@ -295,7 +365,7 @@ public:
 	//   [0 .. 63]  FGaussianSplatBoneBindingHeader (64 B, magic 'GSFB')
 	//   [64 ..   ] K x 64 B  FMatrix44f rest bone matrix per bone
 	//   [..  ..  ] N x  4 B  per-splat uint32: low 16 bits = bone index,
-	//                        high 16 bits reserved (0)
+//                        bit 16 = GAUSSIAN_SPLAT_BONE_INDEX_DROPPED, rest 0
 	// K = BoneCount, N = SourceSplatCount + CapSplatCount. The index array
 	// covers ALL splats of the source asset (LOD splats included), so it is
 	// exactly as long as the packed splat buffer the renderer uploads, plus
@@ -350,7 +420,12 @@ public:
 	 * @param RestBoneMatrices  K matrices in source asset local space, which is
 	 *                          also the GeometryCollection component space at
 	 *                          bind time.
-	 * @param SplatBoneIndices  Exactly SourceSplatCount bone indices (0 <= i < K).
+	 * @param SplatBoneIndices  Exactly SourceSplatCount entries: bone index in
+	 *                          the low 16 bits, optionally GAUSSIAN_SPLAT_BONE_INDEX_DROPPED
+	 *                          in bit 16 for splats outside the estimation grid
+	 *                          (they are simply not rendered as part of the
+	 *                          fracture; the index stays valid for everything
+	 *                          that ignores the flag).
 	 * @param BoundsMin         Body bounds (asset local space).
 	 * @param BoundsMax         Body bounds (asset local space).
 	 * @param CapBoneIndices    Exactly CapSplatCount bone indices for the cap

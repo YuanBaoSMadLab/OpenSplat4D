@@ -402,13 +402,18 @@ FGaussianSplatProxyMeshResult FGaussianSplatProxyMeshBuilder::BuildMeshDescripti
 	FVoxelGrid Grid;
 	bool bGridReady = false;
 	int32 GrowAttempts = 0;
+	int64 ClippedSplats = 0;
 	FString GrowNote;
 
 	for (int32 Attempt = 0; Attempt < ProxyMaxGrowAttempts; ++Attempt)
 	{
 		FVoxelGrid Candidate;
 		Candidate.CellSize = VoxelSize;
-		Candidate.Origin = TrimMin - FVector(VoxelSize);
+		// The user offset shifts the whole estimation grid, which is what makes
+		// splats fall out of it (and, through the shell bounds, out of the
+		// fracture). The size still follows the trimmed cloud extent, so the grid
+		// keeps covering exactly as much of the cloud as it always did.
+		Candidate.Origin = TrimMin - FVector(VoxelSize) + Params.GridOriginOffset;
 		Candidate.Size.X = FMath::Clamp((int32)FMath::CeilToDouble(Extent.X / VoxelSize) + 2, 3, MaxCellsPerAxis);
 		Candidate.Size.Y = FMath::Clamp((int32)FMath::CeilToDouble(Extent.Y / VoxelSize) + 2, 3, MaxCellsPerAxis);
 		Candidate.Size.Z = FMath::Clamp((int32)FMath::CeilToDouble(Extent.Z / VoxelSize) + 2, 3, MaxCellsPerAxis);
@@ -427,10 +432,8 @@ FGaussianSplatProxyMeshResult FGaussianSplatProxyMeshBuilder::BuildMeshDescripti
 		const FVector Origin = Candidate.Origin;
 		const FIntVector Size = Candidate.Size;
 		const double InvCellSize = 1.0 / (double)VoxelSize;
-		const int32 MaxX = Size.X - 1;
-		const int32 MaxY = Size.Y - 1;
-		const int32 MaxZ = Size.Z - 1;
 
+		int64 AttemptClipped = 0;
 		for (int32 BlockStart = 0; BlockStart < SplatCount; BlockStart += ProxySplatBlock)
 		{
 			const int32 BlockEnd = FMath::Min(BlockStart + ProxySplatBlock, SplatCount);
@@ -445,9 +448,21 @@ FGaussianSplatProxyMeshResult FGaussianSplatProxyMeshBuilder::BuildMeshDescripti
 				const double FX = ((double)P[0] - Origin.X) * InvCellSize;
 				const double FY = ((double)P[1] - Origin.Y) * InvCellSize;
 				const double FZ = ((double)P[2] - Origin.Z) * InvCellSize;
-				const int32 CX = (int32)FMath::Clamp<double>(FMath::FloorToDouble(FX), 0.0, (double)MaxX);
-				const int32 CY = (int32)FMath::Clamp<double>(FMath::FloorToDouble(FY), 0.0, (double)MaxY);
-				const int32 CZ = (int32)FMath::Clamp<double>(FMath::FloorToDouble(FZ), 0.0, (double)MaxZ);
+
+				// Outside the estimation grid => dropped, *not* clamped into the
+				// border cells. Clamping would let the grid edge fill up with
+				// splats that are nowhere near it, which would both inflate the
+				// shell and defeat the whole point of moving the grid.
+				if (FX < 0.0 || FY < 0.0 || FZ < 0.0 ||
+					FX >= (double)Size.X || FY >= (double)Size.Y || FZ >= (double)Size.Z)
+				{
+					++AttemptClipped;
+					continue;
+				}
+
+				const int32 CX = (int32)FX;
+				const int32 CY = (int32)FY;
+				const int32 CZ = (int32)FZ;
 				uint8& CellCount = Counts[(CZ * Size.Y + CY) * Size.X + CX];
 				if (CellCount < 255)
 				{
@@ -482,12 +497,14 @@ FGaussianSplatProxyMeshResult FGaussianSplatProxyMeshBuilder::BuildMeshDescripti
 		if (Occupied == 0)
 		{
 			Result.Error = FString::Printf(
-				TEXT("体素全为空：在 %.2f cm 体素、每格至少 %d 个 splat 的条件下没有实心体素。\n请减小体素尺寸或降低密度阈值后重试。"),
+				TEXT("体素全为空：在 %.2f cm 体素、每格至少 %d 个 splat 的条件下没有实心体素。\n")
+				TEXT("请减小体素尺寸或降低密度阈值后重试；若调过「估算网格位置偏移」，也请把它改回接近 (0,0,0)。"),
 				VoxelSize, MinSplatsPerVoxel);
 			return Result;
 		}
 
 		Grid = MoveTemp(Candidate);
+		ClippedSplats = AttemptClipped;
 		bGridReady = true;
 		break;
 	}
@@ -697,6 +714,7 @@ FGaussianSplatProxyMeshResult FGaussianSplatProxyMeshBuilder::BuildMeshDescripti
 	}
 
 	Result.OccupiedVoxels = CountOccupied(Grid.Occupied);
+	Result.ClippedSplats = ClippedSplats;
 	Result.QuadCount = QuadCount;
 	Result.TriangleCount = QuadCount * 2;
 	Result.EffectiveVoxelSize = Grid.CellSize;
@@ -708,11 +726,13 @@ FGaussianSplatProxyMeshResult FGaussianSplatProxyMeshBuilder::BuildMeshDescripti
 		TEXT("体素尺寸: %.2f cm %s\n")
 		TEXT("网格尺寸: %d x %d x %d\n")
 		TEXT("占用体素: %s\n")
+		TEXT("网格外剔除 splat: %s\n")
 		TEXT("四边形: %d（三角形 %d）\n")
 		TEXT("非流形边: %d"),
 		Grid.CellSize, *GrowNote,
 		Grid.Size.X, Grid.Size.Y, Grid.Size.Z,
 		*LexToString(Result.OccupiedVoxels),
+		*LexToString(ClippedSplats),
 		QuadCount, QuadCount * 2,
 		NonManifoldEdges);
 

@@ -11,6 +11,7 @@
 #include "HitProxies.h"
 #include "Containers/BitArray.h"
 #include "Misc/Crc.h"
+#include "Misc/ScopeExit.h"
 
 UGaussianSplatComponent::UGaussianSplatComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -70,6 +71,7 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, CollisionMethod) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, CollisionMaxFaces) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxConvexHulls) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, IgnoreFactor) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, VoxelSize) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxCollisionElements))
@@ -351,6 +353,16 @@ void UGaussianSplatComponent::TickFractureBoneDeltas()
 		bFractureWasActive = false;
 	}
 
+#if WITH_EDITOR
+	// The editor fracture preview owns the bone path while it runs: the viewport
+	// client pushes its own deltas every frame, so the collection is left alone
+	// (and the preview must not be released here).
+	if (bPreviewBoneDeltasActive)
+	{
+		return;
+	}
+#endif
+
 	if (!IsFractureBindingActive() || !SplatProxy || !EnsureFractureRestMatrices())
 	{
 		// Nothing to follow: release the bone path exactly once
@@ -451,6 +463,46 @@ void UGaussianSplatComponent::TickFractureBoneDeltas()
 	FractureLastPushedDeltas = FractureBoneDeltas;
 	bFractureWasActive = true;
 }
+
+#if WITH_EDITOR
+void UGaussianSplatComponent::SetPreviewBoneDeltas(const TArray<FMatrix44f>& InDeltas)
+{
+	bPreviewBoneDeltasActive = InDeltas.Num() > 0;
+
+	// The proxy validates the length against the binding's bone count itself and
+	// simply keeps the bone path off when they disagree, so an empty array (end
+	// of preview) needs no special casing here.
+	if (FGaussianSplatSceneProxy* SplatProxy = static_cast<FGaussianSplatSceneProxy*>(SceneProxy))
+	{
+		SplatProxy->SetBoneDeltas(InDeltas);
+	}
+
+	// The preview bypasses the collection path, so the "last pushed" bookkeeping
+	// of that path must not be inherited by it.
+	FractureLastPushedDeltas.Reset();
+	bFractureWasActive = false;
+}
+
+void UGaussianSplatComponent::SetFractureTargetForPreview(UObject* InCollectionComponent)
+{
+	if (FractureGeometryCollection == InCollectionComponent)
+	{
+		return;
+	}
+
+	// Same bookkeeping as the FractureGeometryCollection property path in
+	// PostEditChangeProperty: the rest pose belongs to the previous target.
+	FractureGeometryCollection = InCollectionComponent;
+	FractureRestMatrices.Reset();
+	FractureLastPushedDeltas.Reset();
+	bFractureWasActive = false;
+
+	// TickFractureBoneDeltas runs from the component tick, which is only enabled
+	// while a fracture is actually followed. Setting the property directly (as the
+	// editor preview does) would leave it off.
+	Update4DTickEnabled();
+}
+#endif
 
 void UGaussianSplatComponent::SetNanitePrecision(float InThreshold)
 {
@@ -560,6 +612,11 @@ void UGaussianSplatComponent::OnAssetChanged()
 {
 	bBoundsCached = false;
 	UpdateBounds();
+
+	// The shadow fallback geometry is built from the splat cloud itself, so a new
+	// asset needs a new cache before the proxy is rebuilt below.
+	RebuildShadowGeometry();
+
 	MarkRenderStateDirty();
 
 	// The rest bone matrices belong to the previous asset
@@ -981,27 +1038,193 @@ void UGaussianSplatComponent::RebuildShadowGeometry()
 
 	// Off by default: without the flag the proxy never enters the shadow pass,
 	// so the cache stays empty and the render path is untouched.
-	if (!bCastShadow || FractureAsset == nullptr)
+	if (!bCastShadow)
 	{
 		return;
 	}
 
-	// Same triangle soup the ProxyMesh collision method uses. Read regardless of
-	// bUseVoxelShellAsCollision: that flag gates *collision*, and the shell is
-	// still the correct closed hull to cast shadows from.
-	if (!FractureAsset->GetVoxelShell(ShadowShellVertices, ShadowShellTriangles) ||
-		ShadowShellVertices.Num() < 3 || ShadowShellTriangles.Num() < 3)
+	// Preferred source: the fracture asset's voxel shell — the tightest closed hull
+	// available, and free to read. Read regardless of bUseVoxelShellAsCollision:
+	// that flag gates *collision*, and the shell is still the correct hull to cast
+	// shadows from.
+	if (FractureAsset != nullptr &&
+		FractureAsset->GetVoxelShell(ShadowShellVertices, ShadowShellTriangles) &&
+		ShadowShellVertices.Num() >= 3 && ShadowShellTriangles.Num() >= 3)
 	{
-		ShadowShellVertices.Reset();
-		ShadowShellTriangles.Reset();
-		UE_LOG(LogTemp, Warning,
-			TEXT("GaussianSplat: fracture '%s' voxel shell could not be read; shadows stay off. Generate the collision voxel shell on the fracture asset first."),
-			*FractureAsset->GetName());
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplat: shadow geometry from fracture '%s' voxel shell (verts=%d, triangles=%d)"),
+			*FractureAsset->GetName(), ShadowShellVertices.Num(), ShadowShellTriangles.Num() / 3);
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: shadow geometry rebuilt from fracture '%s' (verts=%d, triangles=%d)"),
-		*FractureAsset->GetName(), ShadowShellVertices.Num(), ShadowShellTriangles.Num() / 3);
+	// Fallback: a bare splat has no fracture asset at all, so build the geometry
+	// from the point cloud. Without this, ticking 投射阴影 would silently do
+	// nothing until the user had gone through the entire fracture workflow, which
+	// is exactly how shadows ended up never having worked.
+	BuildShadowVoxelGeometry();
+}
+
+void UGaussianSplatComponent::BuildShadowVoxelGeometry()
+{
+	if (!SplatAsset || !SplatAsset->IsValid())
+	{
+		return;
+	}
+
+	// Occupancy grid over the splat cloud, emitted as one box per occupied cell.
+	//
+	// The positions are read straight out of the bulk block with a stride rather
+	// than through GetDecompressedPositions(): that helper allocates a TArray<FVector>
+	// entry for every splat (24 B each, ~1.4 GB at 57M splats), which a shadow cache
+	// must not do. The only allocation here is the occupancy bit array, and its size
+	// is capped below.
+	const int64 SplatCount = SplatAsset->GetSplatCount();
+	if (SplatCount <= 0 || SplatAsset->PositionBulkData.GetBulkDataSize() <= 0)
+	{
+		return;
+	}
+
+	// Same record layout GetDecompressedPositions() reads: 3 x float32 (12 B).
+	constexpr int32 PositionBytesPerSplat = 12;
+	constexpr int64 MaxSplatsToScan = 2ll * 1024 * 1024;
+
+	const FBox LocalBounds = SplatAsset->GetBounds();
+	if (!LocalBounds.IsValid || LocalBounds.GetSize().IsNearlyZero())
+	{
+		return;
+	}
+
+	const uint8* DataPtr = static_cast<const uint8*>(SplatAsset->PositionBulkData.LockReadOnly());
+	if (!DataPtr)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: position bulk data could not be locked for shadow geometry"));
+		return;
+	}
+	ON_SCOPE_EXIT
+	{
+		SplatAsset->PositionBulkData.Unlock();
+	};
+
+	const int64 ScanStride = FMath::Max<int64>(1, SplatCount / MaxSplatsToScan);
+	const FVector Extent = LocalBounds.GetExtent();
+	const FVector Origin = LocalBounds.Min;
+
+	// The cell size starts at roughly 128 cells across the longest axis and doubles
+	// until the occupied count fits the budget, so the box — and therefore the
+	// triangle — count has a hard ceiling no matter how large the asset is.
+	const int32 MaxVoxels = 4096;
+	static constexpr int64 MaxGridCells = 32ll * 1024 * 1024;   // 4 MB of bit array
+	static constexpr int32 MaxGrowAttempts = 24;
+
+	float CellSize = FMath::Max((float)(Extent.Size() / 128.0), 1.0f);
+	int64 GridX = 1;
+	int64 GridY = 1;
+	int64 GridZ = 1;
+	TBitArray<> Occupied;
+	int32 OccupiedCount = 0;
+
+	for (int32 Attempt = 0; Attempt < MaxGrowAttempts; ++Attempt)
+	{
+		GridX = FMath::Max<int64>(1, (int64)(Extent.X / CellSize) + 1);
+		GridY = FMath::Max<int64>(1, (int64)(Extent.Y / CellSize) + 1);
+		GridZ = FMath::Max<int64>(1, (int64)(Extent.Z / CellSize) + 1);
+
+		const int64 TotalCells = GridX * GridY * GridZ;
+		if (TotalCells > MaxGridCells)
+		{
+			CellSize *= 2.0f;
+			continue;
+		}
+
+		Occupied.Init(false, (int32)TotalCells);
+		const int64 SliceStride = GridX * GridY;
+		const float InvCellSize = 1.0f / CellSize;
+
+		OccupiedCount = 0;
+		for (int64 SplatIndex = 0; SplatIndex < SplatCount; SplatIndex += ScanStride)
+		{
+			const float* Position = reinterpret_cast<const float*>(DataPtr + SplatIndex * PositionBytesPerSplat);
+			const int64 gx = FMath::Clamp<int64>((int64)((Position[0] - Origin.X) * InvCellSize), 0, GridX - 1);
+			const int64 gy = FMath::Clamp<int64>((int64)((Position[1] - Origin.Y) * InvCellSize), 0, GridY - 1);
+			const int64 gz = FMath::Clamp<int64>((int64)((Position[2] - Origin.Z) * InvCellSize), 0, GridZ - 1);
+			const int32 CellIndex = (int32)(gx + gy * GridX + gz * SliceStride);
+			if (!(bool)Occupied[CellIndex])
+			{
+				Occupied[CellIndex] = true;
+				++OccupiedCount;
+			}
+		}
+
+		if (OccupiedCount == 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: no occupied voxels could be found for shadow geometry; shadows stay off"));
+			return;
+		}
+		if (OccupiedCount <= MaxVoxels)
+		{
+			break;
+		}
+		CellSize *= 2.0f;
+	}
+
+	// One box per occupied cell: 8 corners, 12 triangles. Neighbouring cells do not
+	// share corners, which keeps this a straight loop with no vertex dedup table —
+	// and the internal faces between cells are harmless because the batch is
+	// submitted with backface culling off (see AddShadowMeshBatch).
+	ShadowShellVertices.Reserve(OccupiedCount * 8);
+	ShadowShellTriangles.Reserve(OccupiedCount * 36);
+
+	// Winding is irrelevant for the same reason.
+	static const int32 BoxFaces[12][3] =
+	{
+		{ 0, 1, 2 }, { 0, 2, 3 },   // -Z
+		{ 4, 6, 5 }, { 4, 7, 6 },   // +Z
+		{ 0, 4, 5 }, { 0, 5, 1 },   // -Y
+		{ 3, 2, 6 }, { 3, 6, 7 },   // +Y
+		{ 0, 3, 7 }, { 0, 7, 4 },   // -X
+		{ 1, 5, 6 }, { 1, 6, 2 }    // +X
+	};
+
+	int32 BoxCount = 0;
+	for (int64 z = 0; z < GridZ; ++z)
+	{
+		for (int64 y = 0; y < GridY; ++y)
+		{
+			for (int64 x = 0; x < GridX; ++x)
+			{
+				if (!(bool)Occupied[(int32)(x + y * GridX + z * GridX * GridY)])
+				{
+					continue;
+				}
+
+				const FVector3f Min(
+					(float)(Origin.X + (double)x * CellSize),
+					(float)(Origin.Y + (double)y * CellSize),
+					(float)(Origin.Z + (double)z * CellSize));
+				const FVector3f Max(Min.X + CellSize, Min.Y + CellSize, Min.Z + CellSize);
+
+				const int32 Base = ShadowShellVertices.Num();
+				ShadowShellVertices.Add(FVector3f(Min.X, Min.Y, Min.Z));
+				ShadowShellVertices.Add(FVector3f(Max.X, Min.Y, Min.Z));
+				ShadowShellVertices.Add(FVector3f(Max.X, Max.Y, Min.Z));
+				ShadowShellVertices.Add(FVector3f(Min.X, Max.Y, Min.Z));
+				ShadowShellVertices.Add(FVector3f(Min.X, Min.Y, Max.Z));
+				ShadowShellVertices.Add(FVector3f(Max.X, Min.Y, Max.Z));
+				ShadowShellVertices.Add(FVector3f(Max.X, Max.Y, Max.Z));
+				ShadowShellVertices.Add(FVector3f(Min.X, Max.Y, Max.Z));
+
+				for (int32 FaceIndex = 0; FaceIndex < 12; ++FaceIndex)
+				{
+					ShadowShellTriangles.Add(Base + BoxFaces[FaceIndex][0]);
+					ShadowShellTriangles.Add(Base + BoxFaces[FaceIndex][1]);
+					ShadowShellTriangles.Add(Base + BoxFaces[FaceIndex][2]);
+				}
+				++BoxCount;
+			}
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: shadow geometry from splat voxels (boxes=%d, cell=%.3f, grid=%dx%dx%d, scanned=%lld of %lld splats)"),
+		BoxCount, CellSize, (int32)GridX, (int32)GridY, (int32)GridZ, SplatCount / ScanStride, SplatCount);
 }
 
 bool UGaussianSplatComponent::GenerateConvexHull(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
@@ -1043,20 +1266,194 @@ bool UGaussianSplatComponent::GenerateConvexHull(const TArray<FVector>& Points, 
 
 bool UGaussianSplatComponent::GenerateSimplifiedCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
 {
-	// Currently produces a SINGLE convex hull (same result as the ConvexHull
-	// method): the points are sampled down and handed to Chaos cooking, which
-	// builds one hull for the whole cloud.
+	// Multi-hull convex decomposition.
 	//
-	// A true convex decomposition (V-HACD: split the volume into several convex
-	// pieces so a concave shape such as a statue or a room interior is approximated
-	// correctly) is NOT implemented. Until it is, prefer Voxel collision for
-	// concave assets — the voxel grid follows the shape far better than one hull.
-	if (Points.Num() < 4)
+	// One hull cannot represent a concave asset: it fills every dent, hole and gap,
+	// so a seated statue comes out as a solid block between the arms and the body.
+	// This splits the cloud into pieces and gives each piece its own convex element,
+	// which is the same shape family a Static Mesh's "Convex Decomposition" collision
+	// produces.
+	//
+	// Method: every round, pick the piece with the largest bounding-box volume and
+	// cut it in two along its longest axis, splitting at the mean of that piece's
+	// points on that axis. A cut is a plane, so all the points of a piece end up
+	// strictly on one side: the two hulls cannot overlap, and each one still hugs
+	// the surface instead of bridging across a concavity.
+	//
+	// Splitting stops when MaxConvexHulls pieces exist, when no piece has enough
+	// points left to be worth halving, or when a cut cannot separate the points.
+	//
+	// The elements are appended to BodySetup->AggGeom directly (the same way
+	// GenerateVoxelCollision appends boxes), so OutVertices stays empty and
+	// RebuildCollision() does not add one more hull on top of these.
+	//
+	// Chaos is only used for cooking. Nothing here links against V-HACD
+	// (GeometryCollectionConvexUtility lives in a module this PostConfigInit-phase
+	// module cannot hard-depend on) — hence the subdivision instead of a
+	// concavity-driven split.
+	const int32 HullBudget = FMath::Clamp(MaxConvexHulls, 1, 64);
+	const int32 MaxVertsPerHull = FMath::Clamp(CollisionMaxFaces, 4, 255) * 4;
+	// Below this, halving a piece stops being useful: the hull of a handful of
+	// points is a sliver, not a volume.
+	const int32 MinPiecePoints = 16;
+
+	if (Points.Num() < 4 || !BodySetup)
 	{
 		return false;
 	}
 
-	return GenerateConvexHull(Points, OutVertices, OutIndices);
+	// Pieces are contiguous ranges of one working buffer, so nothing is copied per
+	// split and the whole decomposition costs O(N log K).
+	TArray<FVector> Work = Points;
+
+	struct FPiece
+	{
+		int32 Begin = 0;
+		int32 End = 0;
+		FBox Bounds = FBox(ForceInit);
+		/** Set when this piece cannot be halved any further, so it is not re-picked */
+		bool bSealed = false;
+	};
+
+	TArray<FPiece> Pieces;
+	{
+		FPiece& Root = Pieces.AddDefaulted_GetRef();
+		Root.Begin = 0;
+		Root.End = Work.Num();
+		for (const FVector& P : Work)
+		{
+			Root.Bounds += P;
+		}
+	}
+
+	while (Pieces.Num() < HullBudget)
+	{
+		// The largest bounding box is the piece that still encloses the most empty
+		// space, so halving it removes the most error.
+		int32 Pick = INDEX_NONE;
+		double BestVolume = -1.0;
+		for (int32 PieceIndex = 0; PieceIndex < Pieces.Num(); ++PieceIndex)
+		{
+			const FPiece& Candidate = Pieces[PieceIndex];
+			if (Candidate.bSealed || Candidate.End - Candidate.Begin < MinPiecePoints * 2)
+			{
+				continue;
+			}
+			const double Volume = Candidate.Bounds.GetVolume();
+			if (Volume > BestVolume)
+			{
+				BestVolume = Volume;
+				Pick = PieceIndex;
+			}
+		}
+		if (Pick == INDEX_NONE)
+		{
+			break;
+		}
+
+		FPiece& Piece = Pieces[Pick];
+		const FVector Extent = Piece.Bounds.GetExtent();
+		const int32 Axis = (Extent.X >= Extent.Y && Extent.X >= Extent.Z)
+			? 0
+			: (Extent.Y >= Extent.Z ? 1 : 2);
+
+		// Mean rather than median: an O(size) pass with no sort, and it still yields a
+		// separating plane. Robust against the dense clusters a splat cloud has, where
+		// a median can land on a value shared by thousands of points.
+		double Sum = 0.0;
+		for (int32 i = Piece.Begin; i < Piece.End; ++i)
+		{
+			Sum += Work[i][Axis];
+		}
+		const double Pivot = Sum / (double)(Piece.End - Piece.Begin);
+
+		// In-place partition: [Begin, Left) keeps the low side, [Left, End) the high side.
+		int32 Left = Piece.Begin;
+		int32 Right = Piece.End;
+		while (Left < Right)
+		{
+			if (Work[Left][Axis] < Pivot)
+			{
+				++Left;
+			}
+			else
+			{
+				--Right;
+				Swap(Work[Left], Work[Right]);
+			}
+		}
+
+		if (Left == Piece.Begin || Left == Piece.End)
+		{
+			// Every point sits on one side (all identical on this axis): the plane
+			// does not separate anything, so stop touching this piece.
+			Piece.bSealed = true;
+			continue;
+		}
+
+		const int32 SplitAt = Left;
+		FPiece High;
+		High.Begin = SplitAt;
+		High.End = Piece.End;
+		for (int32 i = High.Begin; i < High.End; ++i)
+		{
+			High.Bounds += Work[i];
+		}
+
+		FPiece Low;
+		Low.Begin = Piece.Begin;
+		Low.End = SplitAt;
+		for (int32 i = Low.Begin; i < Low.End; ++i)
+		{
+			Low.Bounds += Work[i];
+		}
+
+		Pieces[Pick] = Low;
+		Pieces.Add(High);
+	}
+
+	// One convex element per piece. Each piece's vertex list is sampled down with the
+	// same uniform stride a single hull uses, so cooking cost scales with the hull
+	// count rather than with the splat count.
+	int32 HullCount = 0;
+	for (const FPiece& Piece : Pieces)
+	{
+		const int32 PieceCount = Piece.End - Piece.Begin;
+		if (PieceCount < 4)
+		{
+			continue;
+		}
+
+		FKConvexElem& ConvexElem = BodySetup->AggGeom.ConvexElems.AddDefaulted_GetRef();
+		if (PieceCount <= MaxVertsPerHull)
+		{
+			ConvexElem.VertexData.Reserve(PieceCount);
+			for (int32 i = Piece.Begin; i < Piece.End; ++i)
+			{
+				ConvexElem.VertexData.Add(Work[i]);
+			}
+		}
+		else
+		{
+			ConvexElem.VertexData.Reserve(MaxVertsPerHull);
+			const float Step = (float)PieceCount / (float)MaxVertsPerHull;
+			for (int32 i = 0; i < MaxVertsPerHull; ++i)
+			{
+				ConvexElem.VertexData.Add(Work[Piece.Begin + (int32)(i * Step)]);
+			}
+		}
+		ConvexElem.UpdateElemBox();
+		++HullCount;
+	}
+
+	// Appended above; RebuildCollision() must not add a single hull on top.
+	OutVertices.Reset();
+	OutIndices.Reset();
+
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: ConvexDecomposition produced %d convex hulls from %d points (budget=%d, maxVertsPerHull=%d)"),
+		HullCount, Points.Num(), HullBudget, MaxVertsPerHull);
+
+	return HullCount > 0;
 }
 
 bool UGaussianSplatComponent::GenerateVoxelCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)

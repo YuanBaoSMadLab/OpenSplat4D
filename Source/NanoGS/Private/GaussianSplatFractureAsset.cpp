@@ -73,6 +73,11 @@ void UGaussianSplatFractureAsset::Serialize(FArchive& Ar)
 		Ar << VoxelShellBounds;
 		VoxelShellBulkData.Serialize(Ar, this);
 	}
+
+	if (Version >= 3)
+	{
+		Ar << GridOriginOffset;
+	}
 }
 
 // --- Collision voxel shell ---
@@ -367,10 +372,13 @@ bool UGaussianSplatFractureAsset::SetBoneBinding(const TArray<FMatrix44f>& RestB
 
 	for (int32 i = 0; i < SplatBoneIndices.Num(); i++)
 	{
-		if (SplatBoneIndices[i] >= (uint32)BoneCount)
+		// The bone index lives in the low 16 bits; bit 16 is the "outside the
+		// estimation grid, do not render" flag (see the header), so only the
+		// index part is range checked.
+		if ((SplatBoneIndices[i] & 0xFFFFu) >= (uint32)BoneCount)
 		{
 			UE_LOG(LogTemp, Error, TEXT("SetBoneBinding: splat %d references bone %u out of range (BoneCount=%d)"),
-				i, SplatBoneIndices[i], BoneCount);
+				i, SplatBoneIndices[i] & 0xFFFFu, BoneCount);
 			return false;
 		}
 	}

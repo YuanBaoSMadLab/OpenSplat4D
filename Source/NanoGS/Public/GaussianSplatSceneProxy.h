@@ -576,24 +576,26 @@ private:
 	// float ShadowIntensity = 1.0f;
 
 	// ------------------------------------------------------------------
-	// Shadow geometry: the fracture asset's voxel shell (source asset local
-	// space), copied from the component at construction. Empty unless
-	// bCastShadow is on and the asset has a shell, in which case the proxy
-	// submits it to the shadow depth pass and nowhere else.
+	// Shadow geometry (source asset local space), copied from the component at
+	// construction. Empty unless bCastShadow is on *and* the component could
+	// produce geometry, in which case the proxy submits it to the shadow depth
+	// pass and nowhere else. Two sources, resolved on the component:
+	//   1. the fracture asset's voxel shell (tightest hull), or
+	//   2. a box soup over the splat cloud's occupied voxels (bare splats).
 	// ------------------------------------------------------------------
 
-	/** Shadow shell vertex positions */
+	/** Shadow geometry vertex positions */
 	TArray<FVector3f> ShadowShellVertices;
 
-	/** Shadow shell triangles (3 indices per triangle) */
+	/** Shadow geometry triangles (3 indices per triangle) */
 	TArray<int32> ShadowShellTriangles;
 
 	/**
-	 * Submit the voxel shell to the shadow depth pass for one view.
+	 * Submit the shadow geometry to the shadow depth pass for one view.
 	 *
 	 * The batch is flagged so it is used *only* as a shadow caster: no material,
 	 * no depth prepass, no occluder. Letting it into those passes would write the
-	 * shell's depth over the splats (whose PSO tests with CF_DepthNearOrEqual)
+	 * geometry's depth over the splats (whose PSO tests with CF_DepthNearOrEqual)
 	 * and dim the model, which is exactly the bug this replaces.
 	 */
 	void AddShadowMeshBatch(int32 ViewIndex, FMeshElementCollector& Collector) const;

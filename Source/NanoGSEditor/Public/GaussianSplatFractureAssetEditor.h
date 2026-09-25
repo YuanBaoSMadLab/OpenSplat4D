@@ -76,6 +76,35 @@ private:
 	/** 「解算」按钮的点击处理 */
 	FReply OnSolveClicked();
 
+	/** 「重新生成体素壳」按钮的点击处理 */
+	FReply OnRegenerateShellClicked();
+
+	/** 「破碎预览 / 停止预览」按钮的点击处理 */
+	FReply OnFracturePreviewClicked();
+
+	/**
+	 * 按破裂资产当前的预览设置启动轻量破碎预览（碎片从爆炸中心向外飞散，
+	 * 可选重力）。需要已解算（有骨头绑定）才行，否则只写状态文本。
+	 */
+	void StartFracturePreview();
+
+	/** 停止轻量破碎预览，碎片回到 rest */
+	void StopFracturePreview();
+
+	/**
+	 * 资产/绑定变化后让预览与当前状态一致：预览开着就按新的骨头绑定重开一次
+	 * （旧的骨头索引已经失效），没开就什么也不做。
+	 */
+	void SyncFracturePreview();
+
+	/**
+	 * 按破裂资产当前的「估算网格位置偏移」重新生成碰撞体素壳。
+	 *
+	 * 生成只写破裂资产自己的体素壳块，源 splat 资产不被修改；网格外的 splat
+	 * 既不进入壳的形状，之后解算时也不会被绑定。已有的壳在生成失败时保持不变。
+	 */
+	void RegenerateVoxelShell();
+
 	/**
 	 * 解算主流程：体素壳 → FGeometryCollection → PlanarCut 切割 →
 	 * 内嵌 UGeometryCollection → 绑定回写（骨头归属 + 断面 splat）。
@@ -96,4 +125,7 @@ private:
 
 	/** 详情面板顶部的解算状态文本 */
 	TSharedPtr<STextBlock> SolveStatusText;
+
+	/** 轻量破碎预览是否开着（决定按钮文案与重开语义） */
+	bool bFracturePreviewActive = false;
 };

@@ -19,6 +19,7 @@
 #include "GeometryCollection/GeometryCollectionUtility.h"
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "GaussianSplatBoneBinder.h"
+#include "GaussianSplatProxyMeshBuilder.h"
 #include "Materials/MaterialInterface.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Input/SButton.h"
@@ -99,6 +100,43 @@ namespace
 			Normal = Normalized.IsNearlyZero() ? FVector3f(0.0f, 0.0f, 1.0f) : Normalized;
 		}
 	}
+
+	/**
+	 * 把一个包围盒的 12 条棱追加成线段（每 2 个元素一条）。
+	 * 用来在视口里画出估算网格（体素壳包围盒）。无效包围盒什么也不加。
+	 */
+	void AppendBoxSegments(const FBox& Box, TArray<FVector>& OutSegments)
+	{
+		if (!Box.IsValid)
+		{
+			return;
+		}
+
+		const FVector Corner[8] =
+		{
+			FVector(Box.Min.X, Box.Min.Y, Box.Min.Z),
+			FVector(Box.Max.X, Box.Min.Y, Box.Min.Z),
+			FVector(Box.Max.X, Box.Max.Y, Box.Min.Z),
+			FVector(Box.Min.X, Box.Max.Y, Box.Min.Z),
+			FVector(Box.Min.X, Box.Min.Y, Box.Max.Z),
+			FVector(Box.Max.X, Box.Min.Y, Box.Max.Z),
+			FVector(Box.Max.X, Box.Max.Y, Box.Max.Z),
+			FVector(Box.Min.X, Box.Max.Y, Box.Max.Z)
+		};
+
+		static const int32 Edges[12][2] =
+		{
+			{ 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 },
+			{ 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
+			{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }
+		};
+
+		for (int32 EdgeIndex = 0; EdgeIndex < 12; ++EdgeIndex)
+		{
+			OutSegments.Add(Corner[Edges[EdgeIndex][0]]);
+			OutSegments.Add(Corner[Edges[EdgeIndex][1]]);
+		}
+	}
 }
 
 const FName FGaussianSplatFractureAssetEditor::ViewportTabId(TEXT("GaussianSplatFractureAssetEditor_Viewport"));
@@ -127,6 +165,17 @@ void FGaussianSplatFractureAssetEditor::NotifyPostChange(const FPropertyChangedE
 	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UGaussianSplatFractureAsset, FractureSettings))
 	{
 		RefreshCuttingPreview();
+
+		// 破碎预览的参数也在这个结构体里，改了要按新参数重开预览才能立刻看到。
+		const FName LeafProperty = PropertyChangedEvent.GetPropertyName();
+		if (LeafProperty == GET_MEMBER_NAME_CHECKED(FGaussianSplatFractureSettings, bPreviewGravity) ||
+			LeafProperty == GET_MEMBER_NAME_CHECKED(FGaussianSplatFractureSettings, PreviewExplosionSpeed) ||
+			LeafProperty == GET_MEMBER_NAME_CHECKED(FGaussianSplatFractureSettings, PreviewExplosionCenterOffset) ||
+			LeafProperty == GET_MEMBER_NAME_CHECKED(FGaussianSplatFractureSettings, PreviewMode) ||
+			LeafProperty == GET_MEMBER_NAME_CHECKED(FGaussianSplatFractureSettings, PreviewChaosExplosionStrength))
+		{
+			SyncFracturePreview();
+		}
 	}
 }
 
@@ -258,8 +307,15 @@ void FGaussianSplatFractureAssetEditor::RefreshPreview()
 	UGaussianSplatAsset* SourceAsset = FractureAsset.IsValid() ? FractureAsset->LoadSourceSplatAsset() : nullptr;
 	ViewportWidget->SetSplatAsset(SourceAsset);
 
+	// 组件改渲染破裂资产（源点云 + 骨头绑定 + 断面 + 网格外剔除标记），
+	// 而不是裸源资产 —— 破碎预览要靠这份骨架数据才能位移碎片。
+	ViewportWidget->SetFractureAsset(FractureAsset.Get());
+
 	// 源资产换了包围盒也就变了，切割面预览必须一起重算。
 	RefreshCuttingPreview();
+
+	// 视口 actor 刚被整体重建，正在跑的破碎预览要按新的绑定重开一次。
+	SyncFracturePreview();
 }
 
 void FGaussianSplatFractureAssetEditor::RefreshCuttingPreview()
@@ -269,12 +325,30 @@ void FGaussianSplatFractureAssetEditor::RefreshCuttingPreview()
 		return;
 	}
 
+	// 估算网格（体素壳包围盒）与「显示切割面预览」无关，始终画出来：它决定了
+	// 哪些 splat 参与破裂，用户改「估算网格位置偏移」并重新生成体素壳后，就能
+	// 直接看到这个框挪到了哪里。
+	TArray<FVector> Segments;
+	AppendBoxSegments(FractureAsset->VoxelShellBounds, Segments);
+
+	const auto PushPreview = [this, &Segments](const TArray<FVector>& InSites)
+	{
+		if (Segments.Num() > 0)
+		{
+			ViewportWidget->SetCuttingPreview(Segments, InSites);
+		}
+		else
+		{
+			ViewportWidget->ClearCuttingPreview();
+		}
+	};
+
 	const FGaussianSplatFractureSettings& Settings = FractureAsset->FractureSettings;
 
 	UGaussianSplatAsset* SourceAsset = FractureAsset->LoadSourceSplatAsset();
 	if (!Settings.bShowCuttingPreview || !SourceAsset || SourceAsset->GetSplatCount() <= 0)
 	{
-		ViewportWidget->ClearCuttingPreview();
+		PushPreview(TArray<FVector>());
 		return;
 	}
 
@@ -282,7 +356,7 @@ void FGaussianSplatFractureAssetEditor::RefreshCuttingPreview()
 	const FBox Bounds = SourceAsset->GetBounds();
 	if (!Bounds.IsValid)
 	{
-		ViewportWidget->ClearCuttingPreview();
+		PushPreview(TArray<FVector>());
 		return;
 	}
 
@@ -290,7 +364,7 @@ void FGaussianSplatFractureAssetEditor::RefreshCuttingPreview()
 	GenerateFractureSites(Settings, Bounds, Sites);
 	if (Sites.Num() == 0)
 	{
-		ViewportWidget->ClearCuttingPreview();
+		PushPreview(TArray<FVector>());
 		return;
 	}
 
@@ -323,8 +397,7 @@ void FGaussianSplatFractureAssetEditor::RefreshCuttingPreview()
 		[](int32) { return true; });
 
 	// 切割面以边表示，转成扁平线段数组（每 2 个元素一条线段）
-	TArray<FVector> Segments;
-	Segments.Reserve(CuttingMesh.EdgeCount() * 2);
+	Segments.Reserve(Segments.Num() + CuttingMesh.EdgeCount() * 2);
 	for (const int32 EdgeID : CuttingMesh.EdgeIndicesItr())
 	{
 		const UE::Geometry::FIndex2i EdgeVertices = CuttingMesh.GetEdgeV(EdgeID);
@@ -343,6 +416,175 @@ FReply FGaussianSplatFractureAssetEditor::OnSolveClicked()
 {
 	SolveFracture();
 	return FReply::Handled();
+}
+
+FReply FGaussianSplatFractureAssetEditor::OnRegenerateShellClicked()
+{
+	RegenerateVoxelShell();
+	return FReply::Handled();
+}
+
+FReply FGaussianSplatFractureAssetEditor::OnFracturePreviewClicked()
+{
+	if (bFracturePreviewActive)
+	{
+		StopFracturePreview();
+		SetSolveStatus(TEXT("破碎预览已停止，碎片回到初始位置。"), false);
+	}
+	else
+	{
+		StartFracturePreview();
+	}
+
+	return FReply::Handled();
+}
+
+void FGaussianSplatFractureAssetEditor::StartFracturePreview()
+{
+	if (!ViewportWidget.IsValid() || !FractureAsset.IsValid())
+	{
+		SetSolveStatus(TEXT("没有可预览的破裂资产。"), true);
+		return;
+	}
+
+	UGaussianSplatFractureAsset* Fracture = FractureAsset.Get();
+
+	// The preview displaces splats through the bone binding, so it can only run on
+	// a solved fracture (the binding is what produces the per-splat bone indices).
+	if (!Fracture->HasBoneBinding())
+	{
+		SetSolveStatus(TEXT("还没有破裂骨头绑定，无法做破碎预览。先点「解算」生成破裂块。"), true);
+		return;
+	}
+
+	TArray<FMatrix44f> RestBoneMatrices;
+	if (!Fracture->GetRestBoneMatrices(RestBoneMatrices) || RestBoneMatrices.Num() < 2)
+	{
+		SetSolveStatus(TEXT("破裂骨头数不足（至少需要一块碎片），无法做破碎预览。请重新解算。"), true);
+		return;
+	}
+
+	// Explosion center: the body box the binding recorded, i.e. the voxel shell
+	// at bind time. Zero offset = explode at the object center (the default).
+	FGaussianSplatBoneBindingHeader Header;
+	FVector BodyCenter = FVector::ZeroVector;
+	if (Fracture->GetBoneBindingHeader(Header))
+	{
+		BodyCenter = FVector((Header.BoundsMin + Header.BoundsMax) * 0.5f);
+	}
+
+	const FGaussianSplatFractureSettings& Settings = Fracture->FractureSettings;
+
+	// The component must render the fracture asset (binding + caps), not the bare
+	// source cloud, or there would be no bones to displace.
+	ViewportWidget->SetFractureAsset(Fracture);
+
+	if (Settings.PreviewMode == EGaussianSplatFracturePreviewMode::Chaos)
+	{
+		// 真实 Chaos 预览要在预览场景里现搭几何集合，没有几何集合就只能走轻量。
+		if (!Fracture->HasGeometryCollection())
+		{
+			SetSolveStatus(TEXT("资产里没有几何集合（破裂数据不完整），无法做真实 Chaos 预览。请重新解算，或把「破碎预览：模式」改回轻量。"), true);
+			return;
+		}
+
+		ViewportWidget->StartChaosFracturePreview(
+			RestBoneMatrices,
+			BodyCenter,
+			Settings.bPreviewGravity,
+			Settings.PreviewChaosExplosionStrength,
+			Settings.PreviewExplosionCenterOffset);
+
+		bFracturePreviewActive = ViewportWidget->IsFracturePreviewActive();
+
+		SetSolveStatus(bFracturePreviewActive
+			? FString::Printf(TEXT("真实 Chaos 破碎预览中：%d 块碎片做刚体模拟（%s，强度 %.0f cm/s）。再点一次按钮停止。"),
+				RestBoneMatrices.Num() - 1,
+				Settings.bPreviewGravity ? TEXT("有重力") : TEXT("无重力"),
+				Settings.PreviewChaosExplosionStrength)
+			: TEXT("真实 Chaos 破碎预览未能启动（几何集合或骨头绑定不可用）。"), !bFracturePreviewActive);
+		return;
+	}
+
+	ViewportWidget->StartFracturePreview(
+		RestBoneMatrices,
+		BodyCenter,
+		Settings.bPreviewGravity,
+		Settings.PreviewExplosionSpeed,
+		Settings.PreviewExplosionCenterOffset);
+
+	bFracturePreviewActive = ViewportWidget->IsFracturePreviewActive();
+
+	SetSolveStatus(bFracturePreviewActive
+		? FString::Printf(TEXT("破碎预览中：%d 块碎片从物体中心向外飞散（%s，速度 %.0f cm/s）。再点一次按钮停止。"),
+			RestBoneMatrices.Num() - 1,
+			Settings.bPreviewGravity ? TEXT("有重力") : TEXT("无重力"),
+			Settings.PreviewExplosionSpeed)
+		: TEXT("破碎预览未能启动（骨头数不足）。"), !bFracturePreviewActive);
+}
+
+void FGaussianSplatFractureAssetEditor::StopFracturePreview()
+{
+	bFracturePreviewActive = false;
+
+	if (ViewportWidget.IsValid())
+	{
+		ViewportWidget->StopFracturePreview();
+	}
+}
+
+void FGaussianSplatFractureAssetEditor::SyncFracturePreview()
+{
+	if (!bFracturePreviewActive)
+	{
+		return;
+	}
+
+	// A re-solve / re-bind produces a new bone set, so the running preview has to
+	// be re-armed from scratch (old indices would point at the wrong pieces).
+	StopFracturePreview();
+	StartFracturePreview();
+}
+
+void FGaussianSplatFractureAssetEditor::RegenerateVoxelShell()
+{
+	if (!FractureAsset.IsValid())
+	{
+		SetSolveStatus(TEXT("没有可用的破裂资产。"), true);
+		return;
+	}
+
+	UGaussianSplatFractureAsset* Fracture = FractureAsset.Get();
+	UGaussianSplatAsset* SourceAsset = Fracture->LoadSourceSplatAsset();
+	if (!SourceAsset || SourceAsset->GetSplatCount() <= 0)
+	{
+		SetSolveStatus(TEXT("未指定源 Splat 资产（或该资产内没有 splat），无法生成体素壳。"), true);
+		return;
+	}
+
+	// 体素尺寸仍走自动推定（与 Content Browser 右键「生成碰撞体素网格」完全一致），
+	// 这里只把用户调好的网格位置传下去。想换体素尺寸依旧可以走右键那条路。
+	FGaussianSplatProxyMeshParams Params;
+	Params.GridOriginOffset = Fracture->GridOriginOffset;
+
+	FString Error;
+	FGaussianSplatProxyMeshResult Result;
+	if (!FGaussianSplatProxyMeshBuilder::BuildVoxelShell(SourceAsset, Fracture, Params, Error, &Result))
+	{
+		SetSolveStatus(FString::Printf(TEXT("重新生成体素壳失败：%s"),
+			Error.IsEmpty() ? TEXT("未知错误，详见输出日志。") : *Error), true);
+		return;
+	}
+
+	if (DetailsView.IsValid())
+	{
+		DetailsView->ForceRefresh();
+	}
+
+	// 壳换了，视口里的估算网格框（就是壳的包围盒）必须跟着挪；切割面预览也顺带重画。
+	RefreshCuttingPreview();
+
+	SetSolveStatus(FString::Printf(TEXT("体素壳已重新生成（网格位置 %s）。\n%s"), *Fracture->GridOriginOffset.ToCompactString(), *Result.Summary), false);
 }
 
 void FGaussianSplatFractureAssetEditor::SetSolveStatus(const FString& Message, bool bIsError)
@@ -388,7 +630,7 @@ void FGaussianSplatFractureAssetEditor::SolveFracture()
 	TArray<int32> ShellIndices;
 	if (!Fracture->GetVoxelShell(ShellVertices, ShellIndices))
 	{
-		SetSolveStatus(TEXT("该破裂资产还没有碰撞体素网格。请先在 Content Browser 右键源 Splat 资产 →「生成碰撞体素网格」。"), true);
+		SetSolveStatus(TEXT("该破裂资产还没有碰撞体素网格。点上方「重新生成体素壳」，或先在 Content Browser 右键源 Splat 资产 →「生成碰撞体素网格」。"), true);
 		return;
 	}
 
@@ -556,6 +798,10 @@ void FGaussianSplatFractureAssetEditor::SolveFracture()
 		return;
 	}
 
+	// 新的骨头绑定已经就位，正在跑的破碎预览必须按新索引重开（旧索引指向的块已经
+	// 不存在了）。解算前没开预览的话这里什么也不做。
+	SyncFracturePreview();
+
 	SetSolveStatus(FString::Printf(TEXT("解算完成。%s"), *BindResult.Summary), false);
 }
 
@@ -602,6 +848,35 @@ TSharedRef<SDockTab> FGaussianSplatFractureAssetEditor::SpawnTab_Details(const F
 			.Text(LOCTEXT("SolveButton", "解 算"))
 		];
 
+	// 体素壳的重生成入口。放在这里是因为「估算网格位置偏移」只有在重生成壳之后
+	// 才生效，而解算又依赖壳，三者是一条链，挨着放用户不会漏点。
+	TSharedRef<SWidget> RegenerateShellButton = SNew(SButton)
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		.ToolTipText(LOCTEXT("RegenerateShellButtonTooltip", "按「估算网格位置偏移」重新生成碰撞体素壳：落在网格外的 splat 会从壳的形状里去掉，解算时也不再参与破裂（源 Splat 资产不会被修改）"))
+		.OnClicked(FOnClicked::CreateSP(this, &FGaussianSplatFractureAssetEditor::OnRegenerateShellClicked))
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("RegenerateShellButton", "重新生成体素壳"))
+		];
+
+	// 破碎预览入口。和解算挨着放：预览靠的是解算产出的骨头绑定，两者是一条链。
+	// 文案随开/关切换，所以用 Text_Lambda 而不是固定文本。
+	TSharedRef<SWidget> FracturePreviewButton = SNew(SButton)
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		.ToolTipText(LOCTEXT("FracturePreviewButtonTooltip", "轻量破碎预览：让已解算的破裂块从物体中心向外飞散，可叠加重力（开关与速度见「预览」分类）。不跑 Chaos，不修改任何数据"))
+		.OnClicked(FOnClicked::CreateSP(this, &FGaussianSplatFractureAssetEditor::OnFracturePreviewClicked))
+		[
+			SNew(STextBlock)
+			.Text_Lambda([this]()
+			{
+				return bFracturePreviewActive
+					? LOCTEXT("StopFracturePreviewButton", "停止预览")
+					: LOCTEXT("FracturePreviewButton", "破碎预览");
+			})
+		];
+
 	TSharedRef<SWidget> DetailsContent = DetailsView.IsValid()
 		? DetailsView.ToSharedRef()
 		: static_cast<TSharedRef<SWidget>>(SNew(STextBlock).Text(LOCTEXT("NoDetails", "无可用详情")));
@@ -626,6 +901,22 @@ TSharedRef<SDockTab> FGaussianSplatFractureAssetEditor::SpawnTab_Details(const F
 					.Padding(0.0f, 0.0f, 6.0f, 0.0f)
 					[
 						SolveButton
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+					[
+						RegenerateShellButton
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(0.0f, 0.0f, 6.0f, 0.0f)
+					[
+						FracturePreviewButton
 					]
 
 					+ SHorizontalBox::Slot()

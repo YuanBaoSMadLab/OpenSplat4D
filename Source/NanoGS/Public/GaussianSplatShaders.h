@@ -49,6 +49,11 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, UseFractureBones)                     // 1 = apply per-bone delta transforms
 		SHADER_PARAMETER(uint32, FractureBoneCount)                    // bones in BoneDeltaBuffer
 		SHADER_PARAMETER(uint32, FractureSplatCount)                   // splats covered by SplatBoneIndexBuffer
+		// Splats flagged GAUSSIAN_SPLAT_BONE_INDEX_DROPPED (outside the fracture's
+		// estimation grid) and therefore not rendered. Gated separately from
+		// UseFractureBones: the grid clipping must already show on a fracture that
+		// has not been displaced yet. 0 = no clipping.
+		SHADER_PARAMETER(uint32, FractureDropCount)
 		// Distance-based visibility range (0 = unlimited)
 		SHADER_PARAMETER(float, MaxDrawDistance)
 		SHADER_PARAMETER(float, FadeOutStartDistance)

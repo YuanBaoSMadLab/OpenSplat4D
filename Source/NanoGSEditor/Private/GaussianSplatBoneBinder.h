@@ -79,6 +79,9 @@ struct FGaussianSplatBoneBindResult
 	int32 BoundSplatCount = 0;
 	/** Splats resolved through the per cell fallback (outside the proxy body). */
 	int32 CoarseSplatCount = 0;
+	/** Splats flagged as dropped because they lie outside the fracture's
+	 *  estimation grid; they are not rendered as part of the fracture. */
+	int32 ClippedSplatCount = 0;
 	/** Pieces no splat was assigned to. */
 	int32 EmptyBoneCount = 0;
 	int32 LargestPieceCount = 0;

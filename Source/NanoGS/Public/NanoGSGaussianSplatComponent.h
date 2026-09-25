@@ -26,10 +26,14 @@ class UBodySetup;
  *     convex collision uses) computes the actual hull. The result is the
  *     convex hull of the *sampled* subset, i.e. a slightly-inside-the-real-hull
  *     approximation -- correct behaviour, just lower resolution.
- *   - ConvexDecomposition: NOT a decomposition. It currently falls through to
- *     the single convex hull above; there is no V-HACD split, so a concave
- *     asset (statue, room interior) is not approximated well. Prefer Voxel for
- *     those until real decomposition is integrated.
+ *   - ConvexDecomposition: a real multi-hull split (GenerateSimplifiedCollision).
+ *     The cloud is recursively cut in half along its longest axis and every
+ *     piece becomes its own convex element, so a concave asset (statue, room
+ *     interior) is covered by several hulls instead of one block that fills
+ *     every dent. The hull count is capped by MaxConvexHulls. Unlike V-HACD no
+ *     concavity metric drives the split: the pieces are a uniform subdivision
+ *     rather than minimal-error ones, so shape coverage is good but the element
+ *     count is higher than V-HACD would need for the same result.
  */
 UENUM(BlueprintType)
 enum class EGaussianCollisionMethod : uint8
@@ -39,8 +43,10 @@ enum class EGaussianCollisionMethod : uint8
 	/** Convex hull of the sampled points. Real hull, computed by Chaos cooking,
 	 *  but only from CollisionMaxFaces * 4 sampled vertices (approximation). */
 	ConvexHull UMETA(DisplayName = "凸包"),
-	/** Single convex hull, NOT a real convex decomposition (no V-HACD split). */
-	ConvexDecomposition UMETA(DisplayName = "凸分解(单凸包)"),
+	/** Multi-hull split: the cloud is cut into up to MaxConvexHulls pieces and each
+	 *  piece becomes its own convex element, so concave assets are covered without
+	 *  filling in their dents and holes. */
+	ConvexDecomposition UMETA(DisplayName = "凸分解(多凸包)"),
 	/** Bounding box collision */
 	BoundingBox UMETA(DisplayName = "包围盒"),
 	/** Voxel-based collision (approximate shape) */
@@ -215,13 +221,14 @@ public:
 	}
 
 	/** 阴影投射 - 是否投射阴影到周围场景。
-	 *  开启后使用破裂资产的体素壳（封闭流形块状外壳）作为阴影几何，
-	 *  形状贴合点云本体，只在阴影深度 pass 提交，不写入自身深度/颜色，
-	 *  因此不会压暗模型本身。需要指定 FractureAsset 且该资产已有体素壳。 */
+	 *  阴影几何按优先级取：① 破裂资产的体素壳（形状最贴合）；② 没有壳时回落到
+	 *  点云体素盒（让裸 splat 也能投阴影，无需先做破裂资产）。两种几何都只在阴影
+	 *  深度 pass 提交，不写入自身深度/颜色，因此不会压暗模型本身。
+	 *  关闭时零开销：几何缓存为空，代理不进入阴影分支。 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (DisplayName = "投射阴影"))
 	bool bCastShadow = false;
 
-	// 已废弃：阴影代理类型（包围盒路径已移除，只用体素壳）
+	// 已废弃：阴影代理类型（旧的包围盒路径已移除）
 	// UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (ClampMin = "0", ClampMax = "2", EditCondition = "bCastShadow"))
 	// uint8 ShadowProxyDetail = 1;
 
@@ -229,10 +236,10 @@ public:
 	// UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bCastShadow"))
 	// float ShadowIntensity = 1.0f;
 
-	/** 体素壳阴影几何（源资产局部空间）是否可用。供代理查询，无锁只读。 */
+	/** 阴影几何（源资产局部空间）是否可用。供代理查询，无锁只读。 */
 	bool HasShadowGeometry() const { return ShadowShellTriangles.Num() >= 3; }
 
-	/** 取体素壳阴影几何（源资产局部空间的三角形汤）。 */
+	/** 取阴影几何（源资产局部空间的三角形汤）。 */
 	void GetShadowGeometry(TArray<FVector3f>& OutVertices, TArray<int32>& OutTriangles) const
 	{
 		OutVertices = ShadowShellVertices;
@@ -275,6 +282,23 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "高斯泼溅|破裂", meta = (DisplayName = "破裂跟随是否生效"))
 	bool IsFractureBindingActive() const;
 
+#if WITH_EDITOR
+	/** 编辑器「破碎预览」专用：绕过几何集合，直接把一组骨头 delta 推给渲染代理
+	 *  （数组长度必须等于破裂骨头数，索引与绑定的骨头一一对应）。传空数组
+	 *  = 结束预览，骨头路径关闭、碎片回到 rest。
+	 *  预览期间 TickFractureBoneDeltas 完全让位，不再读写几何集合。 */
+	void SetPreviewBoneDeltas(const TArray<FMatrix44f>& InDeltas);
+
+	/** 是否正在编辑器破碎预览中（由 SetPreviewBoneDeltas 控制） */
+	bool IsPreviewBoneDeltasActive() const { return bPreviewBoneDeltasActive; }
+
+	/** 编辑器「真实 Chaos 破碎预览」专用：把某个几何集合组件指定为破裂跟随目标
+	 *  （预览场景里现搭的那个），并同步组件的 tick 开关 —— TickFractureBoneDeltas
+	 *  是靠组件 tick 驱动的，只改 FractureGeometryCollection 属性不会打开它。
+	 *  传 nullptr 解除跟随。 */
+	void SetFractureTargetForPreview(UObject* InCollectionComponent);
+#endif
+
 	/** 碰撞生成方法 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "碰撞方法"))
 	EGaussianCollisionMethod CollisionMethod = EGaussianCollisionMethod::None;
@@ -301,6 +325,13 @@ public:
 	 *  或网格内存上限被自动放大，该值会大于 VoxelSize。 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "高斯泼溅|碰撞")
 	float EffectiveVoxelSize = 0.0f;
+
+	/** 凸分解输出的最大凸包数（凸分解方法用）。算法每轮挑「包围盒体积最大」的那
+	 *  一块，沿它最长的一条轴把它切成两半，直到块数达到该值。
+	 *  切面是一个平面，所以同一块的点全落在同一侧 ⇒ 凸包之间不会重叠，凹形区域
+	 *  保持中空而不是被填平。块数越多贴合越好，Chaos 里的碰撞体也越多。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "最多凸包数", ClampMin = "1", ClampMax = "64", EditCondition = "CollisionMethod == EGaussianCollisionMethod::ConvexDecomposition"))
+	int32 MaxConvexHulls = 8;
 
 	// ------------------------------------------------------------------
 	// 4D playback (only active when the asset has temporal data: Is4D()).
@@ -390,19 +421,31 @@ protected:
 	/** Generate convex hull from point cloud positions */
 	bool GenerateConvexHull(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
 
-	/** Generate simplified collision mesh */
+	/** Generate simplified collision mesh：真正的多凸包分解（见枚举注释） */
 	bool GenerateSimplifiedCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
 
 	/** Generate voxel-based collision */
 	bool GenerateVoxelCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
 
 	/**
-	 * 重建阴影几何：从破裂资产的体素壳取三角形汤并缓存。
+	 * 重建阴影几何：优先取破裂资产的体素壳，没有壳时回落到点云体素盒。
 	 *
-	 * bCastShadow 关闭、未指定破裂资产、或壳读不到时清空缓存，
-	 * 代理侧随即关闭阴影分支（零开销）。资产/开关变化时调用。
+	 * bCastShadow 关闭、或两条来源都取不到时清空缓存，代理侧随即关闭阴影分支
+	 * （零开销）。资产/开关/破裂资产变化时调用。
 	 */
 	void RebuildShadowGeometry();
+
+	/**
+	 * 阴影回落几何：把点云按占用体素生成「盒子三角形汤」。
+	 *
+	 * 只在没有破裂资产（或该资产没有体素壳）时使用，让裸 splat 也能投阴影。
+	 * 直接按步长读 PositionBulkData 建占用位图，不整份解压点云（亿级 splat 也
+	 * 不会因为这一次重建而吃掉几个 GB）；格子尺寸从包围盒推定并逐次加倍，直到
+	 * 占用格数落进预算，因此三角形数量有上界。
+	 *
+	 * 输出在源资产局部空间，与体素壳同坐标系（代理的 local-to-world 一致）。
+	 */
+	void BuildShadowVoxelGeometry();
 
 private:
 	/** Enable/disable component tick based on 4D asset + playing state */
@@ -435,6 +478,12 @@ private:
 
 	/** 上次推送目标的场景代理。代理重建（如重新绑定骨头）后必须重推一次。 */
 	const void* LastFractureProxy = nullptr;
+
+#if WITH_EDITOR
+	/** 编辑器破碎预览是否接管了骨头路径（见 SetPreviewBoneDeltas）。
+	 *  为真时 TickFractureBoneDeltas 直接返回，不去读写几何集合。 */
+	bool bPreviewBoneDeltasActive = false;
+#endif
 
 	/** Cached bounds */
 	mutable FBoxSphereBounds CachedBounds;
