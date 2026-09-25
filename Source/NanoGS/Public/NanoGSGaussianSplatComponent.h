@@ -57,7 +57,15 @@ enum class EGaussianCollisionMethod : uint8
 	 *  Requires a fracture asset that owns a voxel shell whose
 	 *  bUseVoxelShellAsCollision is on; otherwise the component ends up with
 	 *  no collision at all ("仅用于破裂"). */
-	ProxyMesh UMETA(DisplayName = "体素壳(复杂碰撞)")
+	ProxyMesh UMETA(DisplayName = "体素壳(复杂碰撞)"),
+	/** One sphere per splat ("原生碰撞"): the sphere centre is the splat's own
+	 *  position and the radius comes from SplatSphereRadius (0 = derived from
+	 *  the cloud's mean splat spacing). Spheres are analytic shapes, so unlike
+	 *  ConvexHull / ConvexDecomposition / ProxyMesh they need no Chaos cooking
+	 *  and behave identically in the editor and at runtime. Cost is capped by
+	 *  MaxSplatSpheres: above it the cloud is thinned with a uniform stride and
+	 *  the radius grows to keep the same coverage. */
+	SplatSpheres UMETA(DisplayName = "逐Splat球体(原生)")
 };
 
 /**
@@ -333,6 +341,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "最多凸包数", ClampMin = "1", ClampMax = "64", EditCondition = "CollisionMethod == EGaussianCollisionMethod::ConvexDecomposition"))
 	int32 MaxConvexHulls = 8;
 
+	/** 逐 splat 球体碰撞的球体数量上限（原生碰撞用）。超过该值时按等步长抽稀，
+	 *  并同步放大球体半径，保证覆盖范围不变而刚体开销可控。球体是解析形状，
+	 *  不参与 Chaos cooking，所以数量只影响模拟/查询开销。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "最多球体数", ClampMin = "16", ClampMax = "65536", EditCondition = "CollisionMethod == EGaussianCollisionMethod::SplatSpheres"))
+	int32 MaxSplatSpheres = 2048;
+
+	/** 逐 splat 球体碰撞的球体半径（原生碰撞用）。0 = 自动，按点云体积与球体
+	 *  数量推出平均点间距的一半，使球体刚好互相贴住；>0 则按该值覆盖。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "球体半径(0=自动)", ClampMin = "0.0", EditCondition = "CollisionMethod == EGaussianCollisionMethod::SplatSpheres"))
+	float SplatSphereRadius = 0.0f;
+
 	// ------------------------------------------------------------------
 	// 4D playback (only active when the asset has temporal data: Is4D()).
 	// Advances CurrentTime on Tick and pushes it to the render proxy,
@@ -426,6 +445,9 @@ protected:
 
 	/** Generate voxel-based collision */
 	bool GenerateVoxelCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
+
+	/** Generate one sphere element per (thinned) splat: 逐 splat 原生碰撞 */
+	bool GenerateSplatSpheres(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
 
 	/**
 	 * 重建阴影几何：优先取破裂资产的体素壳，没有壳时回落到点云体素盒。

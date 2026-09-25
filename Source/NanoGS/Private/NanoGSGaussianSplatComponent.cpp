@@ -74,7 +74,9 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxConvexHulls) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, IgnoreFactor) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, VoxelSize) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxCollisionElements))
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxCollisionElements) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxSplatSpheres) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SplatSphereRadius))
 	{
 		bCollisionDirty = true;
 		RebuildCollision();
@@ -944,7 +946,11 @@ void UGaussianSplatComponent::RebuildCollision()
 	// Apply ignore factor: skip points pseudo-randomly to reduce collision geometry
 	// complexity. Uses a hash (not rand()) so the same input yields deterministic
 	// output across runs (reproducible collision shapes).
-	if (IgnoreFactor > 0.0f && IgnoreFactor < 1.0f)
+	//
+	// SplatSpheres is exempt: it is meant to place one sphere per splat, and its own
+	// MaxSplatSpheres cap already controls the element count. Thinning it here would
+	// silently drop splats that the method exists to represent.
+	if (CollisionMethod != EGaussianCollisionMethod::SplatSpheres && IgnoreFactor > 0.0f && IgnoreFactor < 1.0f)
 	{
 		TArray<FVector> FilteredPoints;
 		FilteredPoints.Reserve(FMath::Max(1, FMath::TruncToInt(Points.Num() * (1.0f - IgnoreFactor))));
@@ -978,6 +984,9 @@ void UGaussianSplatComponent::RebuildCollision()
 	case EGaussianCollisionMethod::Voxel:
 		bSuccess = GenerateVoxelCollision(Points, Vertices, Indices);
 		break;
+	case EGaussianCollisionMethod::SplatSpheres:
+		bSuccess = GenerateSplatSpheres(Points, Vertices, Indices);
+		break;
 	default:
 		break;
 	}
@@ -1000,6 +1009,26 @@ void UGaussianSplatComponent::RebuildCollision()
 
 	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: Collision rebuilt (method=%d, points=%d, verts=%d, indices=%d)"),
 		(uint8)CollisionMethod, Points.Num(), Vertices.Num(), Indices.Num());
+
+	// 诊断：凸包元素只有拿到 Chaos 隐式网格才会真正参与模拟与查询，而它由
+	// CreatePhysicsMeshes() 烹饪出来。烹饪没成功时这里会显示 cooked < convex ——
+	// 有这一行就能把「形状没生成」和「形状生成了但没进物理状态」分开。
+	if (BodySetup->AggGeom.ConvexElems.Num() > 0)
+	{
+		int32 CookedConvex = 0;
+		for (const FKConvexElem& ConvexElem : BodySetup->AggGeom.ConvexElems)
+		{
+			CookedConvex += ConvexElem.GetChaosConvexMesh().IsValid() ? 1 : 0;
+		}
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplat: collision shapes -> convex=%d (cooked=%d), spheres=%d, boxes=%d"),
+			BodySetup->AggGeom.ConvexElems.Num(), CookedConvex,
+			BodySetup->AggGeom.SphereElems.Num(), BodySetup->AggGeom.BoxElems.Num());
+		if (CookedConvex < BodySetup->AggGeom.ConvexElems.Num())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: %d of %d convex elements have no cooked Chaos mesh -- they carry no collision until Chaos cooking succeeds (method=%d)"),
+				BodySetup->AggGeom.ConvexElems.Num() - CookedConvex, BodySetup->AggGeom.ConvexElems.Num(), (uint8)CollisionMethod);
+		}
+	}
 }
 
 void UGaussianSplatComponent::ApplyCollisionProfile()
@@ -1008,19 +1037,21 @@ void UGaussianSplatComponent::ApplyCollisionProfile()
 		? UCollisionProfile::BlockAll_ProfileName
 		: UCollisionProfile::NoCollision_ProfileName;
 
-	if (BodyInstance.GetCollisionProfileName() == DesiredProfile)
+	const bool bProfileChanged = BodyInstance.GetCollisionProfileName() != DesiredProfile;
+	if (bProfileChanged)
 	{
-		return;
+		SetCollisionProfileName(DesiredProfile);
 	}
 
-	const bool bWasCollisionEnabled = BodyInstance.GetCollisionEnabled() != ECollisionEnabled::NoCollision;
-	SetCollisionProfileName(DesiredProfile);
-
-	// Turning collision on is handled by SetCollisionProfileName itself (it calls
-	// EnsurePhysicsStateCreated when the collision-enabled state changes). Turning it
-	// off goes down the opposite path — that helper only ever creates — so an existing
-	// body has to be torn down explicitly.
-	if (bWasCollisionEnabled && DesiredProfile == UCollisionProfile::NoCollision_ProfileName)
+	// The profile switch only creates a body when collision was off before. That is not
+	// enough here: RebuildCollision() rewrites BodySetup->AggGeom, and an already-live
+	// Chaos body does not notice — it keeps the shapes it was built with. So switching
+	// between two collision-enabled methods (e.g. 包围盒 -> 凸分解) would leave the old
+	// shape in the simulation while the details panel shows the new one. Recreate the
+	// state whenever there is geometry to publish, or when a state may need tearing
+	// down. With collision off before and after, nothing is rebuilt and static assets
+	// still pay nothing.
+	if (HasEffectiveCollision() || bProfileChanged)
 	{
 		RecreatePhysicsState();
 	}
@@ -1454,6 +1485,63 @@ bool UGaussianSplatComponent::GenerateSimplifiedCollision(const TArray<FVector>&
 		HullCount, Points.Num(), HullBudget, MaxVertsPerHull);
 
 	return HullCount > 0;
+}
+
+bool UGaussianSplatComponent::GenerateSplatSpheres(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
+{
+	// 逐 splat 球体（「原生碰撞」）。
+	//
+	// 球心就是 splat 自己的位置，所以碰撞体积与点云一一对应；球体是解析形状，
+	// 不依赖 Chaos cooking 出来的隐式网格，因此编辑器和运行时表现一致
+	// （ConvexHull / ConvexDecomposition / ProxyMesh 都要等烹饪结果到齐）。
+	//
+	// 消耗护栏：球体数量上限 MaxSplatSpheres。超过上限就按等步长抽稀到上限，
+	// 并把半径放大到 sqrt3(步长) 倍，让留下的球体继续填满同一块体积，而不是
+	// 塌成一张稀疏的网。
+	//
+	// 元素直接追加到 BodySetup->AggGeom，OutVertices 保持为空，
+	// RebuildCollision() 不会再多加一个整体凸包。
+	const int32 Cap = FMath::Clamp(MaxSplatSpheres, 16, 65536);
+	if (Points.Num() == 0 || !BodySetup)
+	{
+		return false;
+	}
+
+	// 等步长抽稀：步长和最终数量互相确定，循环次数正好等于 SphereCount。
+	const int32 Stride = FMath::Max(1, FMath::DivideAndRoundUp(Points.Num(), Cap));
+	const int32 SphereCount = FMath::DivideAndRoundUp(Points.Num(), Stride);
+
+	// 半径：用户没指定就按「球体刚好互相贴住」算 —— 每个球体分到的体积是
+	// 点云体积 / SphereCount，等体积球的半径即 0.5 * sqrt3(体积/数量)。
+	float Radius = SplatSphereRadius;
+	if (Radius <= 0.0f)
+	{
+		FBox LocalBounds(ForceInit);
+		for (int32 i = 0; i < Points.Num(); i += Stride)
+		{
+			LocalBounds += Points[i];
+		}
+		const double Volume = (double)LocalBounds.GetVolume();
+		Radius = Volume > 0.0
+			? (float)(0.5 * FMath::Pow(Volume / (double)SphereCount, 1.0 / 3.0))
+			: 1.0f;
+	}
+
+	BodySetup->AggGeom.SphereElems.Reserve(SphereCount);
+	for (int32 i = 0; i < Points.Num(); i += Stride)
+	{
+		FKSphereElem& SphereElem = BodySetup->AggGeom.SphereElems.AddDefaulted_GetRef();
+		SphereElem.Center = Points[i];
+		SphereElem.Radius = Radius;
+	}
+
+	OutVertices.Reset();
+	OutIndices.Reset();
+
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: SplatSpheres produced %d spheres (points=%d, cap=%d, stride=%d, radius=%.3f)"),
+		BodySetup->AggGeom.SphereElems.Num(), Points.Num(), Cap, Stride, Radius);
+
+	return BodySetup->AggGeom.SphereElems.Num() > 0;
 }
 
 bool UGaussianSplatComponent::GenerateVoxelCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
