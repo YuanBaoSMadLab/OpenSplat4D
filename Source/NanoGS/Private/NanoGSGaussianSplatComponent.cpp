@@ -145,6 +145,11 @@ void UGaussianSplatComponent::OnRegister()
 		SubscribeToAssetChanges();
 	}
 
+	if (FractureAsset)
+	{
+		SubscribeToFractureAssetChanges();
+	}
+
 	// 4D: start playback automatically if requested
 	if (Supports4DPlayback() && bAutoPlay && !bPlaying)
 	{
@@ -170,6 +175,7 @@ void UGaussianSplatComponent::OnRegister()
 void UGaussianSplatComponent::OnUnregister()
 {
 	UnsubscribeFromAssetChanges();
+	UnsubscribeFromFractureAssetChanges();
 	Super::OnUnregister();
 }
 
@@ -321,7 +327,17 @@ void UGaussianSplatComponent::SetFractureAsset(UGaussianSplatFractureAsset* NewA
 		return;
 	}
 
+	UnsubscribeFromFractureAssetChanges();
+
 	FractureAsset = NewAsset;
+
+	// Render data (source cloud + bone binding + caps) lives on the fracture asset
+	// and is dropped whenever its binding / caps change, so subscribe to be told
+	// when the proxy has to be rebuilt around the new data.
+	if (IsRegistered())
+	{
+		SubscribeToFractureAssetChanges();
+	}
 
 	// Fall back to the fracture asset's source cloud when the component has no
 	// splat asset of its own, so a freshly created component renders right away.
@@ -561,7 +577,10 @@ FPrimitiveSceneProxy* UGaussianSplatComponent::CreateSceneProxy()
 		}
 	}
 
-	return new FGaussianSplatSceneProxy(this);
+	// The proxy visualises the aggregated collision shapes in the engine's collision
+	// view modes; hand it the BodySetup it should draw. Collision changes force a
+	// render state rebuild (ApplyCollisionProfile), so the proxy never outlives it.
+	return new FGaussianSplatSceneProxy(this, BodySetup);
 }
 
 FBoxSphereBounds UGaussianSplatComponent::CalcBounds(const FTransform& LocalToWorld) const
@@ -677,6 +696,50 @@ void UGaussianSplatComponent::UnsubscribeFromAssetChanges()
 		SplatAsset->OnAssetChanged.Remove(AssetChangedDelegateHandle);
 		AssetChangedDelegateHandle.Reset();
 		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplat: Unsubscribed from asset change notifications"));
+	}
+}
+
+void UGaussianSplatComponent::OnFractureAssetDataChanged(UGaussianSplatFractureAsset* ChangedAsset)
+{
+	if (ChangedAsset != FractureAsset)
+	{
+		return;
+	}
+
+	// The fracture asset dropped its cached render data (new bone binding / caps).
+	// Every scene proxy copies that shared data at construction, so all of them must
+	// be rebuilt: otherwise a proxy built before the solve keeps the pre-solve
+	// binding (bHasBoneBinding == false) and SetBoneDeltas silently drops every
+	// delta -- the editor's 破碎预览 would then do nothing at all.
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: fracture asset '%s' render data changed (binding/caps), recreating scene proxy"),
+		*ChangedAsset->GetName());
+
+	// The rest pose belongs to the replaced binding.
+	FractureRestMatrices.Reset();
+	FractureLastPushedDeltas.Reset();
+	bFractureWasActive = false;
+	Update4DTickEnabled();
+
+	MarkRenderStateDirty();
+}
+
+void UGaussianSplatComponent::SubscribeToFractureAssetChanges()
+{
+	if (FractureAsset && !FractureAssetChangedDelegateHandle.IsValid())
+	{
+		FractureAssetChangedDelegateHandle = FractureAsset->OnFractureChanged.AddUObject(
+			this, &UGaussianSplatComponent::OnFractureAssetDataChanged);
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplat: Subscribed to fracture asset change notifications"));
+	}
+}
+
+void UGaussianSplatComponent::UnsubscribeFromFractureAssetChanges()
+{
+	if (FractureAsset && FractureAssetChangedDelegateHandle.IsValid())
+	{
+		FractureAsset->OnFractureChanged.Remove(FractureAssetChangedDelegateHandle);
+		FractureAssetChangedDelegateHandle.Reset();
+		UE_LOG(LogTemp, Verbose, TEXT("GaussianSplat: Unsubscribed from fracture asset change notifications"));
 	}
 }
 
@@ -1055,6 +1118,12 @@ void UGaussianSplatComponent::ApplyCollisionProfile()
 	{
 		RecreatePhysicsState();
 	}
+
+	// The scene proxy holds the BodySetup it was built with (it draws those shapes in
+	// the engine's collision view modes). RebuildCollision() may have replaced or
+	// cleared that object, so the proxy has to be recreated with the new pointer
+	// before it could ever be used again.
+	MarkRenderStateDirty();
 }
 
 void UGaussianSplatComponent::BuildCollisionBodySetup()

@@ -18,6 +18,10 @@
 #include "MeshBuilderOneFrameResources.h"
 #include "Materials/Material.h"
 #include "MaterialDomain.h"
+#include "Materials/MaterialRenderProxy.h"
+#include "Engine/Engine.h"
+#include "PhysicsEngine/BodySetup.h"
+#include "PhysicsEngine/AggregateGeom.h"
 #include "EngineUtils.h"
 
 //////////////////////////////////////////////////////////////////////////
@@ -766,7 +770,7 @@ void FGaussianSplatGPUResources::CreatePerInstanceBuffers(FRHICommandListBase& R
 // FGaussianSplatSceneProxy
 
 //Constructor. Copies rendering parameters from the component
-FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent* InComponent)
+FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent* InComponent, const UBodySetup* InCollisionBodySetup)
 	: FPrimitiveSceneProxy(InComponent)
 	, CachedAsset(InComponent->SplatAsset.Get())
 	, CachedFractureAsset(InComponent->FractureAsset.Get())
@@ -787,6 +791,10 @@ FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent
 	// space). Already empty on the component unless bCastShadow is on and a shell
 	// exists, so this is a no-op for every other configuration.
 	InComponent->GetShadowGeometry(ShadowShellVertices, ShadowShellTriangles);
+
+	// Collision view modes need the aggregated shapes; the component hands over the
+	// BodySetup it just built (null whenever collision is off).
+	CollisionBodySetup = InCollisionBodySetup;
 }
 
 FGaussianSplatSceneProxy::~FGaussianSplatSceneProxy()
@@ -840,11 +848,26 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 	uint32 VisibilityMap,
 	FMeshElementCollector& Collector) const
 {
+	// Collision view modes (Collision Pawn / Collision Visibility) replace every
+	// primitive with its collision geometry. The engine only does that for its own
+	// proxies, and it hides any primitive without collision - ours is "shown" as
+	// soon as the component has a collision method, so this proxy has to submit the
+	// shapes itself and must not submit anything else (bounds / shadow hull / the
+	// hit proxy box would all be wrong in this mode).
+	const bool bCollisionView =
+		ViewFamily.EngineShowFlags.CollisionVisibility || ViewFamily.EngineShowFlags.CollisionPawn;
+
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
 		if (VisibilityMap & (1 << ViewIndex))
 		{
 			FPrimitiveDrawInterface* PDI = Collector.GetPDI(ViewIndex);
+
+			if (bCollisionView)
+			{
+				AddCollisionMeshBatches(ViewIndex, Collector);
+				continue;
+			}
 
 			// Draw bounds when selected
 			if (IsSelected())
@@ -927,6 +950,49 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 			}
 		}
 	}
+}
+
+void FGaussianSplatSceneProxy::AddCollisionMeshBatches(int32 ViewIndex, FMeshElementCollector& Collector) const
+{
+	if (CollisionBodySetup == nullptr)
+	{
+		return;
+	}
+
+	const FKAggregateGeom& AggGeom = CollisionBodySetup->AggGeom;
+	if (AggGeom.ConvexElems.Num() == 0 && AggGeom.BoxElems.Num() == 0 &&
+		AggGeom.SphylElems.Num() == 0 && AggGeom.SphereElems.Num() == 0)
+	{
+		// Triangle-mesh collision (ProxyMesh) has no simple shapes to draw; the shell
+		// itself is what physics sees. Nothing to add here.
+		return;
+	}
+
+	// Same look as the engine's own collision view: flat, single-coloured solid
+	// shapes. GEngine's unlit coloration material is used when available; without
+	// it (or when debug view modes are off) GetAggGeom falls back to wireframe.
+	const FColor WireColor = GetWireframeColor().ToFColor(true);
+	const FTransform GeomTransform(GetLocalToWorld());
+
+	FMaterialRenderProxy* SolidMaterial = nullptr;
+	if (GEngine != nullptr && GEngine->ShadedLevelColorationUnlitMaterial != nullptr)
+	{
+		FColoredMaterialRenderProxy* MaterialProxy = new FColoredMaterialRenderProxy(
+			GEngine->ShadedLevelColorationUnlitMaterial->GetRenderProxy(), WireColor);
+		Collector.RegisterOneFrameMaterialProxy(MaterialProxy);
+		SolidMaterial = MaterialProxy;
+	}
+
+	// bDrawSolid decides between the solid and the wireframe path inside GetAggGeom.
+	AggGeom.GetAggGeom(
+		GeomTransform,
+		WireColor,
+		SolidMaterial,
+		/*bPerHullColor=*/false,
+		/*bDrawSolid=*/SolidMaterial != nullptr,
+		AlwaysHasVelocity(),
+		ViewIndex,
+		Collector);
 }
 
 void FGaussianSplatSceneProxy::AddShadowMeshBatch(int32 ViewIndex, FMeshElementCollector& Collector) const

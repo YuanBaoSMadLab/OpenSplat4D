@@ -16,6 +16,7 @@ class UGaussianSplatComponent;
 class UGaussianSplatAsset;
 class UGaussianSplatFractureAsset;
 class FGaussianSplatRenderData;
+class UBodySetup;
 
 
 /**
@@ -425,7 +426,7 @@ public:
 class FGaussianSplatSceneProxy : public FPrimitiveSceneProxy
 {
 public:
-	FGaussianSplatSceneProxy(const UGaussianSplatComponent* InComponent);
+	FGaussianSplatSceneProxy(const UGaussianSplatComponent* InComponent, const UBodySetup* InCollisionBodySetup);
 	virtual ~FGaussianSplatSceneProxy();
 
 	//~ Begin FPrimitiveSceneProxy Interface
@@ -599,6 +600,27 @@ private:
 	 * and dim the model, which is exactly the bug this replaces.
 	 */
 	void AddShadowMeshBatch(int32 ViewIndex, FMeshElementCollector& Collector) const;
+
+	// ------------------------------------------------------------------
+	// Collision geometry (engine collision view modes only)
+	//
+	// The splats themselves are drawn by a post-opaque pass, which the engine's
+	// collision view knows nothing about; and a custom proxy has to submit its
+	// own collision geometry (the engine only does that for its own proxies).
+	// So this proxy caches the component's BodySetup at construction and draws
+	// AggGeom when the view family is in a collision view mode.
+	//
+	// The pointer is only ever dereferenced on the render thread while collision
+	// is enabled; the component marks its render state dirty whenever the
+	// collision method changes, so a proxy can never outlive the BodySetup it
+	// was built with.
+	// ------------------------------------------------------------------
+
+	/** BodySetup the component was using when this proxy was built (may be null). */
+	const UBodySetup* CollisionBodySetup = nullptr;
+
+	/** Submit the aggregated collision shapes as flat-shaded debug geometry. */
+	void AddCollisionMeshBatches(int32 ViewIndex, FMeshElementCollector& Collector) const;
 
 #if WITH_EDITOR
 	/** Cached hit proxy created in CreateHitProxies, used for editor viewport click selection. */

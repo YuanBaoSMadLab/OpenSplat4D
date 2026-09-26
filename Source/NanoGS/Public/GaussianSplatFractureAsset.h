@@ -12,7 +12,12 @@
 
 // Forward declarations
 class UGaussianSplatAsset;
+class UGaussianSplatFractureAsset;
 class FGaussianSplatRenderData;
+
+// Delegate fired when the fracture data baked into the render data changes
+// (bone binding / cap splats), i.e. whenever the cached render data is dropped.
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnGaussianSplatFractureChanged, UGaussianSplatFractureAsset*);
 
 // Serialization magic/version for format identification
 #define GAUSSIAN_SPLAT_FRACTURE_ASSET_MAGIC   0x47534641  // "GSFA"
@@ -489,8 +494,15 @@ public:
 	/** Get or create the fracture render data (nullptr when unusable). */
 	TSharedPtr<FGaussianSplatRenderData> GetOrCreateRenderData();
 
-	/** Drop the cached render data so the next request rebuilds it. */
+	/** Drop the cached render data so the next request rebuilds it, and notify the
+	 *  listeners so already-built scene proxies are rebuilt around the new data.
+	 *  Required because a proxy copies the shared render data at construction: a
+	 *  re-solve would otherwise keep rendering the pre-solve binding (no bones to
+	 *  displace -> the editor's 破碎预览 would silently do nothing). */
 	void InvalidateRenderData();
+
+	/** Delegate fired when the render data (binding / caps) is invalidated */
+	FOnGaussianSplatFractureChanged OnFractureChanged;
 
 	/** Cached render data (lazy-initialized, shared across all proxies) */
 	TSharedPtr<FGaussianSplatRenderData> RenderData;

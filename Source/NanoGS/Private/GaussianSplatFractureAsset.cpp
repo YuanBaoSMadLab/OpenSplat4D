@@ -560,4 +560,9 @@ TSharedPtr<FGaussianSplatRenderData> UGaussianSplatFractureAsset::GetOrCreateRen
 void UGaussianSplatFractureAsset::InvalidateRenderData()
 {
 	RenderData.Reset();
+
+	// Scene proxies copy the shared render data when they are built, so a live
+	// proxy keeps the old binding until it is rebuilt. Tell the listeners (the
+	// splat component) to recreate their proxies around the new data.
+	OnFractureChanged.Broadcast(this);
 }

@@ -357,7 +357,7 @@ TSharedRef<SDockTab> FGaussianSplatAssetEditor::SpawnTab_Viewport(const FSpawnTa
 		.Label(LOCTEXT("ViewportTitle", "视口"))
 		[
 			SNew(SBorder)
-			.BorderImage(FAppStyle::GetBrush("Toolbox.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				ViewportWidgetRef
 			]
@@ -372,7 +372,7 @@ TSharedRef<SDockTab> FGaussianSplatAssetEditor::SpawnTab_Details(const FSpawnTab
 		.Label(LOCTEXT("DetailsTitle", "详情"))
 		[
 			SNew(SBorder)
-			.BorderImage(FAppStyle::GetBrush("Toolbox.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				DetailsView.IsValid() ? DetailsView.ToSharedRef() : static_cast<TSharedRef<SWidget>>(SNew(STextBlock).Text(LOCTEXT("NoDetails", "无可用详情")))
 			]

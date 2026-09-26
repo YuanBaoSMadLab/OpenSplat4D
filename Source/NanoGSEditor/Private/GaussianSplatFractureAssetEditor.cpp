@@ -776,6 +776,15 @@ void FGaussianSplatFractureAssetEditor::SolveFracture()
 	CollectionObject->RebuildRenderData();
 	CollectionObject->CreateSimulationDataIfNeeded();
 
+	// 集合是「原地」改写的：解算复用同一个 UGeometryCollection 对象，ResetFrom 会
+	// 直接换掉里面的骨头数（体素块越多、块数变化越大越明显）。关卡里和破碎预览里
+	// 已经引用它的几何集合组件，手上仍是旧的动态集合与按旧骨头数分配的渲染缓冲，
+	// 引擎会在 GeometryCollectionSceneProxy 的 check(NumTransforms == Transforms.Num())
+	// 处直接崩掉。必须让这些组件重跑一遍 SetRestCollection（重置动态集合 + 重建物理），
+	// 再标脏让场景代理按新骨头数重建 —— 引擎自己在 PostEditUndo 里就是这么做的。
+	CollectionObject->PropagateTransformUpdateToComponents();
+	CollectionObject->PropagateMarkDirtyToComponents();
+
 	Fracture->GeometryCollection = CollectionObject;
 
 	// ----------------------------------------------------------------
@@ -818,7 +827,7 @@ TSharedRef<SDockTab> FGaussianSplatFractureAssetEditor::SpawnTab_Viewport(const 
 		.Label(LOCTEXT("ViewportTitle", "视口"))
 		[
 			SNew(SBorder)
-			.BorderImage(FAppStyle::GetBrush("Toolbox.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				ViewportWidgetRef
 			]
@@ -885,7 +894,7 @@ TSharedRef<SDockTab> FGaussianSplatFractureAssetEditor::SpawnTab_Details(const F
 		.Label(LOCTEXT("DetailsTitle", "详情"))
 		[
 			SNew(SBorder)
-			.BorderImage(FAppStyle::GetBrush("Toolbox.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SNew(SVerticalBox)
 

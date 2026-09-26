@@ -415,6 +415,15 @@ protected:
 	/** Unsubscribe from asset change notifications */
 	void UnsubscribeFromAssetChanges();
 
+	/** Called when the fracture asset's render data (binding / caps) changes */
+	void OnFractureAssetDataChanged(UGaussianSplatFractureAsset* ChangedAsset);
+
+	/** Subscribe to fracture asset change notifications */
+	void SubscribeToFractureAssetChanges();
+
+	/** Unsubscribe from fracture asset change notifications */
+	void UnsubscribeFromFractureAssetChanges();
+
 	/** Build collision body setup from point cloud data */
 	void BuildCollisionBodySetup();
 
@@ -513,6 +522,9 @@ private:
 
 	/** Delegate handle for asset change subscription */
 	FDelegateHandle AssetChangedDelegateHandle;
+
+	/** Delegate handle for fracture asset change subscription */
+	FDelegateHandle FractureAssetChangedDelegateHandle;
 
 	/** Collision body setup */
 	UPROPERTY(Transient)

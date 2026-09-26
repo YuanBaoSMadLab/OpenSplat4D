@@ -229,7 +229,7 @@ TSharedRef<SDockTab> FGaussianSplat4DEditor::SpawnTab_Viewport(const FSpawnTabAr
 			.FillHeight(1.0f)
 			[
 				SNew(SBorder)
-				.BorderImage(FAppStyle::GetBrush("Toolbox.GroupBorder"))
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 				[
 					ViewportWidgetRef
 				]
@@ -250,7 +250,7 @@ TSharedRef<SDockTab> FGaussianSplat4DEditor::SpawnTab_Details(const FSpawnTabArg
 		.Label(LOCTEXT("DetailsTitle", "详情"))
 		[
 			SNew(SBorder)
-			.BorderImage(FAppStyle::GetBrush("Toolbox.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				DetailsView.IsValid() ? DetailsView.ToSharedRef() : static_cast<TSharedRef<SWidget>>(SNew(STextBlock).Text(LOCTEXT("NoDetails", "无可用详情")))
 			]

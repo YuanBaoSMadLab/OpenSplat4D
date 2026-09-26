@@ -153,6 +153,20 @@ void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters&
 	FRDGBuilder& GraphBuilder = *Parameters.GraphBuilder;
 	const FSceneView* SceneView = reinterpret_cast<const FSceneView*>(Parameters.View);
 
+	// Collision view modes (Collision Pawn / Collision Visibility) must show the
+	// collision geometry only. Splats are composited here, in a post-opaque pass the
+	// engine's collision view knows nothing about, so they would otherwise paint the
+	// full-colour model right over the collision shapes. Give way: the scene proxy
+	// draws its AggGeom instead.
+	if (SceneView->Family != nullptr)
+	{
+		const FEngineShowFlags& ShowFlags = SceneView->Family->EngineShowFlags;
+		if (ShowFlags.CollisionVisibility || ShowFlags.CollisionPawn)
+		{
+			return;
+		}
+	}
+
 	TArray<FGaussianSplatSceneProxy*> Proxies;
 	Ext->GetRegisteredProxies(Proxies);
 

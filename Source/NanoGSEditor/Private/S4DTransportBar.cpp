@@ -26,7 +26,7 @@ void S4DTransportBar::Construct(const FArguments& InArgs, UGaussianSplatAsset* I
 		ChildSlot
 		[
 			SNew(SBorder)
-			.BorderImage(FAppStyle::GetBrush("Toolbox.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 			.Padding(8.0f)
 			[
 				SNew(STextBlock)
@@ -51,7 +51,7 @@ void S4DTransportBar::Construct(const FArguments& InArgs, UGaussianSplatAsset* I
 	ChildSlot
 	[
 		SNew(SBorder)
-		.BorderImage(FAppStyle::GetBrush("Toolbox.GroupBorder"))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		.Padding(FMargin(8.0f, 4.0f))
 		[
 			SNew(SVerticalBox)
