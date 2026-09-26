@@ -16,6 +16,9 @@
 #include "SceneManagement.h"
 #include "DynamicMeshBuilder.h"
 #include "MeshBuilderOneFrameResources.h"
+#include "StaticMeshResources.h"
+#include "LocalVertexFactory.h"
+#include "SceneInterface.h"
 #include "Materials/Material.h"
 #include "MaterialDomain.h"
 #include "Materials/MaterialRenderProxy.h"
@@ -997,76 +1000,140 @@ void FGaussianSplatSceneProxy::AddCollisionMeshBatches(int32 ViewIndex, FMeshEle
 
 void FGaussianSplatSceneProxy::AddShadowMeshBatch(int32 ViewIndex, FMeshElementCollector& Collector) const
 {
-	const int32 VertexCount = ShadowShellVertices.Num();
-	const int32 TriangleCount = ShadowShellTriangles.Num() / 3;
-
-	UMaterialInterface* ShadowMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
-	if (!ShadowMaterial || VertexCount < 3 || TriangleCount < 1)
+	// This runs on a shadow gather worker thread, so no FRHICommandListImmediate::Get()
+	// here: the vertex/index buffers already exist (built on the render thread) and the
+	// one-frame primitive uniform buffer is created through the collector's command list.
+	if (!bShadowMeshResourcesReady || ShadowMeshIndexBuffer == nullptr || ShadowMeshVertexBuffers == nullptr ||
+		ShadowMeshVertexFactory == nullptr || ShadowMeshIndexBuffer->Indices.Num() < 3)
 	{
 		return;
 	}
 
-	// The builder hands its vertex/index buffers over to the one frame resource,
-	// so it has to be local to this call (and cannot be reused afterwards).
-	FMeshBuilderOneFrameResources& OneFrameResource = Collector.AllocateOneFrameResource<FMeshBuilderOneFrameResources>();
-	FDynamicMeshBuilder MeshBuilder(Collector.GetFeatureLevel());
-	MeshBuilder.ReserveVertices(VertexCount);
-	MeshBuilder.ReserveTriangles(TriangleCount);
-
-	// Some valid tangent basis; the shell is never shaded.
-	const FVector2f UV(0.f, 0.f);
-	const FVector3f TX(1.f, 0.f, 0.f);
-	const FVector3f TY(0.f, 1.f, 0.f);
-	const FVector3f TZ(0.f, 0.f, 1.f);
-	const FColor White = FColor::White;
-
-	// Voxel shell vertices are in source asset local space, which is the space
-	// this proxy's local-to-world also maps (same as GetLocalBounds).
-	for (int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex)
+	UMaterialInterface* ShadowMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
+	if (!ShadowMaterial || ShadowMeshVertexBuffers->PositionVertexBuffer.GetNumVertices() < 3)
 	{
-		MeshBuilder.AddVertex(ShadowShellVertices[VertexIndex], UV, TX, TY, TZ, White);
+		return;
 	}
-	for (int32 TriangleIndex = 0; TriangleIndex < TriangleCount; ++TriangleIndex)
-	{
-		MeshBuilder.AddTriangle(
-			ShadowShellTriangles[TriangleIndex * 3 + 0],
-			ShadowShellTriangles[TriangleIndex * 3 + 1],
-			ShadowShellTriangles[TriangleIndex * 3 + 2]);
-	}
+
+	const FMatrix& ProxyLocalToWorld = GetLocalToWorld();
+	const FBoxSphereBounds ProxyLocalBounds = GetLocalBounds();
 
 	FMeshBatch& Mesh = Collector.AllocateMesh();
-	// bDisableBackfaceCulling = true: the shell's triangle winding is not
-	// guaranteed consistent, and MeshPassProcessor turns that flag into CM_None
-	// for the shadow pass, so no face is culled away.
-	MeshBuilder.GetMeshElement(
-		GetLocalToWorld(),
-		ShadowMaterial->GetRenderProxy(),
-		SDPG_World,
-		/*bDisableBackfaceCulling=*/true,
-		/*bReceivesDecals=*/false,
-		ViewIndex,
-		OneFrameResource,
-		Mesh);
+	FMeshBatchElement& BatchElement = Mesh.Elements[0];
+	BatchElement.IndexBuffer = ShadowMeshIndexBuffer.Get();
+	Mesh.VertexFactory = ShadowMeshVertexFactory.Get();
+	Mesh.MaterialRenderProxy = ShadowMaterial->GetRenderProxy();
 
-	// Shadow caster only. GetMeshElement leaves these at their defaults, and the
-	// defaults are wrong for us: letting the hull into the base pass would draw a
-	// solid shell over the splats, and letting it into the depth prepass would
-	// write depth that the splats' CF_DepthNearOrEqual test then fails against -
-	// which dimmed the whole model with the old bounding-box proxy.
+	FDynamicPrimitiveUniformBuffer& DynamicUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
+	DynamicUniformBuffer.Set(
+		Collector.GetRHICommandList(),
+		ProxyLocalToWorld,
+		/*PreviousLocalToWorld=*/ProxyLocalToWorld,
+		ProxyLocalBounds.TransformBy(ProxyLocalToWorld),
+		ProxyLocalBounds,
+		/*bReceivesDecals=*/false,
+		/*bHasPrecomputedVolumetricLightmap=*/false,
+		/*bOutputVelocity=*/false);
+	BatchElement.PrimitiveUniformBufferResource = &DynamicUniformBuffer.UniformBuffer;
+
+	BatchElement.FirstIndex = 0;
+	BatchElement.NumPrimitives = ShadowMeshIndexBuffer->Indices.Num() / 3;
+	BatchElement.MinVertexIndex = 0;
+	BatchElement.MaxVertexIndex = ShadowMeshVertexBuffers->PositionVertexBuffer.GetNumVertices() - 1;
+
+	Mesh.Type = PT_TriangleList;
+	Mesh.DepthPriorityGroup = SDPG_World;
+	// bDisableBackfaceCulling = true: the shell's triangle winding is not guaranteed
+	// consistent, and MeshPassProcessor turns that flag into CM_None for the shadow
+	// pass, so no face is culled away.
+	Mesh.bDisableBackfaceCulling = true;
+	Mesh.ReverseCulling = ProxyLocalToWorld.Determinant() < 0.0f;
+
+	// Shadow caster only. The defaults are wrong for us: letting the hull into the
+	// base pass would draw a solid shell over the splats, and letting it into the
+	// depth prepass would write depth that the splats' CF_DepthNearOrEqual test then
+	// fails against - which dimmed the whole model with the old bounding-box proxy.
 	Mesh.CastShadow = true;
 	Mesh.bUseForMaterial = false;
 	Mesh.bUseForDepthPass = false;
 	Mesh.bUseAsOccluder = false;
 	Mesh.bUseSelectionOutline = false;
+	Mesh.bCanApplyViewModeOverrides = false;
 	Mesh.BatchHitProxyId = FHitProxyId();
 
 	Collector.AddMesh(ViewIndex, Mesh);
+}
+
+void FGaussianSplatSceneProxy::BuildShadowMeshResources(FRHICommandListBase& RHICmdList)
+{
+	const int32 VertexCount = ShadowShellVertices.Num();
+	const int32 TriangleCount = ShadowShellTriangles.Num() / 3;
+	if (VertexCount < 3 || TriangleCount < 1)
+	{
+		return;
+	}
+
+	// Same vertex layout FDynamicMeshBuilder::AddVertex would have produced.
+	TArray<FDynamicMeshVertex> Vertices;
+	Vertices.SetNumUninitialized(VertexCount);
+	for (int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex)
+	{
+		Vertices[VertexIndex] = FDynamicMeshVertex(
+			ShadowShellVertices[VertexIndex],
+			FVector3f(1.f, 0.f, 0.f),
+			FVector3f(0.f, 0.f, 1.f),
+			FVector2f(0.f, 0.f),
+			FColor::White);
+	}
+
+	ShadowMeshIndexBuffer = MakeUnique<FDynamicMeshIndexBuffer32>();
+	ShadowMeshIndexBuffer->Indices.SetNumUninitialized(ShadowShellTriangles.Num());
+	for (int32 Index = 0; Index < ShadowShellTriangles.Num(); ++Index)
+	{
+		ShadowMeshIndexBuffer->Indices[Index] = static_cast<uint32>(ShadowShellTriangles[Index]);
+	}
+	ShadowMeshIndexBuffer->InitResource(RHICmdList);
+
+	ShadowMeshVertexFactory = MakeUnique<FLocalVertexFactory>(
+		GetScene().GetFeatureLevel(), "FGaussianSplatShadowShell");
+
+	// InitFromDynamicVertex fills the vertex buffers, binds them to the factory and
+	// initializes the factory resource itself.
+	ShadowMeshVertexBuffers = MakeUnique<FStaticMeshVertexBuffers>();
+	ShadowMeshVertexBuffers->InitFromDynamicVertex(RHICmdList, ShadowMeshVertexFactory.Get(), Vertices);
+
+	bShadowMeshResourcesReady = true;
+}
+
+void FGaussianSplatSceneProxy::ReleaseShadowMeshResources()
+{
+	// FRenderResource forbids deleting an initialized resource, so everything that
+	// was uploaded has to be released explicitly first.
+	if (ShadowMeshVertexBuffers)
+	{
+		ShadowMeshVertexBuffers->PositionVertexBuffer.ReleaseResource();
+		ShadowMeshVertexBuffers->StaticMeshVertexBuffer.ReleaseResource();
+		ShadowMeshVertexBuffers->ColorVertexBuffer.ReleaseResource();
+	}
+	if (ShadowMeshIndexBuffer)
+	{
+		ShadowMeshIndexBuffer->ReleaseResource();
+	}
+	if (ShadowMeshVertexFactory)
+	{
+		ShadowMeshVertexFactory->ReleaseResource();
+	}
+	bShadowMeshResourcesReady = false;
 }
 
 //critical setup. creates FGaussianSplatGPUResources which uploads all the GPU buffers
 // registers itself with the ViewExtension
 void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& RHICmdList)
 {
+	// Upload the shadow shell once, here: the shadow gather runs on a worker thread
+	// and must not create RHI resources there (see AddShadowMeshBatch).
+	BuildShadowMeshResources(RHICmdList);
+
 	// Snapshot weak ptr on render thread - if asset was GC'd/replaced on GameThread, skip init
 	UGaussianSplatAsset* Asset = CachedAsset.Get();
 	if (!Asset || !Asset->IsValid())
@@ -1141,6 +1208,9 @@ void FGaussianSplatSceneProxy::DestroyRenderThreadResources()
 		delete GPUResources;
 		GPUResources = nullptr;
 	}
+
+	// Same rule as above: FRenderResource must be released before it is deleted.
+	ReleaseShadowMeshResources();
 }
 
 void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RHICmdList)

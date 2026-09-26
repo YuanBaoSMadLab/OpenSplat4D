@@ -17,6 +17,9 @@ class UGaussianSplatAsset;
 class UGaussianSplatFractureAsset;
 class FGaussianSplatRenderData;
 class UBodySetup;
+class FLocalVertexFactory;
+class FDynamicMeshIndexBuffer32;
+struct FStaticMeshVertexBuffers;
 
 
 /**
@@ -590,6 +593,28 @@ private:
 
 	/** Shadow geometry triangles (3 indices per triangle) */
 	TArray<int32> ShadowShellTriangles;
+
+	// ------------------------------------------------------------------
+	// Shadow shell GPU buffers, built once in CreateRenderThreadResources().
+	//
+	// They cannot be built per frame: the shadow depth pass gathers dynamic mesh
+	// elements from a task graph worker thread (FGatherShadowPrimitivesPacket in
+	// ShadowSetup.cpp), and FDynamicMeshBuilder::GetMeshElement() internally calls
+	// FRHICommandListImmediate::Get(), whose check(IsInRenderingThread()) asserts
+	// there. Uploading once on the render thread and only touching
+	// Collector.GetRHICommandList() afterwards keeps the gather thread safe.
+	// ------------------------------------------------------------------
+
+	TUniquePtr<FStaticMeshVertexBuffers> ShadowMeshVertexBuffers;
+	TUniquePtr<FDynamicMeshIndexBuffer32> ShadowMeshIndexBuffer;
+	TUniquePtr<FLocalVertexFactory> ShadowMeshVertexFactory;
+	bool bShadowMeshResourcesReady = false;
+
+	/** Upload ShadowShellVertices / ShadowShellTriangles to the GPU (render thread). */
+	void BuildShadowMeshResources(FRHICommandListBase& RHICmdList);
+
+	/** Release the upload above (render thread, before destruction). */
+	void ReleaseShadowMeshResources();
 
 	/**
 	 * Submit the shadow geometry to the shadow depth pass for one view.
