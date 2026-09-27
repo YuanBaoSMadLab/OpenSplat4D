@@ -425,7 +425,10 @@ bool UGaussianSplatFractureAsset::SetBoneBinding(const TArray<FMatrix44f>& RestB
 	uint32* IndexDest = reinterpret_cast<uint32*>(Dest + HeaderSize + MatrixBytes);
 	for (int32 i = 0; i < SplatCount; i++)
 	{
-		IndexDest[i] = SplatBoneIndices[i] & 0xFFFFu;
+		// Keep both the low 16-bit bone index and bit 16 (the estimation-grid
+		// "do not render" flag). Masking with 0xFFFF alone turned every dropped
+		// splat into bone 0, so the render shader never culled them.
+		IndexDest[i] = SplatBoneIndices[i] & (0xFFFFu | GAUSSIAN_SPLAT_BONE_INDEX_DROPPED);
 	}
 	for (int32 i = 0; i < CapSplatCount; i++)
 	{
