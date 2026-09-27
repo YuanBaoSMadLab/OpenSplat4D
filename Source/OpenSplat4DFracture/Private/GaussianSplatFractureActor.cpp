@@ -83,6 +83,14 @@ void AGaussianSplatFractureActor::SyncFractureBinding()
 		return;
 	}
 
+	// 几何集合渲染的是「体素壳切出来的方块」，外观就是马赛克体素，而且它是一
+	// 个封闭实心，会把里面的 splat 整个罩住 —— 这正是「转成破裂资产后整个变成
+	// 体素、精度暴跌」的来源。画面只交给 splat 组件（它按骨头 Delta 跟随碎块），
+	// 几何集合组件退化为纯物理 / 骨头载体，做法与编辑器 Chaos 预览一致。
+	// 放在最前面且每次同步都重设：可见性是存档字段，关卡重载/复制出来的 Actor
+	// 可能带着旧的 true，必须压回去。
+	GeometryCollectionComponent->SetVisibility(false, /*bPropagateToChildren=*/true);
+
 	UGaussianSplatFractureAsset* Fracture = GaussianSplatComponent->FractureAsset;
 	if (Fracture == nullptr)
 	{

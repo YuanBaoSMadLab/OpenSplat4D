@@ -289,10 +289,11 @@ public:
 	//
 	// A closed, manifold, axis-aligned block hull of the source splat cloud,
 	// in source asset local centimetres (see FGaussianSplatProxyMeshBuilder).
-	// It is authored in the fracture editor and owns two jobs:
-	//   - it is the solid Chaos cuts into a GeometryCollection, and
-	//   - optionally (bUseVoxelShellAsCollision) it doubles as the splat
-	//     component's collision body.
+	// It is authored in the fracture editor and is what the solid Chaos cuts
+	// into a GeometryCollection. Used only for the fracture solve / bone
+	// binding / cull-outside-the-grid pass — the splat component's collision
+	// body is built per-splat from the splat cloud itself, and this shell is
+	// far too coarse to cast shadows from.
 	// Deliberately stored as a raw triangle soup so the runtime module needs
 	// no mesh conversion / geometry-processing dependency.
 	//
@@ -331,12 +332,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "破裂|体素壳",
 		meta = (DisplayName = "估算网格位置偏移", Units = "cm"))
 	FVector GridOriginOffset = FVector::ZeroVector;
-
-	/** Also use the voxel shell as the splat component's collision body.
-	 *  Off = the shell only drives the fracture solve ("仅用于破裂"). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "破裂|体素壳",
-		meta = (DisplayName = "体素壳用作碰撞"))
-	bool bUseVoxelShellAsCollision = true;
 
 	/** Whether this fracture carries a collision voxel shell */
 	UFUNCTION(BlueprintCallable, Category = "破裂")

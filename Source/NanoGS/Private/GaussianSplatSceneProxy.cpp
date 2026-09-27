@@ -966,8 +966,8 @@ void FGaussianSplatSceneProxy::AddCollisionMeshBatches(int32 ViewIndex, FMeshEle
 	if (AggGeom.ConvexElems.Num() == 0 && AggGeom.BoxElems.Num() == 0 &&
 		AggGeom.SphylElems.Num() == 0 && AggGeom.SphereElems.Num() == 0)
 	{
-		// Triangle-mesh collision (ProxyMesh) has no simple shapes to draw; the shell
-		// itself is what physics sees. Nothing to add here.
+		// Every collision method now emits simple shapes (hulls / boxes / spheres),
+		// so an empty AggGeom means there is genuinely no collision.
 		return;
 	}
 

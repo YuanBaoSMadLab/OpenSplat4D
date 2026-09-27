@@ -54,7 +54,6 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SHOrder) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, OpacityScale) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SplatScale) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, LODErrorThreshold) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxDrawDistance) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FadeOutStartDistance) ||
@@ -62,7 +61,18 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 	{
 		MarkRenderStateDirty();
 	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bCastShadow))
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SplatScale))
+	{
+		// SplatScale sizes the per-splat shadow boxes *and* the collision spheres,
+		// so both caches have to be rebuilt — not just the proxy.
+		RebuildShadowGeometry();
+		bCollisionDirty = true;
+		RebuildCollision();
+		ApplyCollisionProfile();
+		MarkRenderStateDirty();
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bCastShadow) ||
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxShadowSplatSamples))
 	{
 		// Shadow geometry is cached on the component and copied into the proxy
 		// at construction, so re-cache before rebuilding the proxy.
@@ -73,8 +83,6 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, CollisionMaxFaces) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxConvexHulls) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, IgnoreFactor) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, VoxelSize) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxCollisionElements) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxSplatSpheres) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SplatSphereRadius))
 	{
@@ -111,17 +119,8 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 			}
 		}
 
-		// ProxyMesh collision takes its geometry from the fracture asset, so
-		// swapping the asset also swaps the collision shell.
-		if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FractureAsset) &&
-			CollisionMethod == EGaussianCollisionMethod::ProxyMesh)
-		{
-			bCollisionDirty = true;
-			RebuildCollision();
-			ApplyCollisionProfile();
-		}
-
-		// Shadows also come from the fracture asset's voxel shell.
+		// Swapping the asset swaps the splat cloud the shadow geometry is built
+		// from, so re-cache it.
 		if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, FractureAsset))
 		{
 			RebuildShadowGeometry();
@@ -351,7 +350,8 @@ void UGaussianSplatComponent::SetFractureAsset(UGaussianSplatFractureAsset* NewA
 	FractureLastPushedDeltas.Reset();
 	bFractureWasActive = false;
 
-	// Shadow geometry comes from the new asset's voxel shell
+	// A new fracture asset may bring a new source splat asset with it, and the
+	// shadow proxies are built from that cloud — re-cache them.
 	RebuildShadowGeometry();
 
 	Update4DTickEnabled();
@@ -756,107 +756,10 @@ UBodySetup* UGaussianSplatComponent::GetBodySetup()
 
 bool UGaussianSplatComponent::HasEffectiveCollision() const
 {
-	if (CollisionMethod == EGaussianCollisionMethod::None)
-	{
-		return false;
-	}
-
-	// ProxyMesh borrows its geometry from the fracture asset: without a shell —
-	// or with the shell marked "仅用于破裂" — there is nothing to collide with, and
-	// the body setup must stay empty so no physics state is ever created for it.
-	if (CollisionMethod == EGaussianCollisionMethod::ProxyMesh)
-	{
-		return FractureAsset != nullptr
-			&& FractureAsset->bUseVoxelShellAsCollision
-			&& FractureAsset->HasVoxelShell();
-	}
-
-	return true;
+	// Every method now builds its geometry from the splat cloud itself, so the
+	// only way to have no collision is to ask for none.
+	return CollisionMethod != EGaussianCollisionMethod::None;
 }
-
-//~ Begin IInterface_CollisionDataProvider Interface
-
-bool UGaussianSplatComponent::ContainsPhysicsTriMeshData(bool bInUseAllTriData) const
-{
-	return HasEffectiveCollision() && CollisionMethod == EGaussianCollisionMethod::ProxyMesh;
-}
-
-bool UGaussianSplatComponent::GetTriMeshSizeEstimates(struct FTriMeshCollisionDataEstimates& OutTriMeshEstimates, bool bInUseAllTriData) const
-{
-	OutTriMeshEstimates.VerticeCount = 0;
-
-	if (!ContainsPhysicsTriMeshData(bInUseAllTriData))
-	{
-		return false;
-	}
-
-	// Cheap: the cached soup is filled by RebuildCollision(); fall back to the
-	// asset's own counter if the cache has not been built yet.
-	OutTriMeshEstimates.VerticeCount = VoxelShellVertices.Num() > 0
-		? VoxelShellVertices.Num()
-		: FractureAsset->VoxelShellVertexCount;
-	return true;
-}
-
-bool UGaussianSplatComponent::GetPhysicsTriMeshData(struct FTriMeshCollisionData* CollisionData, bool bInUseAllTriData)
-{
-	if (CollisionData == nullptr || !ContainsPhysicsTriMeshData(bInUseAllTriData))
-	{
-		return false;
-	}
-
-	if (VoxelShellVertices.Num() < 3 || VoxelShellIndices.Num() < 3)
-	{
-		// Cooked before the cache existed (or an empty shell): nothing to hand over.
-		return false;
-	}
-
-	CollisionData->Vertices = VoxelShellVertices;
-	CollisionData->Indices = VoxelShellIndices;
-	// MaterialIndices / UVs stay empty: Chaos only reads them when they are valid
-	// per-triangle / per-vertex, and this shell has neither.
-	CollisionData->MaterialIndices.Reset();
-	CollisionData->UVs.Reset();
-	CollisionData->bFlipNormals = false;
-	CollisionData->bDeformableMesh = false;
-	CollisionData->bFastCook = false;
-	CollisionData->bDisableActiveEdgePrecompute = false;
-	CollisionData->bReducedMemoryRepresentation = false;
-	return true;
-}
-
-void UGaussianSplatComponent::GetMeshId(FString& OutMeshId)
-{
-	OutMeshId.Empty();
-
-	if (CollisionMethod != EGaussianCollisionMethod::ProxyMesh || !HasEffectiveCollision())
-	{
-		return;
-	}
-
-	if (VoxelShellVertices.Num() == 0)
-	{
-		// Cache not built yet — identify by the owning asset so at least two
-		// components on the same fracture share one cook.
-		OutMeshId = FractureAsset->GetPathName();
-		return;
-	}
-
-	// The shell is data, not a shared asset: hash its content so a re-solved
-	// fracture (new shell on the same component) cannot be mistaken for a
-	// cooked-cache hit, while identical shells still share one entry.
-	uint32 Hash = FCrc::MemCrc32(VoxelShellVertices.GetData(), VoxelShellVertices.Num() * (int32)sizeof(FVector3f));
-	for (const FTriIndices& Tri : VoxelShellIndices)
-	{
-		Hash = FCrc::MemCrc32(&Tri.v0, sizeof(int32), Hash);
-		Hash = FCrc::MemCrc32(&Tri.v1, sizeof(int32), Hash);
-		Hash = FCrc::MemCrc32(&Tri.v2, sizeof(int32), Hash);
-	}
-	OutMeshId = FString::Printf(TEXT("GaussianSplatVoxelShell_%08X_%d_%d"),
-		Hash, VoxelShellVertices.Num(), VoxelShellIndices.Num());
-}
-
-//~ End IInterface_CollisionDataProvider Interface
 
 bool UGaussianSplatComponent::LineTraceComponent(FHitResult& OutHit, const FVector TraceStart, const FVector TraceEnd, const FCollisionQueryParams& TraceParams)
 {
@@ -874,71 +777,9 @@ bool UGaussianSplatComponent::LineTraceComponent(FHitResult& OutHit, const FVect
 
 void UGaussianSplatComponent::RebuildCollision()
 {
-	// ProxyMesh is the odd one out: its geometry is the fracture asset's collision
-	// voxel shell, cooked as a real triangle mesh. It never touches the splat cloud,
-	// so it is resolved before the source-asset guard below — the shell alone has to
-	// be enough, and nothing here may decompress a single splat.
-	if (CollisionMethod == EGaussianCollisionMethod::ProxyMesh)
-	{
-		VoxelShellVertices.Reset();
-		VoxelShellIndices.Reset();
-
-		// No fracture asset, no shell, or "仅用于破裂": this component has no
-		// collision at all and ApplyCollisionProfile() keeps it on NoCollision.
-		if (!HasEffectiveCollision())
-		{
-			BodySetup = nullptr;
-			bCollisionDirty = false;
-			return;
-		}
-
-		TArray<int32> ShellTriangles;
-		if (!FractureAsset->GetVoxelShell(VoxelShellVertices, ShellTriangles) ||
-			VoxelShellVertices.Num() < 3 || ShellTriangles.Num() < 3)
-		{
-			VoxelShellVertices.Reset();
-			BodySetup = nullptr;
-			bCollisionDirty = false;
-			UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: fracture '%s' voxel shell could not be read for ProxyMesh collision"), *FractureAsset->GetName());
-			return;
-		}
-
-		VoxelShellIndices.Reserve(ShellTriangles.Num() / 3);
-		for (int32 i = 0; i + 2 < ShellTriangles.Num(); i += 3)
-		{
-			FTriIndices& Tri = VoxelShellIndices.AddDefaulted_GetRef();
-			Tri.v0 = ShellTriangles[i];
-			Tri.v1 = ShellTriangles[i + 1];
-			Tri.v2 = ShellTriangles[i + 2];
-		}
-
-		if (!BodySetup)
-		{
-			BodySetup = NewObject<UBodySetup>(this, NAME_None, RF_Transient);
-			BodySetup->BodySetupGuid = FGuid::NewGuid();
-		}
-		else
-		{
-			BodySetup->AggGeom.EmptyElements();
-		}
-
-		// No simple shapes at all — the triangle mesh *is* the collision, which is
-		// why the trace flag has to say so: Chaos only keeps a triangle mesh in the
-		// simulation set when the shape reports UseComplexAsSimple, and conversely
-		// drops every non-mesh shape while that flag is set. Set before cooking.
-		BodySetup->CollisionTraceFlag = CTF_UseComplexAsSimple;
-		BodySetup->bGenerateMirroredCollision = false;
-		BodySetup->bDoubleSidedGeometry = true;
-		BodySetup->InvalidatePhysicsData();
-		BodySetup->CreatePhysicsMeshes();
-
-		bCollisionDirty = false;
-
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplat: ProxyMesh collision rebuilt from fracture '%s' (verts=%d, triangles=%d)"),
-			*FractureAsset->GetName(), VoxelShellVertices.Num(), VoxelShellIndices.Num());
-		return;
-	}
-
+	// Every method now builds its shapes from the splat cloud itself (Voxel and
+	// ProxyMesh used to quantise into voxels, which is what made the collision
+	// look blocky and offset — they share the per-splat path with SplatSpheres).
 	if (!SplatAsset || !SplatAsset->IsValid())
 	{
 		return;
@@ -963,11 +804,6 @@ void UGaussianSplatComponent::RebuildCollision()
 	{
 		BodySetup->AggGeom.EmptyElements();
 	}
-
-	// The ProxyMesh method above switches this to UseComplexAsSimple; restore the
-	// default so a switch back to a simple-shape method keeps a simulated body
-	// (Chaos drops every non-mesh shape while that flag is set).
-	BodySetup->CollisionTraceFlag = CTF_UseDefault;
 
 	// BoundingBox method: use the asset's cached bounds directly, avoiding the
 	// O(N) decompression + copy of all splat positions (can be millions of points).
@@ -1010,10 +846,15 @@ void UGaussianSplatComponent::RebuildCollision()
 	// complexity. Uses a hash (not rand()) so the same input yields deterministic
 	// output across runs (reproducible collision shapes).
 	//
-	// SplatSpheres is exempt: it is meant to place one sphere per splat, and its own
-	// MaxSplatSpheres cap already controls the element count. Thinning it here would
-	// silently drop splats that the method exists to represent.
-	if (CollisionMethod != EGaussianCollisionMethod::SplatSpheres && IgnoreFactor > 0.0f && IgnoreFactor < 1.0f)
+	// The per-splat methods are exempt: they place one element per splat and read
+	// that splat's own size from the bulk data by index, so thinning the point
+	// array here would both drop splats the method exists to represent and break
+	// the Points[i] -> splat index correspondence. Their own element cap
+	// (MaxSplatSpheres) controls the count instead.
+	if (CollisionMethod != EGaussianCollisionMethod::Voxel
+		&& CollisionMethod != EGaussianCollisionMethod::ProxyMesh
+		&& CollisionMethod != EGaussianCollisionMethod::SplatSpheres
+		&& IgnoreFactor > 0.0f && IgnoreFactor < 1.0f)
 	{
 		TArray<FVector> FilteredPoints;
 		FilteredPoints.Reserve(FMath::Max(1, FMath::TruncToInt(Points.Num() * (1.0f - IgnoreFactor))));
@@ -1045,8 +886,7 @@ void UGaussianSplatComponent::RebuildCollision()
 		bSuccess = GenerateSimplifiedCollision(Points, Vertices, Indices);
 		break;
 	case EGaussianCollisionMethod::Voxel:
-		bSuccess = GenerateVoxelCollision(Points, Vertices, Indices);
-		break;
+	case EGaussianCollisionMethod::ProxyMesh:
 	case EGaussianCollisionMethod::SplatSpheres:
 		bSuccess = GenerateSplatSpheres(Points, Vertices, Indices);
 		break;
@@ -1143,58 +983,44 @@ void UGaussianSplatComponent::RebuildShadowGeometry()
 		return;
 	}
 
-	// Preferred source: the fracture asset's voxel shell — the tightest closed hull
-	// available, and free to read. Read regardless of bUseVoxelShellAsCollision:
-	// that flag gates *collision*, and the shell is still the correct hull to cast
-	// shadows from.
-	if (FractureAsset != nullptr &&
-		FractureAsset->GetVoxelShell(ShadowShellVertices, ShadowShellTriangles) &&
-		ShadowShellVertices.Num() >= 3 && ShadowShellTriangles.Num() >= 3)
-	{
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplat: shadow geometry from fracture '%s' voxel shell (verts=%d, triangles=%d)"),
-			*FractureAsset->GetName(), ShadowShellVertices.Num(), ShadowShellTriangles.Num() / 3);
-		return;
-	}
-
-	// Fallback: a bare splat has no fracture asset at all, so build the geometry
-	// from the point cloud. Without this, ticking 投射阴影 would silently do
-	// nothing until the user had gone through the entire fracture workflow, which
-	// is exactly how shadows ended up never having worked.
-	BuildShadowVoxelGeometry();
+	// Per-splat oriented boxes: each proxy box follows one splat's own position,
+	// orientation and size, so the hull no longer comes out blocky or offset the
+	// way the old occupancy-voxel shell did. The fracture asset's voxel shell used
+	// to feed this, but that geometry is quantised for physics — far too coarse to
+	// project a readable shadow.
+	BuildShadowSplatGeometry();
 }
 
-void UGaussianSplatComponent::BuildShadowVoxelGeometry()
+void UGaussianSplatComponent::BuildShadowSplatGeometry()
 {
 	if (!SplatAsset || !SplatAsset->IsValid())
 	{
 		return;
 	}
 
-	// Occupancy grid over the splat cloud, emitted as one box per occupied cell.
-	//
-	// The positions are read straight out of the bulk block with a stride rather
-	// than through GetDecompressedPositions(): that helper allocates a TArray<FVector>
-	// entry for every splat (24 B each, ~1.4 GB at 57M splats), which a shadow cache
-	// must not do. The only allocation here is the occupancy bit array, and its size
-	// is capped below.
+	// The shadow cache is a triangle soup uploaded to the GPU once per rebuild, so
+	// the sample count has a hard cap (MaxShadowSplatSamples) no matter how large
+	// the asset is.
 	const int64 SplatCount = SplatAsset->GetSplatCount();
-	if (SplatCount <= 0 || SplatAsset->PositionBulkData.GetBulkDataSize() <= 0)
-	{
-		return;
-	}
-
-	// Same record layout GetDecompressedPositions() reads: 3 x float32 (12 B).
 	constexpr int32 PositionBytesPerSplat = 12;
-	constexpr int64 MaxSplatsToScan = 2ll * 1024 * 1024;
-
-	const FBox LocalBounds = SplatAsset->GetBounds();
-	if (!LocalBounds.IsValid || LocalBounds.GetSize().IsNearlyZero())
+	if (SplatCount <= 0 || SplatAsset->PositionBulkData.GetBulkDataSize() < SplatCount * PositionBytesPerSplat)
 	{
 		return;
 	}
 
-	const uint8* DataPtr = static_cast<const uint8*>(SplatAsset->PositionBulkData.LockReadOnly());
-	if (!DataPtr)
+	const int32 SampleCap = FMath::Clamp(MaxShadowSplatSamples, 256, 1048576);
+	const int64 Stride = FMath::Max<int64>(1, SplatCount / SampleCap);
+	const int64 SampleCount = (SplatCount + Stride - 1) / Stride;
+	// One proxy stands in for Stride splats, so scale it by cbrt(Stride) to keep the
+	// total projected volume roughly equal to the cloud it replaces.
+	const float StrideScale = FMath::Pow((float)Stride, 1.0f / 3.0f);
+
+	// Positions are read straight out of the bulk block with a stride rather than
+	// through GetDecompressedPositions(): that helper allocates a TArray<FVector>
+	// entry for every splat (24 B each, ~1.4 GB at 57M splats), which a shadow
+	// cache must not do.
+	const uint8* PositionPtr = static_cast<const uint8*>(SplatAsset->PositionBulkData.LockReadOnly());
+	if (!PositionPtr)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: position bulk data could not be locked for shadow geometry"));
 		return;
@@ -1204,76 +1030,35 @@ void UGaussianSplatComponent::BuildShadowVoxelGeometry()
 		SplatAsset->PositionBulkData.Unlock();
 	};
 
-	const int64 ScanStride = FMath::Max<int64>(1, SplatCount / MaxSplatsToScan);
-	const FVector Extent = LocalBounds.GetExtent();
-	const FVector Origin = LocalBounds.Min;
-
-	// The cell size starts at roughly 128 cells across the longest axis and doubles
-	// until the occupied count fits the budget, so the box — and therefore the
-	// triangle — count has a hard ceiling no matter how large the asset is.
-	const int32 MaxVoxels = 4096;
-	static constexpr int64 MaxGridCells = 32ll * 1024 * 1024;   // 4 MB of bit array
-	static constexpr int32 MaxGrowAttempts = 24;
-
-	float CellSize = FMath::Max((float)(Extent.Size() / 128.0), 1.0f);
-	int64 GridX = 1;
-	int64 GridY = 1;
-	int64 GridZ = 1;
-	TBitArray<> Occupied;
-	int32 OccupiedCount = 0;
-
-	for (int32 Attempt = 0; Attempt < MaxGrowAttempts; ++Attempt)
+	// Per-splat rotation (normalised quaternion) + linear scale, same 28-byte
+	// record GenerateSplatSpheres reads.
+	constexpr int32 OtherBytesPerSplat = 28;
+	const uint8* OtherPtr = nullptr;
+	if (SplatAsset->OtherBulkData.GetBulkDataSize() >= SplatCount * OtherBytesPerSplat)
 	{
-		GridX = FMath::Max<int64>(1, (int64)(Extent.X / CellSize) + 1);
-		GridY = FMath::Max<int64>(1, (int64)(Extent.Y / CellSize) + 1);
-		GridZ = FMath::Max<int64>(1, (int64)(Extent.Z / CellSize) + 1);
-
-		const int64 TotalCells = GridX * GridY * GridZ;
-		if (TotalCells > MaxGridCells)
+		OtherPtr = static_cast<const uint8*>(SplatAsset->OtherBulkData.LockReadOnly());
+	}
+	ON_SCOPE_EXIT
+	{
+		if (OtherPtr)
 		{
-			CellSize *= 2.0f;
-			continue;
+			SplatAsset->OtherBulkData.Unlock();
 		}
-
-		Occupied.Init(false, (int32)TotalCells);
-		const int64 SliceStride = GridX * GridY;
-		const float InvCellSize = 1.0f / CellSize;
-
-		OccupiedCount = 0;
-		for (int64 SplatIndex = 0; SplatIndex < SplatCount; SplatIndex += ScanStride)
-		{
-			const float* Position = reinterpret_cast<const float*>(DataPtr + SplatIndex * PositionBytesPerSplat);
-			const int64 gx = FMath::Clamp<int64>((int64)((Position[0] - Origin.X) * InvCellSize), 0, GridX - 1);
-			const int64 gy = FMath::Clamp<int64>((int64)((Position[1] - Origin.Y) * InvCellSize), 0, GridY - 1);
-			const int64 gz = FMath::Clamp<int64>((int64)((Position[2] - Origin.Z) * InvCellSize), 0, GridZ - 1);
-			const int32 CellIndex = (int32)(gx + gy * GridX + gz * SliceStride);
-			if (!(bool)Occupied[CellIndex])
-			{
-				Occupied[CellIndex] = true;
-				++OccupiedCount;
-			}
-		}
-
-		if (OccupiedCount == 0)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: no occupied voxels could be found for shadow geometry; shadows stay off"));
-			return;
-		}
-		if (OccupiedCount <= MaxVoxels)
-		{
-			break;
-		}
-		CellSize *= 2.0f;
+	};
+	if (!OtherPtr)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: rotation/scale data missing; shadow splats fall back to 2 cm axis-aligned boxes"));
 	}
 
-	// One box per occupied cell: 8 corners, 12 triangles. Neighbouring cells do not
-	// share corners, which keeps this a straight loop with no vertex dedup table —
-	// and the internal faces between cells are harmless because the batch is
-	// submitted with backface culling off (see AddShadowMeshBatch).
-	ShadowShellVertices.Reserve(OccupiedCount * 8);
-	ShadowShellTriangles.Reserve(OccupiedCount * 36);
+	// One oriented box per sampled splat: 8 corners, 12 triangles. Corners are not
+	// shared between splats, which keeps this a straight loop with no vertex dedup
+	// table — and the internal faces are harmless because the batch is submitted
+	// with backface culling off (see AddShadowMeshBatch).
+	ShadowShellVertices.Reserve((int32)SampleCount * 8);
+	ShadowShellTriangles.Reserve((int32)SampleCount * 36);
 
-	// Winding is irrelevant for the same reason.
+	// Winding is irrelevant for the same reason. Corner index bit0 = +X, bit1 = +Y,
+	// bit2 = +Z.
 	static const int32 BoxFaces[12][3] =
 	{
 		{ 0, 1, 2 }, { 0, 2, 3 },   // -Z
@@ -1284,47 +1069,52 @@ void UGaussianSplatComponent::BuildShadowVoxelGeometry()
 		{ 1, 5, 6 }, { 1, 6, 2 }    // +X
 	};
 
-	int32 BoxCount = 0;
-	for (int64 z = 0; z < GridZ; ++z)
+	const float GlobalScale = FMath::Max(SplatScale, 0.0f);
+	int64 BoxCount = 0;
+	for (int64 SplatIndex = 0; SplatIndex < SplatCount; SplatIndex += Stride)
 	{
-		for (int64 y = 0; y < GridY; ++y)
+		const float* Position = reinterpret_cast<const float*>(PositionPtr + SplatIndex * PositionBytesPerSplat);
+		const FVector3f Center(Position[0], Position[1], Position[2]);
+
+		FQuat4f Rotation = FQuat4f::Identity;
+		// Default: a 2 cm axis-aligned box, used only when the asset carries no
+		// per-splat rotation/scale.
+		FVector3f HalfExtent(1.0f, 1.0f, 1.0f);
+		if (OtherPtr)
 		{
-			for (int64 x = 0; x < GridX; ++x)
-			{
-				if (!(bool)Occupied[(int32)(x + y * GridX + z * GridX * GridY)])
-				{
-					continue;
-				}
-
-				const FVector3f Min(
-					(float)(Origin.X + (double)x * CellSize),
-					(float)(Origin.Y + (double)y * CellSize),
-					(float)(Origin.Z + (double)z * CellSize));
-				const FVector3f Max(Min.X + CellSize, Min.Y + CellSize, Min.Z + CellSize);
-
-				const int32 Base = ShadowShellVertices.Num();
-				ShadowShellVertices.Add(FVector3f(Min.X, Min.Y, Min.Z));
-				ShadowShellVertices.Add(FVector3f(Max.X, Min.Y, Min.Z));
-				ShadowShellVertices.Add(FVector3f(Max.X, Max.Y, Min.Z));
-				ShadowShellVertices.Add(FVector3f(Min.X, Max.Y, Min.Z));
-				ShadowShellVertices.Add(FVector3f(Min.X, Min.Y, Max.Z));
-				ShadowShellVertices.Add(FVector3f(Max.X, Min.Y, Max.Z));
-				ShadowShellVertices.Add(FVector3f(Max.X, Max.Y, Max.Z));
-				ShadowShellVertices.Add(FVector3f(Min.X, Max.Y, Max.Z));
-
-				for (int32 FaceIndex = 0; FaceIndex < 12; ++FaceIndex)
-				{
-					ShadowShellTriangles.Add(Base + BoxFaces[FaceIndex][0]);
-					ShadowShellTriangles.Add(Base + BoxFaces[FaceIndex][1]);
-					ShadowShellTriangles.Add(Base + BoxFaces[FaceIndex][2]);
-				}
-				++BoxCount;
-			}
+			const float* Other = reinterpret_cast<const float*>(OtherPtr + SplatIndex * OtherBytesPerSplat);
+			Rotation = FQuat4f(Other[0], Other[1], Other[2], Other[3]).GetNormalized();
+			// The shader draws a splat out to sqrt(2) * Scale
+			// (GaussianDataTypes.ush), so the stand-in box uses that same radius
+			// along each of the splat's own axes.
+			const float SizeScale = 1.41421356f * GlobalScale * StrideScale;
+			HalfExtent = FVector3f(
+				FMath::Max(FMath::Abs(Other[4]) * SizeScale, 0.01f),
+				FMath::Max(FMath::Abs(Other[5]) * SizeScale, 0.01f),
+				FMath::Max(FMath::Abs(Other[6]) * SizeScale, 0.01f));
 		}
+
+		const int32 Base = ShadowShellVertices.Num();
+		for (int32 CornerIndex = 0; CornerIndex < 8; ++CornerIndex)
+		{
+			const FVector3f Local(
+				(CornerIndex & 1) ? HalfExtent.X : -HalfExtent.X,
+				(CornerIndex & 2) ? HalfExtent.Y : -HalfExtent.Y,
+				(CornerIndex & 4) ? HalfExtent.Z : -HalfExtent.Z);
+			ShadowShellVertices.Add(Center + Rotation.RotateVector(Local));
+		}
+
+		for (int32 FaceIndex = 0; FaceIndex < 12; ++FaceIndex)
+		{
+			ShadowShellTriangles.Add(Base + BoxFaces[FaceIndex][0]);
+			ShadowShellTriangles.Add(Base + BoxFaces[FaceIndex][1]);
+			ShadowShellTriangles.Add(Base + BoxFaces[FaceIndex][2]);
+		}
+		++BoxCount;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: shadow geometry from splat voxels (boxes=%d, cell=%.3f, grid=%dx%dx%d, scanned=%lld of %lld splats)"),
-		BoxCount, CellSize, (int32)GridX, (int32)GridY, (int32)GridZ, SplatCount / ScanStride, SplatCount);
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: shadow geometry from splat boxes (boxes=%lld of %lld splats, stride=%lld, verts=%d, triangles=%d)"),
+		BoxCount, SplatCount, Stride, ShadowShellVertices.Num(), ShadowShellTriangles.Num() / 3);
 }
 
 bool UGaussianSplatComponent::GenerateConvexHull(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
@@ -1384,7 +1174,7 @@ bool UGaussianSplatComponent::GenerateSimplifiedCollision(const TArray<FVector>&
 	// points left to be worth halving, or when a cut cannot separate the points.
 	//
 	// The elements are appended to BodySetup->AggGeom directly (the same way
-	// GenerateVoxelCollision appends boxes), so OutVertices stays empty and
+	// GenerateSplatSpheres appends spheres), so OutVertices stays empty and
 	// RebuildCollision() does not add one more hull on top of these.
 	//
 	// Chaos is only used for cooking. Nothing here links against V-HACD
@@ -1560,12 +1350,17 @@ bool UGaussianSplatComponent::GenerateSplatSpheres(const TArray<FVector>& Points
 {
 	// 逐 splat 球体（「原生碰撞」）。
 	//
-	// 球心就是 splat 自己的位置，所以碰撞体积与点云一一对应；球体是解析形状，
-	// 不依赖 Chaos cooking 出来的隐式网格，因此编辑器和运行时表现一致
-	// （ConvexHull / ConvexDecomposition / ProxyMesh 都要等烹饪结果到齐）。
+	// 球心就是 splat 自己的位置，半径取该 splat 自身的旋转/尺度推得的「与其可见
+	// 椭球等体积」的球 —— 位置与大小都逐一对应，没有体素量化的方块化与偏位。
+	// 可见椭球半轴 ≈ √2 × scale（着色器 r = sqrt(2λ)，见 GaussianDataTypes.ush），
+	// 椭球体积 4/3 π (√2 s_x)(√2 s_y)(√2 s_z) 折算成等体积球即半径
+	// √2 × cbrt(s_x s_y s_z)，再乘组件视觉倍率 SplatScale。
+	//
+	// 球体是解析形状，不依赖 Chaos cooking 出来的隐式网格，因此编辑器和运行时
+	// 表现一致。Voxel / ProxyMesh / SplatSpheres 三个方法现在都走这条路径。
 	//
 	// 消耗护栏：球体数量上限 MaxSplatSpheres。超过上限就按等步长抽稀到上限，
-	// 并把半径放大到 sqrt3(步长) 倍，让留下的球体继续填满同一块体积，而不是
+	// 并把半径放大到 cbrt(步长) 倍，让留下的球体继续填满同一块体积，而不是
 	// 塌成一张稀疏的网。
 	//
 	// 元素直接追加到 BodySetup->AggGeom，OutVertices 保持为空，
@@ -1580,10 +1375,23 @@ bool UGaussianSplatComponent::GenerateSplatSpheres(const TArray<FVector>& Points
 	const int32 Stride = FMath::Max(1, FMath::DivideAndRoundUp(Points.Num(), Cap));
 	const int32 SphereCount = FMath::DivideAndRoundUp(Points.Num(), Stride);
 
-	// 半径：用户没指定就按「球体刚好互相贴住」算 —— 每个球体分到的体积是
-	// 点云体积 / SphereCount，等体积球的半径即 0.5 * sqrt3(体积/数量)。
-	float Radius = SplatSphereRadius;
-	if (Radius <= 0.0f)
+	// 抽稀后留下来的每个球代表 Stride 个 splat，半径放大 cbrt(Stride) 倍才能保住
+	// 覆盖的体积（体积 ∝ 半径³）。
+	const float StrideScale = FMath::Pow((float)Stride, 1.0f / 3.0f);
+
+	// 逐 splat 尺度：OtherBulkData 是 28 B/splat（float 0..3 = 归一化四元数，
+	// 4..6 = 线性 scale，cm），与 Positions 的 splat 索引一一对应。只有在点云
+	// 没被抽稀过（Points.Num() == SplatCount）时索引才对得上；否则退回统一半径。
+	const int32 SplatCount = SplatAsset ? (int32)SplatAsset->GetSplatCount() : 0;
+	const bool bPerSplatSize = SplatAsset != nullptr
+		&& Points.Num() == SplatCount
+		&& SplatCount > 0
+		&& SplatAsset->OtherBulkData.GetBulkDataSize() >= (int64)SplatCount * 28;
+
+	// 统一半径（SplatSphereRadius > 0 用户指定，或逐 splat 尺度不可用时回落）：
+	// 按「球体刚好互相贴住」算 —— 每个球体分到的体积是点云体积 / SphereCount。
+	float UniformRadius = SplatSphereRadius;
+	if (!bPerSplatSize && UniformRadius <= 0.0f)
 	{
 		FBox LocalBounds(ForceInit);
 		for (int32 i = 0; i < Points.Num(); i += Stride)
@@ -1591,142 +1399,50 @@ bool UGaussianSplatComponent::GenerateSplatSpheres(const TArray<FVector>& Points
 			LocalBounds += Points[i];
 		}
 		const double Volume = (double)LocalBounds.GetVolume();
-		Radius = Volume > 0.0
+		UniformRadius = Volume > 0.0
 			? (float)(0.5 * FMath::Pow(Volume / (double)SphereCount, 1.0 / 3.0))
 			: 1.0f;
 	}
+	const float UseUniformRadius = SplatSphereRadius > 0.0f ? SplatSphereRadius : UniformRadius;
+
+	const uint8* OtherPtr = nullptr;
+	if (bPerSplatSize)
+	{
+		OtherPtr = static_cast<const uint8*>(SplatAsset->OtherBulkData.LockReadOnly());
+	}
+	ON_SCOPE_EXIT
+	{
+		if (OtherPtr)
+		{
+			SplatAsset->OtherBulkData.Unlock();
+		}
+	};
 
 	BodySetup->AggGeom.SphereElems.Reserve(SphereCount);
 	for (int32 i = 0; i < Points.Num(); i += Stride)
 	{
+		float Radius = UseUniformRadius;
+		if (OtherPtr)
+		{
+			const float* Other = reinterpret_cast<const float*>(OtherPtr + (int64)i * 28);
+			const float Sx = FMath::Abs(Other[4]);
+			const float Sy = FMath::Abs(Other[5]);
+			const float Sz = FMath::Abs(Other[6]);
+			const float GeomMean = FMath::Pow(Sx * Sy * Sz, 1.0f / 3.0f);
+			// √2 与 (2√2)^(1/3) 等价（等体积球折算）。
+			Radius = 1.41421356f * FMath::Max(SplatScale, 0.0f) * GeomMean * StrideScale;
+		}
+
 		FKSphereElem& SphereElem = BodySetup->AggGeom.SphereElems.AddDefaulted_GetRef();
 		SphereElem.Center = Points[i];
-		SphereElem.Radius = Radius;
+		SphereElem.Radius = FMath::Max(Radius, 0.01f);
 	}
 
 	OutVertices.Reset();
 	OutIndices.Reset();
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: SplatSpheres produced %d spheres (points=%d, cap=%d, stride=%d, radius=%.3f)"),
-		BodySetup->AggGeom.SphereElems.Num(), Points.Num(), Cap, Stride, Radius);
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: SplatSpheres produced %d spheres (points=%d, cap=%d, stride=%d, perSplatSize=%d)"),
+		BodySetup->AggGeom.SphereElems.Num(), Points.Num(), Cap, Stride, bPerSplatSize ? 1 : 0);
 
 	return BodySetup->AggGeom.SphereElems.Num() > 0;
-}
-
-bool UGaussianSplatComponent::GenerateVoxelCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices)
-{
-	// Voxel-based collision: one box element per occupied cell of a uniform grid.
-	//
-	// Two budgets are enforced by COARSENING the cell size and rebuilding the grid,
-	// never by truncating the cell loop: the old code stopped as soon as it had
-	// emitted MaxCells box elements while walking z/y/x in order, so the collision
-	// shape only covered one corner of the asset.
-	//   - MaxCollisionElements: how many box elements may end up in the BodySetup
-	//   - MaxGridCells: hard cap on the raw grid size (memory guard)
-	// Grid indices are int64 and occupancy uses a bit array (1 bit/cell instead of
-	// 1 byte), so a fine VoxelSize on a large asset cannot overflow the index math
-	// or blow up memory.
-	if (Points.Num() == 0)
-	{
-		return false;
-	}
-
-	// 32M cells ≈ 4 MB of bit array; still allows a 320^3 grid while keeping the
-	// guard comfortably inside the editor's memory budget.
-	static constexpr int64 MaxGridCells = 32ll * 1024 * 1024;
-	static constexpr int32 MaxGrowAttempts = 24;
-
-	const int32 MaxElements = FMath::Clamp(MaxCollisionElements, 1, 65536);
-	const FBox LocalBounds(Points);
-	const FVector Extent = LocalBounds.GetExtent();
-	const FVector Origin = LocalBounds.Min;
-
-	float CellSize = FMath::Max(VoxelSize, 1e-4f);
-	int64 GridX = 1;
-	int64 GridY = 1;
-	int64 GridZ = 1;
-	TBitArray<> Occupied;
-	int32 OccupiedCount = 0;
-
-	for (int32 Attempt = 0; Attempt < MaxGrowAttempts; ++Attempt)
-	{
-		// Calculate grid dimensions
-		GridX = FMath::Max<int64>(1, (int64)(Extent.X / CellSize) + 1);
-		GridY = FMath::Max<int64>(1, (int64)(Extent.Y / CellSize) + 1);
-		GridZ = FMath::Max<int64>(1, (int64)(Extent.Z / CellSize) + 1);
-
-		const int64 TotalCells = GridX * GridY * GridZ;
-		if (TotalCells > MaxGridCells)
-		{
-			CellSize *= 2.0f;
-			continue;
-		}
-
-		// Mark occupied cells
-		Occupied.Init(false, (int32)TotalCells);
-
-		const int64 PlaneStride = GridX;
-		const int64 SliceStride = GridX * GridY;
-		const float InvCellSize = 1.0f / CellSize;
-
-		OccupiedCount = 0;
-		for (const FVector& P : Points)
-		{
-			const int64 gx = FMath::Clamp<int64>((int64)((P.X - Origin.X) * InvCellSize), 0, GridX - 1);
-			const int64 gy = FMath::Clamp<int64>((int64)((P.Y - Origin.Y) * InvCellSize), 0, GridY - 1);
-			const int64 gz = FMath::Clamp<int64>((int64)((P.Z - Origin.Z) * InvCellSize), 0, GridZ - 1);
-			const int64 CellIndex = gx + gy * PlaneStride + gz * SliceStride;
-			if (!(bool)Occupied[(int32)CellIndex])
-			{
-				Occupied[(int32)CellIndex] = true;
-				++OccupiedCount;
-			}
-		}
-
-		if (OccupiedCount <= MaxElements)
-		{
-			break;
-		}
-
-		// Too many occupied cells for the element budget: coarsen and retry so the
-		// boxes keep covering the whole cloud instead of being truncated.
-		CellSize *= 2.0f;
-	}
-
-	// Add box elements for occupied cells
-	int32 CellCount = 0;
-	for (int64 z = 0; z < GridZ && CellCount < MaxElements; ++z)
-	{
-		for (int64 y = 0; y < GridY && CellCount < MaxElements; ++y)
-		{
-			for (int64 x = 0; x < GridX && CellCount < MaxElements; ++x)
-			{
-				if (!(bool)Occupied[(int32)(x + y * GridX + z * GridX * GridY)])
-				{
-					continue;
-				}
-				FKBoxElem BoxElem;
-				BoxElem.Center = FVector(
-					Origin.X + ((float)x + 0.5f) * CellSize,
-					Origin.Y + ((float)y + 0.5f) * CellSize,
-					Origin.Z + ((float)z + 0.5f) * CellSize
-				);
-				BoxElem.X = CellSize;
-				BoxElem.Y = CellSize;
-				BoxElem.Z = CellSize;
-				BodySetup->AggGeom.BoxElems.Add(BoxElem);
-				++CellCount;
-			}
-		}
-	}
-
-	EffectiveVoxelSize = CellSize;
-
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplat: Voxel collision generated with %d boxes (%dx%dx%d grid, cell=%.4f, occupied=%d)"),
-		CellCount, (int32)GridX, (int32)GridY, (int32)GridZ, CellSize, OccupiedCount);
-
-	// Voxel method adds boxes directly, no need for vertices/indices
-	OutVertices.Reset();
-	OutIndices.Reset();
-	return true;
 }

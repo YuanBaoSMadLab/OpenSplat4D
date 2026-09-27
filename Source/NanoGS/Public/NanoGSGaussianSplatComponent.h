@@ -49,35 +49,31 @@ enum class EGaussianCollisionMethod : uint8
 	ConvexDecomposition UMETA(DisplayName = "凸分解(多凸包)"),
 	/** Bounding box collision */
 	BoundingBox UMETA(DisplayName = "包围盒"),
-	/** Voxel-based collision (approximate shape) */
-	Voxel UMETA(DisplayName = "体素"),
-	/** The fracture asset's collision voxel shell, cooked as a real triangle
-	 *  mesh ("complex as simple").  Unlike Voxel / ConvexHull this keeps the
-	 *  concave silhouette and hollow interiors, because nothing is filled in.
-	 *  Requires a fracture asset that owns a voxel shell whose
-	 *  bUseVoxelShellAsCollision is on; otherwise the component ends up with
-	 *  no collision at all ("仅用于破裂"). */
-	ProxyMesh UMETA(DisplayName = "体素壳(复杂碰撞)"),
-	/** One sphere per splat ("原生碰撞"): the sphere centre is the splat's own
-	 *  position and the radius comes from SplatSphereRadius (0 = derived from
-	 *  the cloud's mean splat spacing). Spheres are analytic shapes, so unlike
-	 *  ConvexHull / ConvexDecomposition / ProxyMesh they need no Chaos cooking
-	 *  and behave identically in the editor and at runtime. Cost is capped by
-	 *  MaxSplatSpheres: above it the cloud is thinned with a uniform stride and
-	 *  the radius grows to keep the same coverage. */
+	/** 已废弃：旧「体素」方法曾把点云量化到占用格、每格一个盒子。格子分辨率不足
+	 *  时形状会方块化，整格覆盖还会带来半格偏位。现在改为逐 splat 几何，与
+	 *  SplatSpheres 完全等价（枚举值保留以兼容旧存档）。 */
+	Voxel UMETA(DisplayName = "体素(已废弃 → 逐Splat)"),
+	/** 已废弃：旧「体素壳(复杂碰撞)」方法曾把破裂资产的体素壳当三角网格碰撞。
+	 *  该壳只贴合到体素粒度（方块化 + 偏位），且会随破裂解算反复变化。现在改为
+	 *  逐 splat 几何，与 SplatSpheres 完全等价（枚举值保留以兼容旧存档）。
+	 *  体素壳本身仍然保留，用于破裂解算 / 骨头绑定 / 网格外剔除。 */
+	ProxyMesh UMETA(DisplayName = "体素壳(已废弃 → 逐Splat)"),
+	/** 逐 splat 几何（「原生碰撞」，推荐）：每个 splat 一个球体，球心就是 splat
+	 *  自己的位置，半径由 splat 自身的旋转/尺度推得（见 SplatSphereRadius，0 =
+	 *  自动 = 与该 splat 的可见椭球等体积）。位置与大小都逐一对应，没有量化带来
+	 *  的方块化与偏位；球体是解析形状，不像 ConvexHull / ConvexDecomposition
+	 *  那样需要 Chaos cooking，编辑器与运行时表现一致。
+	 *  消耗由 MaxSplatSpheres 限制：超过上限就按等步长抽稀，半径同步放大到
+	 *  cbrt(步长) 倍，保持覆盖范围不变。
+	 *  枚举值保留以兼容旧存档；Voxel / ProxyMesh 现在也走同一条路径。 */
 	SplatSpheres UMETA(DisplayName = "逐Splat球体(原生)")
 };
 
 /**
  * Component for rendering Gaussian Splatting assets in the scene
- *
- * Implements IInterface_CollisionDataProvider so UBodySetup, whose outer is
- * this component, can pull a triangle mesh out of it and cook it — the same
- * route USplineMeshComponent uses.  Only the ProxyMesh collision method feeds
- * it (see GetPhysicsTriMeshData).
  */
 UCLASS(ClassGroup = (Rendering), meta = (BlueprintSpawnableComponent), hidecategories = (Navigation))
-class NANOGS_API UGaussianSplatComponent : public UPrimitiveComponent, public IInterface_CollisionDataProvider
+class NANOGS_API UGaussianSplatComponent : public UPrimitiveComponent
 {
 	GENERATED_BODY()
 
@@ -111,21 +107,6 @@ public:
 	/** Collision test */
 	virtual bool LineTraceComponent(struct FHitResult& OutHit, const FVector TraceStart, const FVector TraceEnd, const FCollisionQueryParams& TraceParams) override;
 	//~ End UPrimitiveComponent Interface
-
-	//~ Begin IInterface_CollisionDataProvider Interface
-	/** Hand the cached voxel shell to the physics cooker. Fails (false) unless
-	 *  the ProxyMesh method is active and a shell is loaded, so a BodySetup that
-	 *  somehow cooks while another method is selected still comes out empty. */
-	virtual bool GetPhysicsTriMeshData(struct FTriMeshCollisionData* CollisionData, bool bInUseAllTriData) override;
-
-	virtual bool GetTriMeshSizeEstimates(struct FTriMeshCollisionDataEstimates& OutTriMeshEstimates, bool bInUseAllTriData) const override;
-
-	virtual bool ContainsPhysicsTriMeshData(bool bInUseAllTriData) const override;
-
-	/** DDC key component: the shell's content hash, so re-solving the fracture
-	 *  cannot be mistaken for a cache hit. */
-	virtual void GetMeshId(FString& OutMeshId) override;
-	//~ End IInterface_CollisionDataProvider Interface
 
 	/** Set the Gaussian Splat asset to render */
 	UFUNCTION(BlueprintCallable, Category = "高斯泼溅")
@@ -229,12 +210,20 @@ public:
 	}
 
 	/** 阴影投射 - 是否投射阴影到周围场景。
-	 *  阴影几何按优先级取：① 破裂资产的体素壳（形状最贴合）；② 没有壳时回落到
-	 *  点云体素盒（让裸 splat 也能投阴影，无需先做破裂资产）。两种几何都只在阴影
-	 *  深度 pass 提交，不写入自身深度/颜色，因此不会压暗模型本身。
-	 *  关闭时零开销：几何缓存为空，代理不进入阴影分支。 */
+	 *  阴影几何按逐 splat 生成：每个被采样的 splat 一个按其自身四元数定向、按其
+	 *  自身三轴尺度缩放的立方体（见 MaxShadowSplatSamples）。位置就是 splat 自己
+	 *  的位置，所以投影贴合点云形状，不再有占用格量化造成的方块化与偏位。
+	 *  几何只在阴影深度 pass 提交，不写入自身深度/颜色，因此不会压暗模型本身。
+	 *  关闭时零开销：几何缓存为空，代理不进入阴影分支。
+	 *  注意：阴影几何是静态 GPU 缓冲（一次性建好），所以不随破裂骨头动画。 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (DisplayName = "投射阴影"))
 	bool bCastShadow = false;
+
+	/** 阴影逐 splat 采样的上限。每采样一个 splat 产出 12 个三角形，所以三角形
+	 *  总数 = 12 × 采样数，这是一个硬上界。超过上限时按等步长抽稀，几何同步放大
+	 *  到 cbrt(步长) 倍，保持轮廓覆盖率。默认 32768 ≈ 39 万三角形。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (DisplayName = "阴影采样上限", ClampMin = "256", ClampMax = "1048576", EditCondition = "bCastShadow"))
+	int32 MaxShadowSplatSamples = 32768;
 
 	// 已废弃：阴影代理类型（旧的包围盒路径已移除）
 	// UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|阴影", meta = (ClampMin = "0", ClampMax = "2", EditCondition = "bCastShadow"))
@@ -319,21 +308,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "CollisionMethod != EGaussianCollisionMethod::None"))
 	float IgnoreFactor = 0.5f;
 
-	/** 体素大小 - 用于体素碰撞方法 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (ClampMin = "1.0", ClampMax = "100.0", EditCondition = "CollisionMethod == EGaussianCollisionMethod::Voxel"))
-	float VoxelSize = 10.0f;
-
-	/** 体素碰撞生成的盒子数量上限。占用的格子超过该值时，会以 VoxelSize 为起点
-	 *  成倍放大格子尺寸重算，直到占用格数落进预算，从而保证盒子覆盖整个点云
-	 *  而不是只覆盖一小块。实际使用的格子尺寸见 EffectiveVoxelSize。 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (ClampMin = "16", ClampMax = "65536", EditCondition = "CollisionMethod == EGaussianCollisionMethod::Voxel"))
-	int32 MaxCollisionElements = 2048;
-
-	/** 上一次体素碰撞实际使用的格子尺寸（只读）。若因触及 MaxCollisionElements
-	 *  或网格内存上限被自动放大，该值会大于 VoxelSize。 */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "高斯泼溅|碰撞")
-	float EffectiveVoxelSize = 0.0f;
-
 	/** 凸分解输出的最大凸包数（凸分解方法用）。算法每轮挑「包围盒体积最大」的那
 	 *  一块，沿它最长的一条轴把它切成两半，直到块数达到该值。
 	 *  切面是一个平面，所以同一块的点全落在同一侧 ⇒ 凸包之间不会重叠，凹形区域
@@ -341,15 +315,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "最多凸包数", ClampMin = "1", ClampMax = "64", EditCondition = "CollisionMethod == EGaussianCollisionMethod::ConvexDecomposition"))
 	int32 MaxConvexHulls = 8;
 
-	/** 逐 splat 球体碰撞的球体数量上限（原生碰撞用）。超过该值时按等步长抽稀，
-	 *  并同步放大球体半径，保证覆盖范围不变而刚体开销可控。球体是解析形状，
-	 *  不参与 Chaos cooking，所以数量只影响模拟/查询开销。 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "最多球体数", ClampMin = "16", ClampMax = "65536", EditCondition = "CollisionMethod == EGaussianCollisionMethod::SplatSpheres"))
+	/** 逐 splat 球体碰撞的球体数量上限（Voxel / ProxyMesh / SplatSpheres 三者共用，
+	 *  现已统一为逐 splat 几何）。超过该值时按等步长抽稀，并同步放大球体半径，
+	 *  保证覆盖范围不变而刚体开销可控。球体是解析形状，不参与 Chaos cooking，
+	 *  所以数量只影响模拟/查询开销。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "最多球体数", ClampMin = "16", ClampMax = "65536", EditCondition = "CollisionMethod == EGaussianCollisionMethod::Voxel || CollisionMethod == EGaussianCollisionMethod::ProxyMesh || CollisionMethod == EGaussianCollisionMethod::SplatSpheres"))
 	int32 MaxSplatSpheres = 2048;
 
-	/** 逐 splat 球体碰撞的球体半径（原生碰撞用）。0 = 自动，按点云体积与球体
-	 *  数量推出平均点间距的一半，使球体刚好互相贴住；>0 则按该值覆盖。 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "球体半径(0=自动)", ClampMin = "0.0", EditCondition = "CollisionMethod == EGaussianCollisionMethod::SplatSpheres"))
+	/** 逐 splat 球体碰撞的球体半径（Voxel / ProxyMesh / SplatSpheres 三者共用，
+	 *  现已统一为逐 splat 几何）。0 = 自动，取该 splat 自身的三轴尺度推出与其
+	 *  可见椭球等体积的球半径（位置与大小都逐一对应，无量化方块化与偏位）；
+	 *  >0 则所有球体统一用该半径覆盖。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "高斯泼溅|碰撞", meta = (DisplayName = "球体半径(0=自动)", ClampMin = "0.0", EditCondition = "CollisionMethod == EGaussianCollisionMethod::Voxel || CollisionMethod == EGaussianCollisionMethod::ProxyMesh || CollisionMethod == EGaussianCollisionMethod::SplatSpheres"))
 	float SplatSphereRadius = 0.0f;
 
 	// ------------------------------------------------------------------
@@ -428,12 +405,9 @@ protected:
 	void BuildCollisionBodySetup();
 
 	/**
-	 * 当前配置是否真的会产生碰撞几何。
-	 *
-	 * 与 "CollisionMethod != None" 的区别只在 ProxyMesh：该方法的几何来自破裂
-	 * 资产的体素壳，壳不存在、或壳被标为"仅用于破裂"（bUseVoxelShellAsCollision
-	 * 关闭）时组件必须完全没有碰撞，profile 也得留在 NoCollision，
-	 * 否则引擎会为一个空 BodySetup 建出物理状态。
+	 * 当前配置是否真的会产生碰撞几何。仅当 CollisionMethod == None 时为 false。
+	 * 保留这一层抽象是为了让「配置切换」与「是否建物理状态」解耦：改方法时先刷
+	 * 几何再刷 profile，避免引擎为一个空 BodySetup 建出物理状态。
 	 */
 	bool HasEffectiveCollision() const;
 
@@ -452,31 +426,32 @@ protected:
 	/** Generate simplified collision mesh：真正的多凸包分解（见枚举注释） */
 	bool GenerateSimplifiedCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
 
-	/** Generate voxel-based collision */
-	bool GenerateVoxelCollision(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
-
-	/** Generate one sphere element per (thinned) splat: 逐 splat 原生碰撞 */
+	/** Generate one sphere element per (thinned) splat: 逐 splat 原生碰撞。
+	 *  球心 = splat 自己的位置；半径取该 splat 自身的三轴尺度（0 = 自动），
+	 *  因此位置与大小都逐一对应，没有体素量化的方块化与偏位。
+	 *  Voxel / ProxyMesh / SplatSpheres 三个方法现在都走这条路径。 */
 	bool GenerateSplatSpheres(const TArray<FVector>& Points, TArray<FVector>& OutVertices, TArray<int32>& OutIndices);
 
 	/**
-	 * 重建阴影几何：优先取破裂资产的体素壳，没有壳时回落到点云体素盒。
+	 * 重建阴影几何：逐 splat 生成定向立方体（见 MaxShadowSplatSamples）。
 	 *
-	 * bCastShadow 关闭、或两条来源都取不到时清空缓存，代理侧随即关闭阴影分支
-	 * （零开销）。资产/开关/破裂资产变化时调用。
+	 * bCastShadow 关闭时清空缓存，代理侧随即关闭阴影分支（零开销）。
+	 * 资产 / 开关 / 采样上限变化时调用。
 	 */
 	void RebuildShadowGeometry();
 
 	/**
-	 * 阴影回落几何：把点云按占用体素生成「盒子三角形汤」。
+	 * 阴影几何：按步长直接读 bulk 数据，为每个被采样的 splat 输出一个按其自身
+	 * 四元数定向、按其自身三轴尺度缩放的立方体（8 顶点 / 12 三角）。
 	 *
-	 * 只在没有破裂资产（或该资产没有体素壳）时使用，让裸 splat 也能投阴影。
-	 * 直接按步长读 PositionBulkData 建占用位图，不整份解压点云（亿级 splat 也
-	 * 不会因为这一次重建而吃掉几个 GB）；格子尺寸从包围盒推定并逐次加倍，直到
-	 * 占用格数落进预算，因此三角形数量有上界。
+	 * 位置就是 splat 自己的位置，所以投影贴合点云形状，不再有占用格量化造成的
+	 * 方块化与偏位。直接按步长读 PositionBulkData / OtherBulkData，不整份解压
+	 * 点云（亿级 splat 也不会因为重建吃掉几个 GB）；采样数由 MaxShadowSplatSamples
+	 * 限制，因此三角形数量有上界（12 × 采样数）。
 	 *
-	 * 输出在源资产局部空间，与体素壳同坐标系（代理的 local-to-world 一致）。
+	 * 输出在源资产局部空间（代理的 local-to-world 一致）。
 	 */
-	void BuildShadowVoxelGeometry();
+	void BuildShadowSplatGeometry();
 
 private:
 	/** Enable/disable component tick based on 4D asset + playing state */
@@ -534,21 +509,8 @@ private:
 	bool bCollisionDirty = true;
 
 	// ------------------------------------------------------------------
-	// ProxyMesh collision source: the fracture asset's voxel shell, cached
-	// as a triangle soup so the cooker can read it without re-locking the
-	// bulk data. Positions are in source asset local space (the same space
-	// the other collision methods build in). Empty for every other method.
-	// ------------------------------------------------------------------
-
-	/** Shell vertex positions (source asset local space) */
-	TArray<FVector3f> VoxelShellVertices;
-
-	/** Shell triangles */
-	TArray<FTriIndices> VoxelShellIndices;
-
-	// ------------------------------------------------------------------
-	// Shadow geometry: the fracture asset's voxel shell as a raw triangle
-	// soup (source asset local space). Only filled while bCastShadow is on.
+	// Shadow geometry: per-splat oriented boxes as a raw triangle soup
+	// (source asset local space). Only filled while bCastShadow is on.
 	// ------------------------------------------------------------------
 
 	/** Shadow shell vertex positions */
