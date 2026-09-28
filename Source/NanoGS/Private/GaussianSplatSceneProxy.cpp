@@ -207,9 +207,8 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	VisibleClusterBuffer.SafeRelease();
 	VisibleClusterBufferUAV.SafeRelease();
 	VisibleClusterBufferSRV.SafeRelease();
-	VisibleClusterCountBuffer.SafeRelease();
-	VisibleClusterCountBufferUAV.SafeRelease();
-	VisibleClusterCountBufferSRV.SafeRelease();
+	ClusterCountersBuffer.SafeRelease();
+	ClusterCountersBufferUAV.SafeRelease();
 
 	// Release LOD splat buffers
 	LODSplatBuffer.SafeRelease();
@@ -231,22 +230,13 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	LODClusterBuffer.SafeRelease();
 	LODClusterBufferUAV.SafeRelease();
 	LODClusterBufferSRV.SafeRelease();
-	LODClusterCountBuffer.SafeRelease();
-	LODClusterCountBufferUAV.SafeRelease();
-	LODClusterCountBufferSRV.SafeRelease();
 	LODClusterSelectedBitmap.SafeRelease();
 	LODClusterSelectedBitmapUAV.SafeRelease();
 	LODClusterSelectedBitmapSRV.SafeRelease();
-	LODSplatTotalBuffer.SafeRelease();
-	LODSplatTotalBufferUAV.SafeRelease();
-	LODSplatTotalBufferSRV.SafeRelease();
 
 	// Release GPU-driven LOD rendering buffers
 	LODSplatClusterIndexBuffer.SafeRelease();
 	LODSplatClusterIndexBufferSRV.SafeRelease();
-	LODSplatOutputCountBuffer.SafeRelease();
-	LODSplatOutputCountBufferUAV.SafeRelease();
-	LODSplatOutputCountBufferSRV.SafeRelease();
 
 	// Release splat compaction buffers
 	CompactedSplatIndicesBuffer.SafeRelease();
@@ -442,23 +432,29 @@ void FGaussianSplatGPUResources::CreatePerInstanceBuffers(FRHICommandListBase& R
 				.SetStride(sizeof(uint32)));
 	}
 
-	// Create visible cluster count buffer (single uint, atomic counter)
+	// Create the packed scalar counter buffer.
+	// Layout (4 uints): [0] visible cluster count, [1] LOD cluster count,
+	// [2] LOD splat total, [3] LOD splat output count.
+	// Shared by both cluster culling shaders so each stays within the SM5 UAV limit of 8.
 	{
-		const uint32 BufferSize = sizeof(uint32);
+		const uint32 CounterCount = 4;
+		const uint32 BufferSize = CounterCount * sizeof(uint32);
 		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianVisibleClusterCountBuffer"),
+			TEXT("GaussianClusterCountersBuffer"),
 			BufferSize,
 			sizeof(uint32),
 			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
 			.SetInitialState(ERHIAccess::UAVCompute);
-		VisibleClusterCountBuffer = RHICmdList.CreateBuffer(Desc);
+		ClusterCountersBuffer = RHICmdList.CreateBuffer(Desc);
 
-		VisibleClusterCountBufferUAV = RHICmdList.CreateUnorderedAccessView(
-			VisibleClusterCountBuffer, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-		VisibleClusterCountBufferSRV = RHICmdList.CreateShaderResourceView(
-			VisibleClusterCountBuffer, FRHIViewDesc::CreateBufferSRV()
+		// Zero-initialize so the first frame cannot read stale memory.
+		uint32 InitCounters[CounterCount] = { 0, 0, 0, 0 };
+		void* Data = RHICmdList.LockBuffer(ClusterCountersBuffer, 0, BufferSize, RLM_WriteOnly);
+		FMemory::Memcpy(Data, InitCounters, BufferSize);
+		RHICmdList.UnlockBuffer(ClusterCountersBuffer);
+
+		ClusterCountersBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			ClusterCountersBuffer, FRHIViewDesc::CreateBufferUAV()
 				.SetType(FRHIViewDesc::EBufferType::Structured)
 				.SetStride(sizeof(uint32)));
 	}
@@ -570,27 +566,6 @@ void FGaussianSplatGPUResources::CreatePerInstanceBuffers(FRHICommandListBase& R
 				.SetStride(sizeof(uint32)));
 	}
 
-	// LOD cluster count buffer (atomic counter)
-	{
-		uint32 BufferSize = sizeof(uint32);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianLODClusterCountBuffer"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		LODClusterCountBuffer = RHICmdList.CreateBuffer(Desc);
-
-		LODClusterCountBufferUAV = RHICmdList.CreateUnorderedAccessView(
-			LODClusterCountBuffer, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-		LODClusterCountBufferSRV = RHICmdList.CreateShaderResourceView(
-			LODClusterCountBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-	}
-
 	// LOD cluster selected bitmap (same size as cluster visibility bitmap)
 	// Also needs SRV for GPU-driven LOD shader to read
 	{
@@ -611,48 +586,6 @@ void FGaussianSplatGPUResources::CreatePerInstanceBuffers(FRHICommandListBase& R
 				.SetStride(sizeof(uint32)));
 		LODClusterSelectedBitmapSRV = RHICmdList.CreateShaderResourceView(
 			LODClusterSelectedBitmap, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-	}
-
-	// LOD splat total buffer (atomic counter for total LOD splats)
-	{
-		uint32 BufferSize = sizeof(uint32);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianLODSplatTotalBuffer"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		LODSplatTotalBuffer = RHICmdList.CreateBuffer(Desc);
-
-		LODSplatTotalBufferUAV = RHICmdList.CreateUnorderedAccessView(
-			LODSplatTotalBuffer, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-		LODSplatTotalBufferSRV = RHICmdList.CreateShaderResourceView(
-			LODSplatTotalBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-	}
-
-	// LOD splat output count buffer (atomic counter for valid LOD splat output)
-	{
-		uint32 BufferSize = sizeof(uint32);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianLODSplatOutputCountBuffer"),
-			BufferSize,
-			sizeof(uint32),
-			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
-			.SetInitialState(ERHIAccess::UAVCompute);
-		LODSplatOutputCountBuffer = RHICmdList.CreateBuffer(Desc);
-
-		LODSplatOutputCountBufferUAV = RHICmdList.CreateUnorderedAccessView(
-			LODSplatOutputCountBuffer, FRHIViewDesc::CreateBufferUAV()
-				.SetType(FRHIViewDesc::EBufferType::Structured)
-				.SetStride(sizeof(uint32)));
-		LODSplatOutputCountBufferSRV = RHICmdList.CreateShaderResourceView(
-			LODSplatOutputCountBuffer, FRHIViewDesc::CreateBufferSRV()
 				.SetType(FRHIViewDesc::EBufferType::Structured)
 				.SetStride(sizeof(uint32)));
 	}

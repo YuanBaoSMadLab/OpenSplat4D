@@ -430,17 +430,15 @@ class FClusterCullingResetCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FClusterCullingResetCS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, VisibleClusterCountBuffer)
+		// Packed scalar counters (visible cluster / LOD cluster / LOD splat total /
+		// LOD splat output). One buffer instead of four: SM5 allows only 8 UAVs.
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ClusterCounters)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, IndirectDrawArgsBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ClusterVisibilityBitmap)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, SelectedClusterBuffer)
 		// LOD cluster tracking buffers
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODClusterBuffer)
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODClusterCountBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODClusterSelectedBitmap)
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODSplatTotalBuffer)
-		// GPU-driven LOD rendering
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODSplatOutputCountBuffer)
 		SHADER_PARAMETER(uint32, ClusterVisibilityBitmapSize)
 		SHADER_PARAMETER(uint32, LeafClusterCount)
 		// Debug: must match MainCS parameters (shared .usf file)
@@ -467,15 +465,15 @@ class FClusterCullingCS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianGPUCluster>, ClusterBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, VisibleClusterBuffer)
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, VisibleClusterCountBuffer)
+		// Packed scalar counters (see FClusterCullingResetCS) — keeps the UAV count
+		// within the SM5 limit of 8.
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ClusterCounters)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, IndirectDrawArgsBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ClusterVisibilityBitmap)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, SelectedClusterBuffer)
 		// LOD cluster tracking buffers
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODClusterBuffer)
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODClusterCountBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODClusterSelectedBitmap)
-		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, LODSplatTotalBuffer)
 		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
 		SHADER_PARAMETER(FMatrix44f, WorldToClip)
 		SHADER_PARAMETER(uint32, ClusterCount)

@@ -1,17 +1,19 @@
 # 🌟 OpenSplat4D Niagara 系统 — 安装说明
 
-> **UE 5.8 用户：文件已内置，直接复制即可，无需手动创建！**
-> 文件位置：`Content/Niagara/Templates/UE5.8/NS_OpenSplat4D.uasset`
+> **无需手动创建**：编辑器启动时由 C++ 自动生成 `NS_OpenSplat4D` / `NE_OpenSplat4D`，
+> 并用当前运行的引擎版本编译保存到 `Content/Niagara/Templates/UE5_8/`。
 
 ---
 
 ## 安装方式（二选一）
 
-### 方式一：直接复制（推荐，UE 5.8 用户）
+### 方式一：自动生成（推荐，默认行为）
 
-`NS_OpenSplat4D.uasset` 已经预置在插件中。将 `OpenSplat4D/` 文件夹复制到你的 UE 项目的 `Plugins/` 目录下即可。插件启动时会自动加载该文件。
+将 `OpenSplat4D/` 文件夹复制到你的 UE 项目的 `Plugins/` 目录下即可。
+编辑器启动时 `OpenSplat4DNiagaraSetup::EnsureAssetsExist()` 会自动构建并保存 Niagara 系统。
+插件**不再附带**预烘焙的模板 uasset（旧版 `Templates/UE5_3/` 资产已删除，它们只匹配 UE 5.3 且无代码引用）。
 
-### 方式二：手动创建（用于其他 UE 版本）
+### 方式二：手动创建（自动生成失败时的兜底）
 
 以下指南适用于需要为其他 UE 版本（如 UE 5.5、5.6、5.7）手动创建 Niagara System 的情况。步骤与 UE 5.8 相同，只是最终保存到对应的版本文件夹中。
 
@@ -411,16 +413,15 @@ Content/
 │   └── M_OpenSplat4DSprite.uasset     ← C++ 自动创建
 └── Niagara/
     ├── Templates/
-    │   ├── UE5_3/                     ← UE 5.3/5.4 用
-    │   │   └── NS_GaussianSplattingPointCloud.uasset
-    │   └── UE5_8/                     ← UE 5.8+ 用
+    │   └── UE5_8/                     ← C++ 自动生成（当前引擎版本）
+    │       ├── NE_OpenSplat4D.uasset
     │       └── NS_OpenSplat4D.uasset
     └── MANUAL_SETUP.md
 ```
 
 > ⚠️ 文件夹名用下划线 `UE5_8` 而非 `UE5.8`——UE 会把点号当包名分隔符。
 
-C++ 会自动按引擎版本查找：`Templates/UE5_8/` → `UE5_7/` → ... → `UE5_3/`
+`OpenSplat4DNiagaraSetup::BuildNiagaraSystem()` 中路径写死为 `Templates/UE5_8/`（与 `.uplugin` 的 `EngineVersion: 5.8.0` 一致），启动时按当前引擎版本重新构建并覆盖保存。
 
 ## 附录 B：故障排查
 

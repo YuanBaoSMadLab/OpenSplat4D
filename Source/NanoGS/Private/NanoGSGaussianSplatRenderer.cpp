@@ -2023,7 +2023,7 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 
 	// Transition buffers for compute
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleClusterBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleClusterCountBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ClusterCountersBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ClusterVisibilityBitmap, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SelectedClusterBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	if (GPUResources->bSupportsIndirectDraw)
@@ -2033,23 +2033,17 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 
 	// Transition LOD cluster tracking buffers (always needed for reset)
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterCountBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterSelectedBitmap, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatTotalBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatOutputCountBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 
 	// Step 1: Reset the visible cluster counter, indirect draw args, visibility bitmap, selected cluster buffer, and LOD tracking buffers
 	{
 		FClusterCullingResetCS::FParameters ResetParams;
-		ResetParams.VisibleClusterCountBuffer = GPUResources->VisibleClusterCountBufferUAV;
+		ResetParams.ClusterCounters = GPUResources->ClusterCountersBufferUAV;
 		ResetParams.IndirectDrawArgsBuffer = GPUResources->IndirectDrawArgsBufferUAV;
 		ResetParams.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapUAV;
 		ResetParams.SelectedClusterBuffer = GPUResources->SelectedClusterBufferUAV;
 		ResetParams.LODClusterBuffer = GPUResources->LODClusterBufferUAV;
-		ResetParams.LODClusterCountBuffer = GPUResources->LODClusterCountBufferUAV;
 		ResetParams.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapUAV;
-		ResetParams.LODSplatTotalBuffer = GPUResources->LODSplatTotalBufferUAV;
-		ResetParams.LODSplatOutputCountBuffer = GPUResources->LODSplatOutputCountBufferUAV;
 		ResetParams.ClusterVisibilityBitmapSize = VisibilityBitmapSize;
 		ResetParams.LeafClusterCount = GPUResources->LeafClusterCount;
 		ResetParams.DebugForceLODLevel = CVarDebugForceLODLevel.GetValueOnRenderThread();  // Must bind (shared .usf)
@@ -2064,12 +2058,10 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 	}
 
 	// UAV barrier
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleClusterCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ClusterCountersBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ClusterVisibilityBitmap, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SelectedClusterBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterSelectedBitmap, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatTotalBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 
 	// Step 2: Run cluster culling with LOD selection
 	{
@@ -2081,14 +2073,12 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		FClusterCullingCS::FParameters CullingParams;
 		CullingParams.ClusterBuffer = GPUResources->ClusterBufferSRV;
 		CullingParams.VisibleClusterBuffer = GPUResources->VisibleClusterBufferUAV;
-		CullingParams.VisibleClusterCountBuffer = GPUResources->VisibleClusterCountBufferUAV;
+		CullingParams.ClusterCounters = GPUResources->ClusterCountersBufferUAV;
 		CullingParams.IndirectDrawArgsBuffer = GPUResources->IndirectDrawArgsBufferUAV;
 		CullingParams.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapUAV;
 		CullingParams.SelectedClusterBuffer = GPUResources->SelectedClusterBufferUAV;
 		CullingParams.LODClusterBuffer = GPUResources->LODClusterBufferUAV;
-		CullingParams.LODClusterCountBuffer = GPUResources->LODClusterCountBufferUAV;
 		CullingParams.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapUAV;
-		CullingParams.LODSplatTotalBuffer = GPUResources->LODSplatTotalBufferUAV;
 		CullingParams.LocalToWorld = FMatrix44f(LocalToWorld);
 		CullingParams.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
 		CullingParams.ClusterCount = GPUResources->ClusterCount;
@@ -2122,7 +2112,6 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 	}
 
 	// Transition for potential readback (for debugging/statistics)
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleClusterCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleClusterBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 
 	// Transition visibility bitmap and selected cluster buffer for CalcViewData to read
@@ -2133,8 +2122,6 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 	if (bUseLODRendering)
 	{
 		RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
-		RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
-		RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatTotalBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 		// Transition LODClusterSelectedBitmap to SRV for GPU-driven LOD shader to read
 		RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterSelectedBitmap, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 	}

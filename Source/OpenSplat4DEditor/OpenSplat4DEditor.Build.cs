@@ -45,9 +45,12 @@ public class OpenSplat4DEditor : ModuleRules
 			}
 			);
 
-		// Stage Niagara template assets to build output
-		RuntimeDependencies.Add("$(PluginDir)/Content/Niagara/Templates/UE5_8/NS_OpenSplat4D.uasset");
-		RuntimeDependencies.Add("$(PluginDir)/Content/Niagara/Templates/UE5_8/NE_OpenSplat4D.uasset");
+		// No Niagara template assets are staged: NS_OpenSplat4D / NE_OpenSplat4D
+		// are generated programmatically at editor startup by
+		// OpenSplat4DNiagaraSetup::BuildNiagaraSystem() into
+		// Content/Niagara/Templates/UE5_8/ (saved with the running engine's version).
+		// The old pre-baked UE5_3 template assets were removed — they were
+		// unreferenced by any code and only matched UE 5.3.
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
