@@ -13,19 +13,7 @@ StructuredBuffer<FGaussianGPUCluster> ClusterBuffer;
 // Output: Visible cluster indices and count
 // Each entry is packed: lower 24 bits = cluster index, upper 8 bits = use LOD flag
 RWStructuredBuffer<uint> VisibleClusterBuffer;
-
-// Scalar counters, packed into a single buffer.
-// SM5 / feature level 11.0 caps a shader at 8 UAV slots. This file used to declare
-// nine, which failed SM5 validation ("Shader is using too many UAVs: 9 (only 8
-// supported)"). The four single-uint counters now share this buffer and are
-// addressed with the constants below.
-// (The cap is only 8 on SM5; SM6/D3D12 allows 64. Packing is required as long as
-//  SM5 is a supported target platform.)
-#define GAUSSIAN_COUNTER_VISIBLE_CLUSTER  0
-#define GAUSSIAN_COUNTER_LOD_CLUSTER      1
-#define GAUSSIAN_COUNTER_LOD_SPLAT_TOTAL  2
-#define GAUSSIAN_COUNTER_LOD_SPLAT_OUTPUT 3
-RWStructuredBuffer<uint> ClusterCounters;
+RWStructuredBuffer<uint> VisibleClusterCountBuffer;
 
 // Indirect draw argument buffer for GPU-driven rendering
 // Structure: [0] IndexCountPerInstance, [1] InstanceCount, [2] StartIndexLocation, [3] BaseVertexLocation, [4] StartInstanceLocation
@@ -43,8 +31,14 @@ RWStructuredBuffer<uint> SelectedClusterBuffer;
 // LOD cluster tracking - for rendering parent LOD splats
 // Unique parent clusters that need their LOD splats rendered
 RWStructuredBuffer<uint> LODClusterBuffer;
+// Count of unique LOD clusters
+RWStructuredBuffer<uint> LODClusterCountBuffer;
 // Bitmap to track which parent clusters have been claimed (1 bit per cluster)
 RWStructuredBuffer<uint> LODClusterSelectedBitmap;
+// Total LOD splats to render (sum of all selected parent cluster LOD splat counts)
+RWStructuredBuffer<uint> LODSplatTotalBuffer;
+// Output count for GPU-driven LOD splat processing (reset before LOD processing)
+RWStructuredBuffer<uint> LODSplatOutputCountBuffer;
 // Whether LOD rendering is enabled
 uint UseLODRendering;
 
@@ -293,7 +287,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	// Atomically append to visible cluster list with LOD info
 	uint visibleIndex;
-	InterlockedAdd(ClusterCounters[GAUSSIAN_COUNTER_VISIBLE_CLUSTER], 1, visibleIndex);
+	InterlockedAdd(VisibleClusterCountBuffer[0], 1, visibleIndex);
 	VisibleClusterBuffer[visibleIndex] = PackClusterInfo(clusterIndex, useLOD);
 
 	// Atomically add this cluster's splat count to indirect draw instance count
@@ -329,11 +323,11 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			// Add this parent cluster to the LOD cluster list
 			FGaussianGPUCluster parentCluster = ClusterBuffer[selectedClusterID];
 			uint lodIdx;
-			InterlockedAdd(ClusterCounters[GAUSSIAN_COUNTER_LOD_CLUSTER], 1, lodIdx);
+			InterlockedAdd(LODClusterCountBuffer[0], 1, lodIdx);
 			LODClusterBuffer[lodIdx] = selectedClusterID;
 
 			// Add this cluster's LOD splat count to the total
-			InterlockedAdd(ClusterCounters[GAUSSIAN_COUNTER_LOD_SPLAT_TOTAL], parentCluster.LODSplatCount);
+			InterlockedAdd(LODSplatTotalBuffer[0], parentCluster.LODSplatCount);
 		}
 	}
 }
@@ -348,12 +342,7 @@ void ResetCounterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// Thread 0 resets counters and indirect draw args
 	if (threadIndex == 0)
 	{
-		// Reset all packed scalar counters
-		ClusterCounters[GAUSSIAN_COUNTER_VISIBLE_CLUSTER] = 0;
-		ClusterCounters[GAUSSIAN_COUNTER_LOD_CLUSTER] = 0;
-		ClusterCounters[GAUSSIAN_COUNTER_LOD_SPLAT_TOTAL] = 0;
-		// LOD splat output counter for GPU-driven LOD processing
-		ClusterCounters[GAUSSIAN_COUNTER_LOD_SPLAT_OUTPUT] = 0;
+		VisibleClusterCountBuffer[0] = 0;
 
 		// Initialize indirect draw args
 		// [0] IndexCountPerInstance = 6 (2 triangles per quad)
@@ -366,6 +355,13 @@ void ResetCounterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		IndirectDrawArgsBuffer[2] = 0;
 		IndirectDrawArgsBuffer[3] = 0;
 		IndirectDrawArgsBuffer[4] = 0;
+
+		// Reset LOD cluster tracking counters
+		LODClusterCountBuffer[0] = 0;
+		LODSplatTotalBuffer[0] = 0;
+
+		// Reset LOD splat output counter for GPU-driven LOD processing
+		LODSplatOutputCountBuffer[0] = 0;
 	}
 
 	// All threads help clear the visibility bitmap

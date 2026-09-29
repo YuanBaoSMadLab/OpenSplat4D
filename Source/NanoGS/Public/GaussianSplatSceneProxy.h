@@ -227,12 +227,10 @@ public:
 	FUnorderedAccessViewRHIRef VisibleClusterBufferUAV;
 	FShaderResourceViewRHIRef VisibleClusterBufferSRV;
 
-	/** Packed scalar counters written by the cluster culling shaders:
-	 *  [0] visible cluster count, [1] LOD cluster count,
-	 *  [2] LOD splat total, [3] LOD splat output count.
-	 *  Kept in a single buffer because SM5 allows only 8 UAVs per shader. */
-	FBufferRHIRef ClusterCountersBuffer;
-	FUnorderedAccessViewRHIRef ClusterCountersBufferUAV;
+	/** Visible cluster count buffer (atomic counter) */
+	FBufferRHIRef VisibleClusterCountBuffer;
+	FUnorderedAccessViewRHIRef VisibleClusterCountBufferUAV;
+	FShaderResourceViewRHIRef VisibleClusterCountBufferSRV;
 
 	/** Number of clusters */
 	int32 ClusterCount = 0;
@@ -313,6 +311,13 @@ public:
 	FUnorderedAccessViewRHIRef LODClusterBufferUAV;
 	FShaderResourceViewRHIRef LODClusterBufferSRV;
 
+	/** Count of unique LOD clusters (atomic counter)
+	 * Written by cluster culling, read back for LOD rendering dispatch
+	 */
+	FBufferRHIRef LODClusterCountBuffer;
+	FUnorderedAccessViewRHIRef LODClusterCountBufferUAV;
+	FShaderResourceViewRHIRef LODClusterCountBufferSRV;
+
 	/** Bitmap to track which parent clusters have been claimed (1 bit per cluster)
 	 * Used during cluster culling to ensure each parent is only added once
 	 * Also read by GPU-driven LOD shader to check if cluster is selected
@@ -320,6 +325,13 @@ public:
 	FBufferRHIRef LODClusterSelectedBitmap;
 	FUnorderedAccessViewRHIRef LODClusterSelectedBitmapUAV;
 	FShaderResourceViewRHIRef LODClusterSelectedBitmapSRV;
+
+	/** Total LOD splats to render (sum of all selected parent cluster LOD splat counts)
+	 * Written by cluster culling, used for indirect draw args
+	 */
+	FBufferRHIRef LODSplatTotalBuffer;
+	FUnorderedAccessViewRHIRef LODSplatTotalBufferUAV;
+	FShaderResourceViewRHIRef LODSplatTotalBufferSRV;
 
 	//----------------------------------------------------------------------
 	// GPU-driven LOD rendering resources
@@ -331,6 +343,14 @@ public:
 	 */
 	FBufferRHIRef LODSplatClusterIndexBuffer;
 	FShaderResourceViewRHIRef LODSplatClusterIndexBufferSRV;
+
+	/** Atomic counter for valid LOD splat output
+	 * Written by CalcLODViewDataGPUDriven, read by UpdateDrawArgs
+	 * Size: 4 bytes
+	 */
+	FBufferRHIRef LODSplatOutputCountBuffer;
+	FUnorderedAccessViewRHIRef LODSplatOutputCountBufferUAV;
+	FShaderResourceViewRHIRef LODSplatOutputCountBufferSRV;
 
 	/** Total splat count for buffer allocation (SplatCount + TotalLODSplats) */
 	int32 TotalSplatCount = 0;

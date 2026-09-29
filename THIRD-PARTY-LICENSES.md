@@ -116,8 +116,10 @@ None of the following ships with the plugin — not in the repository, not in th
 
 - `teachers/` and `ThirdParty/` — local development reference material only (Python runtime,
   COLMAP build, Inria 3DGS / Fudan 4DGS training checkouts).
-- `Content/Python/Lib/site-packages/` — local self-build output for the CUDA training extensions.
-  Git-ignored and excluded from the package by `Config/FilterPlugin.ini`.
+- `Content/Python/Lib/site-packages/` — the COLMAP `read_write_model.py` (BSD-3-Clause, Section 1)
+  **is** shipped from this folder. Anything else that lands here — locally built CUDA training
+  extensions (`diff_gaussian_rasterization`, `simple_knn`, `fused_ssim`) and any `*.pyd` — is
+  git-ignored and excluded from the package by `Config/FilterPlugin.ini`.
 
 The plugin's own orchestrator scripts under `Content/Python/OpenSplat4D/` **are** shipped: they are
 OpenSplat4D code (MIT-derived, see Section 1) and are what the editor steps invoke.
