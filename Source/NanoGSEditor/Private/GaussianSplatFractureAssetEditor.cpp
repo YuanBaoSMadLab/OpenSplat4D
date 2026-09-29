@@ -2,6 +2,7 @@
 // Copyright OpenSplat4D 2026 All Rights Reserved.
 
 #include "GaussianSplatFractureAssetEditor.h"
+#include "Misc/EngineVersionComparison.h"
 #include "GaussianSplatFractureAsset.h"
 #include "GaussianSplatAsset.h"
 #include "GaussianSplatAssetViewport.h"
@@ -735,7 +736,12 @@ void FGaussianSplatFractureAssetEditor::SolveFracture()
 		/*bSetDefaultInternalMaterialsFromCollection=*/true,
 		/*Progress=*/nullptr,
 		FVector::ZeroVector,
+		// UE 5.7 took a plain bool here; UE 5.8 replaced it with FIslandSplitSettings.
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+		/*bSplitIslands=*/true);
+#else
 		FIslandSplitSettings());
+#endif
 
 	if (NewGeometryStartIndex == INDEX_NONE)
 	{

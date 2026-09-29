@@ -17,6 +17,13 @@
 #include "SceneView.h"
 #include "ScreenPass.h"
 #include "Misc/EngineVersionComparison.h"
+#include "Misc/App.h"
+#include "Misc/MessageDialog.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Culture.h"
+#include "RHIFeatureLevel.h"
+#include "DynamicRHI.h"
 
 #define LOCTEXT_NAMESPACE "FNanoGSModule"
 
@@ -120,6 +127,91 @@ void FNanoGSModule::StartupModule()
 	UE_LOG(LogTemp, Log, TEXT("GaussianSplatting module started. Shader directory: %s"), *PluginShaderDir);
 }
 
+// The cluster culling compute shaders are SM6-only (see ShouldCompilePermutation in
+// GaussianSplatShaders.h): they bind 9 UAVs, which exceeds the SM5 / feature level 11.0
+// limit of 8, so they are not compiled at all on those platforms. Everything else still
+// loads and runs — this is a non-fatal capability check that explains the (possibly
+// incomplete) result instead of failing. It never changes the RHI or any project setting;
+// it only reports and, in an interactive editor session, tells the user how to fix it.
+static void WarnIfSM6Unsupported()
+{
+	const bool bFeatureLevelOK = (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM6);
+	const FString RHIName = (GDynamicRHI != nullptr) ? FString(GDynamicRHI->GetName()) : FString(TEXT("Unknown"));
+	const bool bRHIOK = RHIName.Equals(TEXT("D3D12"), ESearchCase::IgnoreCase);
+
+	if (bFeatureLevelOK && bRHIOK)
+	{
+		return; // DirectX 12 + Shader Model 6 present, nothing to report
+	}
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("GaussianSplatting: DirectX 12 + Shader Model 6 are required, but this run uses RHI=%s / ShaderModel=%s. ")
+		TEXT("The plugin stays loaded and everything else works; only the GPU cluster culling step is skipped, ")
+		TEXT("which can make Gaussian splats render incompletely or not at all. ")
+		TEXT("Fix: Edit > Project Settings > Platforms > Windows > Default RHI = DirectX 12, then restart the editor."),
+		*RHIName, bFeatureLevelOK ? TEXT("SM6+") : TEXT("below SM6"));
+
+	// Never block automation (commandlets, unattended runs, build machines) or non-editor
+	// targets with a modal dialog. The UE 5.8 FMessageDialog::Open overload with a default
+	// return value also logs instead of prompting when running unattended, so this is belt
+	// and braces.
+	if (!GIsEditor || !FSlateApplication::IsInitialized() || FApp::IsUnattended() || GIsBuildMachine)
+	{
+		return;
+	}
+
+	// Only ever prompt once per process, regardless of how many times this runs.
+	static bool bAlreadyWarned = false;
+	if (bAlreadyWarned)
+	{
+		return;
+	}
+	bAlreadyWarned = true;
+
+	const FString LanguageName = FInternationalization::Get().GetCurrentLanguage()->GetName();
+	const bool bChinese = LanguageName.StartsWith(TEXT("zh"), ESearchCase::IgnoreCase);
+
+	FText Title;
+	FText Message;
+	if (bChinese)
+	{
+		Title = FText::FromString(TEXT("OpenSplat4D —— 需要 DirectX 12 + 着色器模型 6"));
+		Message = FText::FromString(FString::Printf(
+			TEXT("检测到当前环境不满足本插件的图形要求：\n\n")
+			TEXT("  当前 RHI：%s\n")
+			TEXT("  当前着色器模型：%s\n")
+			TEXT("  要求：DirectX 12 + 着色器模型 6（SM6）\n\n")
+			TEXT("插件已正常加载，不会导致编译或启动失败；但受限于平台，GPU 簇剔除步骤会被跳过，")
+			TEXT("高斯泼溅可能显示不完整或完全不可见。\n\n")
+			TEXT("解决办法：\n")
+			TEXT("  1. 打开 编辑 → 项目设置 → 平台 → Windows\n")
+			TEXT("  2. 将「默认 RHI」设置为 DirectX 12\n")
+			TEXT("  3. 保存并重启编辑器\n\n")
+			TEXT("（本次运行仅提示一次。）"),
+			*RHIName, bFeatureLevelOK ? TEXT("SM6+") : TEXT("低于 SM6")));
+	}
+	else
+	{
+		Title = FText::FromString(TEXT("OpenSplat4D - DirectX 12 + Shader Model 6 Required"));
+		Message = FText::FromString(FString::Printf(
+			TEXT("The current environment does not meet this plugin's graphics requirements:\n\n")
+			TEXT("  Current RHI: %s\n")
+			TEXT("  Current shader model: %s\n")
+			TEXT("  Required: DirectX 12 + Shader Model 6 (SM6)\n\n")
+			TEXT("The plugin has loaded normally and will not fail to compile or start; however, the GPU cluster ")
+			TEXT("culling step is skipped on this platform, which may make Gaussian splats render incompletely ")
+			TEXT("or not at all.\n\n")
+			TEXT("To fix:\n")
+			TEXT("  1. Open Edit > Project Settings > Platforms > Windows\n")
+			TEXT("  2. Set 'Default RHI' to DirectX 12\n")
+			TEXT("  3. Save and restart the editor\n\n")
+			TEXT("(This message is shown only once per run.)"),
+			*RHIName, bFeatureLevelOK ? TEXT("SM6+") : TEXT("below SM6")));
+	}
+
+	FMessageDialog::Open(EAppMsgType::Ok, EAppReturnType::Ok, Message, Title);
+}
+
 void FNanoGSModule::OnPostEngineInit()
 {
 	// Skip view extension creation during cooking/commandlet — GEngine is null in those contexts
@@ -140,6 +232,10 @@ void FNanoGSModule::OnPostEngineInit()
 	{
 		UE_LOG(LogTemp, Log, TEXT("GaussianSplatting: ViewExtension created successfully (deferred init)"));
 	}
+
+	// Non-fatal graphics capability check (DirectX 12 + Shader Model 6). Never fails the
+	// load; only logs and, in an interactive editor session, prompts once.
+	WarnIfSM6Unsupported();
 }
 
 void FNanoGSModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRenderParameters& Parameters)

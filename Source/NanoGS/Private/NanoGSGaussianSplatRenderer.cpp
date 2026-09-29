@@ -2013,7 +2013,18 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 
 	if (!ResetShader.IsValid() || !CullingShader.IsValid())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Cluster culling shaders not valid"));
+		// SM6-only shaders: see ShouldCompilePermutation in GaussianSplatShaders.h. On
+		// SM5 / feature level 11.0 platforms (9 UAVs exceed the SM5 limit of 8) they are
+		// not compiled at all, so this is the expected path there — skip cluster culling
+		// gracefully instead of failing. Log once per process so the (possibly incomplete)
+		// image is explainable without spamming the log every frame.
+		static bool bLoggedMissingCullingShaders = false;
+		if (!bLoggedMissingCullingShaders)
+		{
+			bLoggedMissingCullingShaders = true;
+			UE_LOG(LogTemp, Warning,
+				TEXT("GaussianSplatting: cluster culling shaders unavailable on this platform (requires DirectX 12 + Shader Model 6). Skipping cluster culling this run."));
+		}
 		return 0;
 	}
 
