@@ -3,7 +3,7 @@
 	"Version": 3,
 	"VersionName": "0.3",
 	"FriendlyName": "OpenSplat4D",
-	"Description": "4D Gaussian Splatting (4DGS) + 3DGS dual-mode rendering plugin for Unreal Engine 5.5~6.0. Renders time-varying Gaussian point clouds captured/trained by 4DGS pipelines, coexists with the static 3DGS mode as switchable dual modes. REQUIRED engine plugins: Niagara (splat rendering, HLOD), GeometryCollectionPlugin (Chaos fracture runtime), and the editor-only PlanarCut and Fracture plugins (fracture solving and tools). These are hard dependencies - the plugin will not build or function correctly without them and they are declared here so they are enabled automatically.",
+	"Description": "4D Gaussian Splatting (4DGS) + 3DGS dual-mode rendering plugin for Unreal Engine 5.5~6.0. Renders time-varying Gaussian point clouds captured/trained by 4DGS pipelines, coexists with the static 3DGS mode as switchable dual modes. REQUIRED engine plugins: Niagara (splat rendering, HLOD), GeometryCollectionPlugin (Chaos fracture runtime), and the editor-only PlanarCut and Fracture plugins (fracture solving and tools). These are hard dependencies - the plugin will not build or function correctly without them and they are declared here so they are enabled automatically. Copyright 2026 OpenSplat4D. All Rights Reserved.",
 	"Category": "Rendering",
 	"CreatedBy": "OpenSplat4D",
 	"CreatedByURL": "",

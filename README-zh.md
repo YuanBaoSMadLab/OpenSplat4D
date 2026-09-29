@@ -1,3 +1,5 @@
+<!-- Copyright OpenSplat4D 2026 All Rights Reserved. -->
+
 # OpenSplat4D
 
 **面向 Unreal Engine 的 3D / 4D 高斯泼溅（3DGS / 4DGS）实时渲染插件。**

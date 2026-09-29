@@ -1,3 +1,5 @@
+<!-- Copyright OpenSplat4D 2026 All Rights Reserved. -->
+
 # OpenSplat4D
 
 **Unreal Engine plugin for rendering 3D and 4D Gaussian Splatting (3DGS / 4DGS) in real time.**

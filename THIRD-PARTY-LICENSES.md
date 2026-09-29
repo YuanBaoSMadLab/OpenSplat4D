@@ -1,3 +1,5 @@
+<!-- Copyright OpenSplat4D 2026 All Rights Reserved. -->
+
 # Third-Party Licenses and Notices
 
 OpenSplat4D's own source code is released under the **Apache-2.0** license (see [LICENSE](LICENSE)).

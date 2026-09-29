@@ -1,3 +1,5 @@
+<!-- Copyright OpenSplat4D 2026 All Rights Reserved. -->
+
 # 🌟 OpenSplat4D Niagara 系统 — 安装说明
 
 > **无需手动创建**：编辑器启动时由 C++ 自动生成 `NS_OpenSplat4D` / `NE_OpenSplat4D`，
