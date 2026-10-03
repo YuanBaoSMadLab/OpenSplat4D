@@ -1,5 +1,5 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
 // Copyright OpenSplat4D 2026 All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PLYFileReader.h"
 #include "Misc/FileHelper.h"

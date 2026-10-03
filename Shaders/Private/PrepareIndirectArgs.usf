@@ -1,5 +1,5 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
 // Copyright OpenSplat4D 2026 All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // Purpose: Prepare indirect dispatch and draw arguments from visible splat count.
 // This enables GPU-driven work reduction where subsequent passes only process visible splats.
