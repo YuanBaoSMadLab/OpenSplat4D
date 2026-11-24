@@ -10,7 +10,7 @@ OpenSplat4D 把高斯泼溅带入 Unreal Engine 5：以原生 C++ 插件的形�
 间接绘制，并提供专属的 4D 播放器编辑器。
 
 - 版本：**0.3**
-- 引擎：**Unreal Engine 5.5 – 6.0**（已在 UE 5.7 / 5.8 / 6.0 上编译验证，Windows / Win64）
+- 引擎：**Unreal Engine 5.5 – 6.0**（已在 UE 5.7 / 5.8 / 5.9 / 6.0 上编译验证，Windows / Win64）
 - 许可：**Apache-2.0**
 - 下载：[GitHub Releases](https://github.com/YuanBaoSMadLab/OpenSplat4D/releases)（按引擎版本预编译）
 - 国内下载加速：夸克网盘 https://pan.quark.cn/s/e85b7b7660f1?pwd=UZ2J （提取码 `UZ2J`）

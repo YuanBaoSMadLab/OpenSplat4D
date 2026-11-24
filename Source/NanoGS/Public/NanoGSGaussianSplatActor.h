@@ -5,9 +5,10 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+// UE 5.9 起 UHT 对「仅前置声明、未见定义」的 UPROPERTY 类型会猜错跨模块 API 宏，
+// 必须 include 定义头让 UHT 解析到正确模块（NANOGS_API）。
+#include "NanoGSGaussianSplatComponent.h"
 #include "NanoGSGaussianSplatActor.generated.h"
-
-class UGaussianSplatComponent;
 
 /**
  * Simple actor for placing Gaussian Splats in the level.

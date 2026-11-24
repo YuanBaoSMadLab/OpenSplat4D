@@ -5,9 +5,12 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
+// UE 5.9 起 UHT 对「仅前置声明、未见定义」的 UPROPERTY 类型会猜错跨模块 API 宏
+// （UGaussianSplatComponent 被猜成不存在的 GAUSSIANSPLAT_API），必须 include 定义头。
+// 本模块 Build.cs 已依赖 NanoGS，include 无额外代价。
+#include "NanoGSGaussianSplatComponent.h"
 #include "GaussianSplatFractureActor.generated.h"
 
-class UGaussianSplatComponent;
 class UGaussianSplatFractureAsset;
 
 /**

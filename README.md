@@ -11,7 +11,7 @@ Spacetime Gaussians, keyframe/sequence 4DGS, and Fudan native 4DGS (dual-quatern
 draw, and a dedicated 4D player editor.
 
 - Version: **0.3**
-- Engine: **Unreal Engine 5.5 – 6.0** (built and verified on UE 5.7, 5.8, 6.0 — Windows / Win64)
+- Engine: **Unreal Engine 5.5 – 6.0** (built and verified on UE 5.7, 5.8, 5.9, 6.0 — Windows / Win64)
 - License: **Apache-2.0**
 - Download: [GitHub Releases](https://github.com/YuanBaoSMadLab/OpenSplat4D/releases) (prebuilt per UE version)
 - Download mirror (mainland China): [Quark Drive](https://pan.quark.cn/s/e85b7b7660f1?pwd=UZ2J), extraction code `UZ2J`
@@ -71,7 +71,7 @@ The importer **auto-detects the model type from the file itself** — no manual 
 
 ## Requirements
 
-- **Unreal Engine 5.5 – 6.0** (verified on 5.7, 5.8, 6.0).
+- **Unreal Engine 5.5 – 6.0** (verified on 5.7, 5.8, 5.9, 6.0).
 - **DirectX 12 / Shader Model 6 is required.** DX11 is not supported: the cluster-culling compute
   shader uses 9 UAVs, above the SM5 (feature level 11.0) limit of 8, and the editor will fail while
   compiling `ClusterCulling.usf` (`Shader is using too many UAVs: 9 (only 8 supported)`).
